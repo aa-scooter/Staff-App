@@ -533,6 +533,259 @@ function money(n) {
   return sign + '฿' + Math.abs(num).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+// ============================================================================
+// ---- Read-only JSON-parity data layer (accounts.html, first page converted
+// per project CLAUDE.md's page-by-page plan). Everything below stands in for
+// the live scriptUrl's ?action=accounts call, sourcing from the static
+// per-month JSON export in data/ instead. This is a byte-for-byte port of
+// Code.gs's getAccountsData/ACCOUNTS_SUMMARY_ITEMS/looksLikeSummaryLabel/
+// parseExpenseBikeSplitsNote logic (NOT a rewrite -- see those functions in
+// Code.gs for the original comments explaining *why* each rule exists).
+// Known, accepted simplification: expense-type background colors were
+// explicitly excluded from the JSON export (Anton: "just plain colors is
+// fine, just the data"), so every expense here reads as type:'business' --
+// no colored rows/chips will render on this read-only copy.
+// ============================================================================
+
+// Which month tabs actually exist in this workbook snapshot -- a month with
+// no entry here simply has no sheet yet, same as findMonthSheetFuzzy coming
+// up empty live.
+const ACCOUNTS_MONTH_FILES = {
+  0: 'January', 1: 'February', 2: 'march', 3: 'april', 4: 'may', 5: 'June', 6: 'July', 7: 'August'
+};
+// Only July/August actually carry any cell notes in this snapshot (matches
+// the full-workbook round-trip validation -- 99 notes total, all on
+// customer/Contract/July/August).
+const ACCOUNTS_MONTH_HAS_NOTES = { 6: true, 7: true };
+
+const accountsJsonCache = {};
+function fetchJsonCached(url) {
+  if (!accountsJsonCache[url]) {
+    accountsJsonCache[url] = fetch(url).then(r => {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    });
+  }
+  return accountsJsonCache[url];
+}
+
+// ---- Ported from Code.gs looksLikeSummaryLabel -- flags a label as a
+// summary/totals line so the real data rows stop being read the moment
+// either side hits one. ----
+function looksLikeSummaryLabel(raw) {
+  const t = (raw || '').toString().trim().toLowerCase();
+  if (!t) return false;
+  if (t.indexOf('total') === 0) return true;
+  const phrases = [
+    'income for month', 'income for the month', 'income less',
+    'bussiness expense', 'business expense', 'personal expense',
+    'wages and bike', 'net profit', 'actual profit', '% of'
+  ];
+  return phrases.some(p => t.indexOf(p) !== -1);
+}
+
+// ---- Ported from Code.gs parseExpenseBikeSplitsNote. ----
+function parseExpenseBikeSplitsNote(note, fallbackAmount) {
+  const trimmed = (note || '').toString().trim();
+  if (!trimmed) return [];
+  function cleanAmount(raw) {
+    return (raw === '' || raw === null || raw === undefined || isNaN(Number(raw))) ? '' : Number(raw);
+  }
+  if (trimmed.charAt(0) === '[') {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (!Array.isArray(parsed)) return [];
+      return parsed
+        .map(s => ({ bike: ((s && s.bike) || '').toString().trim(), amount: cleanAmount(s && s.amount) }))
+        .filter(s => s.bike && s.amount !== '');
+    } catch (e) {
+      return [];
+    }
+  }
+  const fallback = cleanAmount(fallbackAmount);
+  return fallback === '' ? [] : [{ bike: trimmed, amount: fallback }];
+}
+
+// dd/mm/yyyy is what the rest of this page's date logic (dmyToIso etc.)
+// expects. JSON dates come through as "YYYY-MM-DD..." (see export_to_json.py's
+// encoding convention) -- take just the date part, regardless of any time
+// component, same as Code.gs's cellToString formatting a Date to dd/MM/yyyy.
+function jsonCellToDmy(v) {
+  if (v === null || v === undefined || v === '') return '';
+  const s = v.toString();
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
+  if (m) return `${m[3]}/${m[2]}/${m[1]}`;
+  return s;
+}
+
+// ---- Ported from Code.gs's ACCOUNTS_SUMMARY_ITEMS -- "row" is only a
+// starting guess (real row positions drift sheet to sheet; findSummaryRow
+// below always re-locates the label before trusting it). `percent` marks
+// the 2 (of 15) items that are a percentage rather than a currency figure,
+// confirmed against the workbook's own number formats ([$฿]#,##0.00 vs
+// 0.00%). ----
+const ACCOUNTS_SUMMARY_ITEMS = {
+  expense: [
+    { row: 146, labelCol: 2, valueCol: 3, expectedLabel: 'total expenses', displayLabel: 'Total expenses' },
+    { row: 147, labelCol: 2, valueCol: 3, expectedLabel: 'bussiness expenses', displayLabel: 'Business expenses' },
+    { row: 148, labelCol: 2, valueCol: 3, expectedLabel: 'personal expenses total', displayLabel: 'Personal expenses' },
+    { row: 149, labelCol: 2, valueCol: 3, expectedLabel: 'wages and bike purchase', displayLabel: 'Wages & bike purchases' }
+  ],
+  income: [
+    { row: 146, labelCol: 7, valueCol: 9, expectedLabel: 'income for month', displayLabel: 'Income' },
+    { row: 147, labelCol: 7, valueCol: 9, expectedLabel: 'income less invesment', displayLabel: 'Income (less investment)' },
+    { row: 148, labelCol: 7, valueCol: 9, expectedLabel: '% of bussiness expenses vs income', displayLabel: 'Business exp. % of income', percent: true },
+    { row: 149, labelCol: 7, valueCol: 9, expectedLabel: '% of total busniness and personal vs income', displayLabel: 'Total exp. % of income', percent: true }
+  ],
+  profit: [
+    { row: 147, labelCol: 10, valueCol: 11, expectedLabel: 'net profit', displayLabel: 'Net profit' },
+    { row: 148, labelCol: 10, valueCol: 11, expectedLabel: 'actual profit', displayLabel: 'Actual profit' }
+  ],
+  deposit: [
+    { row: 3,  labelCol: 12, valueCol: 13, expectedLabel: 'cash', displayLabel: 'Cash' },
+    { row: 6,  labelCol: 12, valueCol: 13, expectedLabel: 'bank', displayLabel: 'Bank' },
+    { row: 11, labelCol: 12, valueCol: 13, expectedLabel: 'wise(less deposit)', displayLabel: 'Wise (less deposit)' },
+    { row: 12, labelCol: 12, valueCol: 13, expectedLabel: 'revolut(less deposit)', displayLabel: 'Revolut (less deposit)' },
+    { row: 9,  labelCol: 12, valueCol: 13, expectedLabel: 'total (cash + bank+wise)', displayLabel: 'Total (cash + bank + wise)' }
+  ]
+};
+
+function summaryNorm(s) { return (s || '').toString().trim().toLowerCase(); }
+
+// ---- Same "check the expected row first, else scan the whole column"
+// self-healing lookup as Code.gs's readAccountsSummaryItemBatched_ /
+// findDepositRow -- confirmed necessary here too: this workbook's actual
+// row positions have drifted 1-2 rows off ACCOUNTS_SUMMARY_ITEMS' hardcoded
+// expectations (e.g. July's "total expenses" sits at row 145, not 146).
+// `rows` is 0-indexed (rows[0] is sheet row 1).
+function findSummaryRow(rows, item) {
+  const target = summaryNorm(item.expectedLabel);
+  const expectedRow = rows[item.row - 1];
+  if (expectedRow && summaryNorm(expectedRow[item.labelCol - 1]) === target) return item.row;
+  for (let r = 0; r < rows.length; r++) {
+    if (rows[r] && summaryNorm(rows[r][item.labelCol - 1]) === target) return r + 1;
+  }
+  return null;
+}
+
+// JSON holds the raw underlying number (openpyxl's data_only value), not
+// the sheet's formatted display string -- so unlike Code.gs's
+// getDisplayValue() call, formatting has to happen here instead. Percent
+// cells store a plain fraction (e.g. 0.4568 for "45.68%").
+function formatSummaryValue(raw, isPercent) {
+  if (raw === null || raw === undefined || raw === '') return null;
+  const num = Number(raw);
+  if (isNaN(num)) return null;
+  return isPercent
+    ? (num * 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + '%'
+    : money(num);
+}
+
+function readSummaryItem(rows, item, warnings, sheetLabel) {
+  const row = findSummaryRow(rows, item);
+  if (row === null) {
+    warnings.push('Could not find "' + item.expectedLabel + '" in "' + sheetLabel + '" -- "' + item.displayLabel + '" is not shown.');
+    return { label: item.displayLabel, value: null };
+  }
+  const rawVal = rows[row - 1][item.valueCol - 1];
+  return { label: item.displayLabel, value: formatSummaryValue(rawVal, !!item.percent) };
+}
+
+// ---- Read-only stand-in for Code.gs's getAccountsData(monthIndexRaw),
+// sourcing from the static per-month JSON export instead of a live sheet
+// read. Returns the exact same shape the live scriptUrl's ?action=accounts
+// used to, so renderExpenses/renderIncome/renderSummary below don't need to
+// change at all. ----
+async function getAccountsDataFromJson(monthIndex) {
+  const fileBase = ACCOUNTS_MONTH_FILES[monthIndex];
+  if (!fileBase) {
+    return { success: false, monthIndex, month: MONTH_NAMES[monthIndex], error: 'No sheet found matching "' + MONTH_NAMES[monthIndex] + '".' };
+  }
+
+  let rows, notes = [];
+  try {
+    rows = await fetchJsonCached(`data/${fileBase}.json`);
+  } catch (err) {
+    return { success: false, monthIndex, month: MONTH_NAMES[monthIndex], error: 'Could not load data for ' + MONTH_NAMES[monthIndex] + ': ' + err.message };
+  }
+  if (ACCOUNTS_MONTH_HAS_NOTES[monthIndex]) {
+    try { notes = await fetchJsonCached(`data/${fileBase}_notes.json`); } catch (err) { notes = []; }
+  }
+  const noteMap = new Map();
+  notes.forEach(([r, c, t]) => noteMap.set(r + ',' + c, t));
+
+  const expenses = [];
+  const income = [];
+  let prevBlank = false;
+
+  // rows[0] is sheet row 1 (the header row); data starts at sheet row 2 --
+  // same boundary Code.gs's getRange(2, 1, ...) uses.
+  for (let idx = 1; idx < rows.length; idx++) {
+    const r = rows[idx];
+    const sheetRow = idx + 1;
+    const eDate = r[0], expenseLabel = (r[1] || '').toString().trim(), eAmount = r[2];
+    const ePayment = (r[3] || '').toString().trim();
+    const iDate = r[5], incomeLabel = (r[6] || '').toString().trim(), iAmount = r[8];
+
+    if (looksLikeSummaryLabel(expenseLabel) || looksLikeSummaryLabel(incomeLabel)) break;
+
+    const eDateEmpty = (eDate === '' || eDate === null || eDate === undefined);
+    const eAmountEmpty = (eAmount === '' || eAmount === null || eAmount === undefined);
+    const iDateEmpty = (iDate === '' || iDate === null || iDate === undefined);
+    const iAmountEmpty = (iAmount === '' || iAmount === null || iAmount === undefined);
+
+    const rowFullyBlank = eDateEmpty && !expenseLabel && eAmountEmpty &&
+      iDateEmpty && !incomeLabel && iAmountEmpty;
+    if (rowFullyBlank) {
+      if (prevBlank) break;
+      prevBlank = true;
+      continue;
+    }
+    prevBlank = false;
+
+    if (expenseLabel || !eAmountEmpty) {
+      expenses.push({
+        row: sheetRow,
+        date: jsonCellToDmy(eDate),
+        expense: expenseLabel,
+        amount: (eAmountEmpty || isNaN(Number(eAmount))) ? '' : Number(eAmount),
+        payment: ePayment,
+        type: 'business', // colors weren't ported into the JSON export -- see the note at the top of this block
+        bikeSplits: parseExpenseBikeSplitsNote(
+          noteMap.get(sheetRow + ',2'),
+          (eAmountEmpty || isNaN(Number(eAmount))) ? '' : Number(eAmount)
+        )
+      });
+    }
+    if (incomeLabel || !iAmountEmpty) {
+      income.push({
+        row: sheetRow,
+        date: jsonCellToDmy(iDate),
+        income: incomeLabel,
+        name: (r[7] || '').toString().trim(),
+        amount: (iAmountEmpty || isNaN(Number(iAmount))) ? '' : Number(iAmount),
+        paidBy: (r[9] || '').toString().trim(),
+        bikeSplits: parseExpenseBikeSplitsNote(noteMap.get(sheetRow + ',7'), '')
+      });
+    }
+  }
+
+  const warnings = [];
+  const summary = {
+    expense: ACCOUNTS_SUMMARY_ITEMS.expense.map(item => readSummaryItem(rows, item, warnings, fileBase)),
+    income: ACCOUNTS_SUMMARY_ITEMS.income.map(item => readSummaryItem(rows, item, warnings, fileBase)),
+    profit: ACCOUNTS_SUMMARY_ITEMS.profit.map(item => readSummaryItem(rows, item, warnings, fileBase)),
+    deposit: ACCOUNTS_SUMMARY_ITEMS.deposit.map(item => readSummaryItem(rows, item, warnings, fileBase))
+  };
+
+  const result = { success: true, monthIndex, month: MONTH_NAMES[monthIndex], sheetName: fileBase, expenses, income, summary };
+  if (warnings.length) result.warning = warnings.join(' ');
+  return result;
+}
+// ============================================================================
+// ---- end read-only JSON-parity data layer ----
+// ============================================================================
+
 let currentExpenses = [];
 let currentIncome = [];
 
@@ -651,7 +904,7 @@ async function loadMonth(monthIndex) {
   document.getElementById('summaryGrid').innerHTML = '';
 
   try {
-    const res = await fetch(scriptUrl + '?action=accounts&month=' + monthIndex).then(r => r.json());
+    const res = await getAccountsDataFromJson(monthIndex); // DISCONNECTED: reads the static data/ JSON export instead of the live scriptUrl (see project CLAUDE.md)
     if (myToken !== loadToken) return; // A newer month was selected while this was in flight.
 
     if (!res.success) {
@@ -1429,7 +1682,7 @@ async function refreshTransferBalance() {
   transferBalanceDisplay.classList.add('show');
   transferBalanceDisplay.textContent = 'Loading balance…';
   try {
-    const res = await fetch(scriptUrl + '?action=accounts').then(r => r.json());
+    const res = await getAccountsDataFromJson(new Date().getMonth()); // DISCONNECTED: reads the static data/ JSON export instead of the live scriptUrl (see project CLAUDE.md) -- still always the actual current month, same as the live endpoint's own default
     if (fTransferSource.value !== source) return; // source changed while this was in flight
     if (!res.success) {
       transferBalanceDisplay.textContent = 'Could not load balance.';
