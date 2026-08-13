@@ -545,6 +545,26 @@ function money(n) {
 // explicitly excluded from the JSON export (Anton: "just plain colors is
 // fine, just the data"), so every expense here reads as type:'business' --
 // no colored rows/chips will render on this read-only copy.
+//
+// 13/08/2026 update: action=bikesList and action=deposits (both simple
+// reads, ported below alongside the rest) now also run off the live Drive
+// JSON. WRITE actions -- addExpense/editExpense/addIncome/editIncome/
+// deleteExpense/deleteIncome/bulkSetExpenseType/transferToBank -- are
+// DELIBERATELY NOT ported this pass. Every one of them cascades into the
+// same shared financial-write infrastructure that bikes.html's deferred
+// extendBike/swapBike/earlyReturnBike/returnDeposit and deposits.html's
+// deferred deductDepositEntry/deductCashDeposit also need: reconciling a
+// matching row on the "cash" sheet by description+amount (with a
+// disambiguation round-trip when more than one candidate matches), drawing
+// down/adding to the Wise/Revolut running deposit total, bumping the
+// matching bike's cell in the "bikes" sheet's income OR expense table, and
+// (for expenses) keeping the personal/wages expense-type summary totals in
+// sync. None of that exists in this JSON port yet -- it's a materially
+// larger, shared undertaking, not a page-by-page relocation like every
+// write ported so far, so it's flagged here as ONE dedicated future pass
+// covering all of these write actions together rather than ported
+// piecemeal and half-tested. All 3 write call sites below still hit the
+// old (disconnected) scriptUrl and fail cleanly.
 // ============================================================================
 
 // Which month tabs actually exist in this workbook snapshot -- a month with
@@ -812,6 +832,139 @@ async function getAccountsDataFromJson(monthIndex, year) {
   if (warnings.length) result.warning = warnings.join(' ');
   return result;
 }
+// ---- Ported from Code.gs's looksLikeBikesSheetLabel -- same "is this a
+// totals/label row, not a real bike" check used by add-bikes.html/
+// bike-income.html on the "bikes" sheet. ----
+function looksLikeBikesSheetLabel(raw) {
+  const t = (raw || '').toString().trim().toLowerCase();
+  if (!t) return true;
+  if (t.indexOf('total') === 0) return true;
+  if (t === 'expenses' || t === 'expense' || t.indexOf('expense %') === 0) return true;
+  return false;
+}
+// ---- action=bikesList -> getBikesListNamesFromJson. Reads column A of the
+// "bikes" sheet's income table (deduped, case-insensitive) -- feeds the
+// "attach to bike" autocomplete on the Add/Edit Expense/Income modal. ----
+async function getBikesListNamesFromJson() {
+  try {
+    const rows2D = await fetchSheetJson('bikes');
+    const bikes = [];
+    const seen = {};
+    for (let i = 1; i < rows2D.length; i++) {
+      const name = (rows2D[i][0] || '').toString().trim();
+      if (!name || looksLikeBikesSheetLabel(name)) continue;
+      const key = name.toLowerCase();
+      if (!seen[key]) { seen[key] = true; bikes.push(name); }
+    }
+    return { success: true, bikes };
+  } catch (err) {
+    return { success: false, error: err.message, bikes: [] };
+  }
+}
+
+// ---- action=deposits -> getDepositsDataFromJson. Copied verbatim from
+// deposits.html (same per-file convention) -- feeds the "paid from an
+// existing deposit" dropdown when adding a new income entry. Always the
+// CURRENT month/year, same as the live endpoint's own default. ----
+const DEPOSIT_CATEGORIES_B = [
+  { key: 'bank',    label: 'Bank',    header: 'bank',                dateCol: 15, amountCol: 16, nameCol: 17 },
+  { key: 'wise',    label: 'Wise',    header: 'wise(less deposit)',  dateCol: 18, amountCol: 19, nameCol: 20 },
+  { key: 'revolut', label: 'Revolut', header: 'revolut(less deposit)', dateCol: 22, amountCol: 23, nameCol: 24 }
+];
+const DEPOSITS_MONTH_NAMES = ['January','February','march','april','may','June','July','August',
+  'September','October','November','December'];
+function depositsCellToString(val) {
+  if (val === null || val === undefined) return '';
+  const d = decodeSheetDateForDeposits(val);
+  if (d) return isoDmyForDeposits(d);
+  return String(val);
+}
+function decodeSheetDateForDeposits(val) {
+  if (val === null || val === undefined) return null;
+  if (typeof val !== 'string') return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(val)) {
+    const m = val.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  }
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(val)) {
+    const m = val.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/);
+    return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6]));
+  }
+  return null;
+}
+function isoDmyForDeposits(date) {
+  const pad = n => String(n).padStart(2, '0');
+  return pad(date.getDate()) + '/' + pad(date.getMonth() + 1) + '/' + date.getFullYear();
+}
+async function getDepositsDataFromJson() {
+  const now = new Date();
+  const currentMonthIndex = now.getMonth();
+  const monthName = DEPOSITS_MONTH_NAMES[currentMonthIndex];
+  const year = now.getFullYear();
+  try {
+    const monthRows2D = await fetchSheetJson(monthName, year);
+    if (!monthRows2D) {
+      return { success: false, error: 'No sheet found matching "' + monthName + '" -- could not load this month\'s deposits.' };
+    }
+    function norm(s) { return (s || '').toString().trim().toLowerCase(); }
+    function cell(row, col) {
+      const r = monthRows2D[row - 1];
+      return r ? r[col - 1] : undefined;
+    }
+    const deposits = [];
+    const warnings = [];
+    const maxRow = monthRows2D.length;
+    DEPOSIT_CATEGORIES_B.forEach(cat => {
+      const headerRaw = cell(1, cat.dateCol);
+      if (norm(headerRaw) !== cat.header) {
+        warnings.push('"' + monthName + '" sheet: expected "' + cat.header + '" in column ' + cat.dateCol + ', row 1 but found "' + (headerRaw || '(blank)') + '" -- skipped this section, please go have a look.');
+        return;
+      }
+      for (let row = 2; row <= maxRow; row++) {
+        const dateRaw = cell(row, cat.dateCol);
+        if (norm(dateRaw) === 'total') break;
+        const amtRaw = cell(row, cat.amountCol);
+        const nameRaw = cell(row, cat.nameCol);
+        const dateEmpty = (dateRaw === '' || dateRaw === null || dateRaw === undefined);
+        const amtEmpty = (amtRaw === '' || amtRaw === null || amtRaw === undefined);
+        const nameEmpty = (nameRaw === '' || nameRaw === null || nameRaw === undefined);
+        if (dateEmpty && amtEmpty && nameEmpty) continue;
+        deposits.push({
+          row, category: cat.key, categoryLabel: cat.label,
+          date: depositsCellToString(dateRaw),
+          amount: (amtEmpty || isNaN(Number(amtRaw))) ? '' : Number(amtRaw),
+          name: (nameRaw || '').toString().trim()
+        });
+      }
+    });
+    const summary = {};
+    DEPOSIT_CATEGORIES_B.forEach(cat => {
+      const entry = {};
+      const totalLabelRaw = cell(15, cat.dateCol);
+      if (norm(totalLabelRaw).indexOf('total') === 0) {
+        const v = cell(15, cat.amountCol);
+        entry.total = { label: depositsCellToString(totalLabelRaw), value: (v === null || v === undefined || v === '') ? '' : Number(v).toLocaleString('en-US', { maximumFractionDigits: 2 }) };
+      } else {
+        warnings.push('"' + monthName + '" sheet: expected a "total" label at column ' + cat.dateCol + ', row 15 for ' + cat.label + ' but found "' + (totalLabelRaw || '(blank)') + '" -- ' + cat.label + ' total not shown.');
+      }
+      if (cat.key !== 'bank') {
+        const rtLabelRaw = cell(16, cat.dateCol);
+        if (norm(rtLabelRaw).indexOf('total') === 0) {
+          const v = cell(16, cat.amountCol);
+          entry.runningTotal = { label: depositsCellToString(rtLabelRaw), value: (v === null || v === undefined || v === '') ? '' : Number(v).toLocaleString('en-US', { maximumFractionDigits: 2 }) };
+        } else {
+          warnings.push('"' + monthName + '" sheet: expected a running-total label at column ' + cat.dateCol + ', row 16 for ' + cat.label + ' but found "' + (rtLabelRaw || '(blank)') + '" -- ' + cat.label + ' running total not shown.');
+        }
+      }
+      summary[cat.key] = entry;
+    });
+    const result = { success: true, month: monthName, deposits, summary };
+    if (warnings.length) result.warning = warnings.join(' ');
+    return result;
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+}
 // ============================================================================
 // ---- end read-only JSON-parity data layer ----
 // ============================================================================
@@ -1029,7 +1182,7 @@ document.getElementById('markTransfersBusinessBtn').addEventListener('click', ()
 let bikesNames = [];
 async function loadBikesList() {
   try {
-    const res = await fetch(scriptUrl + '?action=bikesList').then(r => r.json());
+    const res = await getBikesListNamesFromJson();
     if (!res.success) return;
     bikesNames = res.bikes || [];
   } catch (err) {
@@ -1179,7 +1332,7 @@ async function populateDepositDropdown(categoryKey) {
   fPaidFromDeposit.innerHTML = '<option value="">Loading…</option>';
   fPaidFromDeposit.disabled = true;
   try {
-    const res = await fetch(scriptUrl + '?action=deposits').then(r => r.json());
+    const res = await getDepositsDataFromJson();
     if (!res.success) {
       fPaidFromDeposit.innerHTML = '<option value="">— Could not load deposits —</option>';
       return;

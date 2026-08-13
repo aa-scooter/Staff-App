@@ -207,6 +207,382 @@
 <script>
 const scriptUrl = ''; // DISCONNECTED: this Vercel copy is intentionally not wired to the live backend (dev/testing only, see project CLAUDE.md)
 
+// ================== JSON-backed data layer (ported 13/08/2026) ==================
+// Reads ported: action=parts (getPartsData, full shape incl. categoryRows +
+// live rates -- categoryRows/rates aren't actually used by this page's own
+// UI, but the shape has to match what action=parts used to return since
+// loadParts() stores the whole result into partsData), action=bikeRentalStatus
+// (getBikeRentalStatus) -- this page has no write actions at all (it's a
+// read-only oil-change/service checklist reference; the actual oil-change
+// LOG entries live on parts.html, already ported).
+//
+// getBikeRentalStatusFromJson below is copied verbatim from contract.html/
+// available-bikes.html (same per-file, no-shared-JS convention).
+//
+// KNOWN GAP (same as bikes.html/contract.html/parts.html): "sold" bike
+// detection via strikethrough font formatting has no JSON equivalent --
+// __struck is hardcoded false below.
+const oilchangeJsonCache = {};
+function fetchSheetJson(sheetName, year) {
+  const cacheKey = year ? `${year}/${sheetName}` : sheetName;
+  const url = year
+    ? `/api/data/${encodeURIComponent(sheetName)}?year=${encodeURIComponent(year)}`
+    : `/api/data/${encodeURIComponent(sheetName)}`;
+  if (!oilchangeJsonCache[cacheKey]) {
+    oilchangeJsonCache[cacheKey] = fetch(url).then(r => {
+      if (r.status === 401) throw new Error('Signed out -- please refresh to sign in again.');
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    }).then(res => {
+      if (!res.success) throw new Error(res.error || 'Could not load data.');
+      return res.rows || [];
+    }).catch(err => {
+      // A cached PROMISE stays truthy whether it resolved or rejected --
+      // clear the entry on failure so the next call actually retries
+      // instead of replaying the same stale failure forever.
+      delete oilchangeJsonCache[cacheKey];
+      throw err;
+    });
+  }
+  return oilchangeJsonCache[cacheKey];
+}
+function decodeSheetDate(val) {
+  if (val === null || val === undefined) return null;
+  if (typeof val !== 'string') return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(val)) {
+    const m = val.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  }
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(val)) {
+    const m = val.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/);
+    return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6]));
+  }
+  return null;
+}
+function pad2Json(n) { return String(n).padStart(2, '0'); }
+function formatDmyJson(date) {
+  if (!date) return '';
+  return pad2Json(date.getDate()) + '/' + pad2Json(date.getMonth() + 1) + '/' + date.getFullYear();
+}
+function columnLetterJson(col) {
+  let letter = '';
+  while (col > 0) {
+    const rem = (col - 1) % 26;
+    letter = String.fromCharCode(65 + rem) + letter;
+    col = Math.floor((col - 1) / 26);
+  }
+  return letter;
+}
+function partsCellToString(val) {
+  if (val === null || val === undefined) return '';
+  const d = decodeSheetDate(val);
+  if (d) return formatDmyJson(d);
+  return String(val);
+}
+function customerCellToString(key, val) {
+  if (val === null || val === undefined) return '';
+  if (typeof val === 'string' && key === 'returnTime' && /^\d{2}:\d{2}:\d{2}/.test(val)) {
+    return val.slice(0, 5);
+  }
+  const d = decodeSheetDate(val);
+  if (d) return formatDmyJson(d);
+  return String(val);
+}
+
+const HEADER_ROWS_B = 1; // customer/Contract sheets: row 1 is the header
+
+// ---- Ports getBikeTaxCategories() -- same port as every other page. ----
+function getBikeTaxCategoriesFromJson(rows2D) {
+  try {
+    if (!rows2D || !rows2D.length) return [];
+    const headerRow = rows2D[0].map(h => (h || '').toString().trim().toLowerCase());
+    let bikeCol = headerRow.indexOf('bike model');
+    if (bikeCol === -1) bikeCol = headerRow.indexOf('bike');
+    const catCol = headerRow.indexOf('category');
+    if (bikeCol === -1 || catCol === -1) return [];
+    const makeCol = headerRow.indexOf('make');
+    const modelYearCol = headerRow.indexOf('model year');
+    const searchFrom = makeCol > -1 ? makeCol : 0;
+    const modelCol = headerRow.indexOf('model', searchFrom);
+    const ccCol = headerRow.indexOf('cc', searchFrom);
+    const keyCol = headerRow.indexOf('key', searchFrom);
+    let depositCol = headerRow.indexOf('deposit', searchFrom);
+    if (depositCol === -1) depositCol = headerRow.indexOf('deposit');
+    let boxCol = headerRow.indexOf('box', searchFrom);
+    if (boxCol === -1) boxCol = headerRow.indexOf('box');
+    let absCol = headerRow.indexOf('abs', searchFrom);
+    if (absCol === -1) absCol = headerRow.indexOf('abs');
+    let tractionCol = headerRow.indexOf('traction control', searchFrom);
+    if (tractionCol === -1) tractionCol = headerRow.indexOf('traction control');
+    let plateCol = -1;
+    for (let pc = 0; pc < headerRow.length; pc++) {
+      if (headerRow[pc].indexOf('plate') !== -1) { plateCol = pc; break; }
+    }
+    const rows = [];
+    for (let i = 1; i < rows2D.length; i++) {
+      const bike = (rows2D[i][bikeCol] || '').toString().trim();
+      if (!bike) continue;
+      const cat = (rows2D[i][catCol] || '').toString().trim();
+      const modelYearRaw = modelYearCol > -1 ? rows2D[i][modelYearCol] : '';
+      rows.push({
+        bike, category: cat,
+        modelYear: (modelYearRaw === '' || modelYearRaw === null || isNaN(Number(modelYearRaw))) ? '' : Number(modelYearRaw),
+        make: makeCol > -1 ? (rows2D[i][makeCol] || '').toString().trim() : '',
+        model: modelCol > -1 ? (rows2D[i][modelCol] || '').toString().trim() : '',
+        cc: ccCol > -1 ? (rows2D[i][ccCol] || '').toString().trim() : '',
+        key: keyCol > -1 ? (rows2D[i][keyCol] || '').toString().trim() : '',
+        deposit: depositCol > -1 ? (rows2D[i][depositCol] || '').toString().trim() : '',
+        box: boxCol > -1 ? (rows2D[i][boxCol] || '').toString().trim() : '',
+        abs: absCol > -1 ? (rows2D[i][absCol] || '').toString().trim() : '',
+        tractionControl: tractionCol > -1 ? (rows2D[i][tractionCol] || '').toString().trim() : '',
+        plate: plateCol > -1 ? (rows2D[i][plateCol] || '').toString().trim() : ''
+      });
+    }
+    return rows;
+  } catch (err) {
+    return [];
+  }
+}
+function readRatesPerDayTableFromJson(rows2D) {
+  try {
+    if (!rows2D || rows2D.length < 39) {
+      throw new Error('The "rates per day" sheet does not have the expected 30-day block at rows 10-39.');
+    }
+    const block = rows2D.slice(9, 39);
+    const rates = {};
+    for (let i = 0; i < block.length; i++) {
+      const row = block[i];
+      const day = Number(row[0]);
+      if (!day || isNaN(day)) continue;
+      const perCategory = [];
+      for (let c = 1; c <= 6; c++) {
+        const raw = row[c];
+        const v = (raw === '' || raw === null || raw === undefined) ? NaN : Number(raw);
+        perCategory.push(isNaN(v) ? null : v);
+      }
+      rates[day] = perCategory;
+    }
+    let completeDays = 0;
+    for (let d = 1; d <= 30; d++) {
+      if (rates[d] && rates[d].every(v => v !== null)) completeDays++;
+    }
+    if (completeDays < 25) {
+      throw new Error('The "rates per day" sheet doesn\'t look like the expected 30-day rate table (only ' + completeDays + ' of 30 days read cleanly) -- check it hasn\'t been moved, renamed, or restructured.');
+    }
+    return { rates, warning: null };
+  } catch (err) {
+    return { rates: null, warning: err.message };
+  }
+}
+// ---- action=parts -> getPartsDataFromJson (full shape) -- same port as
+// bikes.html/parts.html/available-bikes.html. ----
+async function getPartsDataFromJson() {
+  const [partsRows2D, bikeTaxRows2D, ratesRows2D] = await Promise.all([
+    fetchSheetJson('Parts_and_Oil_change'),
+    fetchSheetJson('Bike_Tax'),
+    fetchSheetJson('rates_per_day')
+  ]);
+  const rawHeaders = partsRows2D[0] || [];
+  const headers = rawHeaders.map((h, i) => {
+    const key = (h || '').toString().trim();
+    return key || ('Column ' + columnLetterJson(i + 1));
+  });
+  const rows = partsRows2D.slice(1).map(row => {
+    const obj = {};
+    headers.forEach((h, i2) => { obj[h] = partsCellToString(row[i2]); });
+    obj.__struck = false; // see KNOWN GAP note above
+    return obj;
+  }).filter(r => (r[headers[0]] || '').toString().trim() !== '');
+  const categoryRows = getBikeTaxCategoriesFromJson(bikeTaxRows2D);
+  const ratesResult = readRatesPerDayTableFromJson(ratesRows2D);
+  return { success: true, headers, rows, categoryRows, rates: ratesResult.rates, ratesWarning: ratesResult.warning };
+}
+
+// ---- Contract-sheet lookup matching, ported from Code.gs -- used ONLY to
+// enrich getBikeRentalStatusFromJson's "currently rented" entries. Kept
+// separate from getBikeRentalStatusFromJson's OWN bike-name matcher below --
+// same convention as every other page. ----
+function normalizeNameForContractMatch(name) {
+  return (name || '').toString().toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+function normalizeBikeNameForTaxLookup(s) {
+  return (s || '').toString().toLowerCase().replace(/[()]/g, ' ').replace(/[^a-z0-9]+/g, ' ').trim().replace(/\s+/g, ' ');
+}
+function normalizeBikeNameCore(s) {
+  let t = (s || '').toString().toLowerCase();
+  t = t.replace(/\(\s*\d{2,4}\s*cc?\s*\)/gi, ' ');
+  t = t.replace(/\b\d{2,4}\s?cc\b/gi, ' ');
+  t = t.replace(/[()]/g, ' ');
+  t = t.replace(/\b(yamaha|honda|gpx)\b/gi, ' ');
+  t = t.replace(/[^a-z0-9]+/g, ' ').trim().replace(/\s+/g, ' ');
+  return t;
+}
+function bikeNamesMatchForTaxLookup(a, b) {
+  const na = normalizeBikeNameForTaxLookup(a);
+  const nb = normalizeBikeNameForTaxLookup(b);
+  if (na && nb) {
+    if (na === nb) return true;
+    const paddedA = ' ' + na + ' ', paddedB = ' ' + nb + ' ';
+    if (paddedA.indexOf(paddedB) !== -1 || paddedB.indexOf(paddedA) !== -1) return true;
+  }
+  const ca = normalizeBikeNameCore(a), cb = normalizeBikeNameCore(b);
+  if (!ca || !cb) return false;
+  if (ca === cb) return true;
+  const paddedCa = ' ' + ca + ' ', paddedCb = ' ' + cb + ' ';
+  return paddedCa.indexOf(paddedCb) !== -1 || paddedCb.indexOf(paddedCa) !== -1;
+}
+function buildContractChatNameLookup(contractRows2D) {
+  const rows = [];
+  for (let i = HEADER_ROWS_B; i < contractRows2D.length; i++) {
+    const r = contractRows2D[i];
+    rows.push({
+      rowNumber: i + 1,
+      name: normalizeNameForContractMatch(r[3]),
+      bikeModel: (r[6] || '').toString().trim(),
+      number: (r[2] || '').toString().trim(),
+      chatName: (r[25] || '').toString().trim(),
+      status: (r[16] || '').toString().trim().toLowerCase(),
+      totalPrice: r[11],
+      paidBy: (r[12] || '').toString().trim(),
+      deposit: (r[13] || '').toString().trim(),
+      depositAmount: r[14],
+      depositCurrency: (r[26] || '').toString().trim(),
+      deliveryLink: (r[23] || '').toString().trim(),
+      contact: (r[1] || '').toString().trim(),
+      messengerId: (r[35] || '').toString().trim()
+    });
+  }
+  return rows;
+}
+function buildContractLookupIndex(contractLookupRows) {
+  const index = {};
+  for (const row of contractLookupRows) {
+    if (!row.name) continue;
+    if (!index[row.name]) index[row.name] = [];
+    index[row.name].push(row);
+  }
+  return index;
+}
+function lookupContractInfoForCustomerRowIndexed(contractIndex, name, bikeModel) {
+  const result = { chatName: '', number: '', contactMethod: '', messengerId: '', financials: null, rowNumber: null };
+  const nameTarget = normalizeNameForContractMatch(name);
+  if (!nameTarget) return result;
+  const bikeTarget = (bikeModel || '').toString().trim();
+  const candidateRows = contractIndex[nameTarget];
+  if (!candidateRows || !candidateRows.length) return result;
+
+  let needChatName = true, needNumber = true, needContactMethod = true, needMessengerId = true, needRented = true;
+  for (let i = candidateRows.length - 1; i >= 0 && (needChatName || needNumber || needContactMethod || needMessengerId || needRented); i--) {
+    const row = candidateRows[i];
+    if (bikeTarget && row.bikeModel && !bikeNamesMatchForTaxLookup(row.bikeModel, bikeTarget)) continue;
+    if (needChatName && row.chatName) { result.chatName = row.chatName; needChatName = false; }
+    if (needNumber && row.number) { result.number = row.number; needNumber = false; }
+    if (needContactMethod && row.contact) { result.contactMethod = row.contact; needContactMethod = false; }
+    if (needMessengerId && row.messengerId) { result.messengerId = row.messengerId; needMessengerId = false; }
+    if (needRented && row.status === 'rented') {
+      result.financials = { totalPrice: row.totalPrice, paidBy: row.paidBy, deposit: row.deposit, depositAmount: row.depositAmount, depositCurrency: row.depositCurrency, deliveryLink: row.deliveryLink };
+      result.rowNumber = row.rowNumber;
+      needRented = false;
+    }
+  }
+  return result;
+}
+
+// ---- Ports getBikeRentalStatus() -- copied verbatim from contract.html/
+// available-bikes.html. ----
+async function getBikeRentalStatusFromJson() {
+  const [partsRows2D, customerRows2D, contractRows2D] = await Promise.all([
+    fetchSheetJson('Parts_and_Oil_change'),
+    fetchSheetJson('customer'),
+    fetchSheetJson('Contract')
+  ]);
+
+  const bikeNamesForRental = [];
+  for (let i = 1; i < (partsRows2D || []).length; i++) {
+    const name = (partsRows2D[i][0] || '').toString().trim();
+    if (!name) break;
+    bikeNamesForRental.push(name);
+  }
+  bikeNamesForRental.sort((a, b) => a.localeCompare(b));
+
+  const customerKeys = ['timestamp', 'contact', 'name', 'nationality', 'passport', 'bikeModel',
+    'status', 'rentingDateFrom', 'returnDate', 'returnTime', 'deliverToHotel',
+    'totalPrice', 'paidBy', 'situation'];
+  const customerRows = [];
+  for (let ri = HEADER_ROWS_B; ri < (customerRows2D || []).length; ri++) {
+    const row = customerRows2D[ri];
+    const custName = (row[2] || '').toString().trim();
+    if (!custName) continue;
+    const obj = {};
+    customerKeys.forEach((k, ki) => { obj[k] = customerCellToString(k, row[ki]); });
+    obj.rowNumber = ri + 1;
+    customerRows.push(obj);
+  }
+
+  const contractLookupRows = buildContractChatNameLookup(contractRows2D || []);
+  const contractLookupIndex = buildContractLookupIndex(contractLookupRows);
+
+  const RENTAL_DISTINGUISHING_SUFFIXES = {
+    'one': 1, 'two': 1, 'three': 1, 'four': 1, 'five': 1, 'six': 1, 'seven': 1, 'eight': 1, 'nine': 1, 'ten': 1,
+    'i': 1, 'ii': 1, 'iii': 1, 'iv': 1, 'v': 1, 'vi': 1, 'vii': 1, 'viii': 1, 'ix': 1, 'x': 1,
+    '1': 1, '2': 1, '3': 1, '4': 1, '5': 1, '6': 1, '7': 1, '8': 1, '9': 1, '10': 1
+  };
+  function normalizeBikeNameForRentalMatch_(s) {
+    return (s || '').toString().toLowerCase().replace(/\([^)]*\)/g, ' ').replace(/[^a-z0-9]+/g, ' ').trim().replace(/\s+/g, ' ');
+  }
+  function bikeNamesMatchForRental_(a, b) {
+    const na = normalizeBikeNameForRentalMatch_(a);
+    const nb = normalizeBikeNameForRentalMatch_(b);
+    if (!na || !nb) return false;
+    if (na === nb) return true;
+    const ta = na.split(' '), tb = nb.split(' ');
+    const shorter = ta.length <= tb.length ? ta : tb;
+    const longer = ta.length <= tb.length ? tb : ta;
+    let isPrefix = true;
+    for (let i = 0; i < shorter.length; i++) { if (shorter[i] !== longer[i]) { isPrefix = false; break; } }
+    if (isPrefix) {
+      const extra = longer.slice(shorter.length);
+      for (let j = 0; j < extra.length; j++) { if (RENTAL_DISTINGUISHING_SUFFIXES[extra[j]]) return false; }
+      return true;
+    }
+    return na.indexOf(nb) !== -1 || nb.indexOf(na) !== -1;
+  }
+  function isRentedSituation_(situation) {
+    const s = (situation || '').toString().trim().toLowerCase();
+    return s !== 'returned';
+  }
+
+  const rented = {};
+  bikeNamesForRental.forEach(name => {
+    const candidates = [];
+    for (let ci = 0; ci < customerRows.length; ci++) {
+      const r = customerRows[ci];
+      if (bikeNamesMatchForRental_(r.bikeModel, name) && isRentedSituation_(r.situation)) {
+        candidates.push({ r, idx: ci });
+      }
+    }
+    if (!candidates.length) return;
+    candidates.sort((a, b) => b.idx - a.idx);
+    const winner = candidates[0].r;
+    const winnerContractInfo = lookupContractInfoForCustomerRowIndexed(contractLookupIndex, winner.name, winner.bikeModel);
+    rented[name] = {
+      name: winner.name,
+      contact: winner.contact,
+      number: winnerContractInfo.number,
+      contactMethod: winnerContractInfo.contactMethod,
+      messengerId: winnerContractInfo.messengerId,
+      bikeModel: winner.bikeModel,
+      rentingDateFrom: winner.rentingDateFrom,
+      returnDate: winner.returnDate,
+      rowNumber: winner.rowNumber
+    };
+  });
+
+  return { success: true, bikeNames: bikeNamesForRental, rented };
+}
+// ================== end JSON-backed data layer (reads only) ==================
+// This page has no write actions at all.
+
 let partsData = null;
 let rentedBikes = {}; // bike name -> { name, contact, number, ... } for currently-rented bikes
 let activeTab = 'km';
@@ -229,13 +605,13 @@ function setRentalStatus(msg) {
 function loadParts() {
   setLoadStatus('Loading bikes…');
   return Promise.all([
-    fetch(scriptUrl + '?action=parts').then(res => res.json()),
+    getPartsDataFromJson(),
     // "Is this bike currently rented" now comes from ONE shared server call
     // instead of this page fetching the raw customer sheet and working it
     // out itself -- see getBikeRentalStatus() in Code.gs. Every page that
     // needs this (here, Contract, Available Bikes) calls the exact same
     // function now, so they can't disagree with each other again.
-    fetch(scriptUrl + '?action=bikeRentalStatus').then(res => res.json()).catch(err => ({ success: false, error: err.message }))
+    getBikeRentalStatusFromJson().catch(err => ({ success: false, error: err.message }))
   ])
     .then(([partsResult, rentalResult]) => {
       if (!partsResult.success) throw new Error(partsResult.error || 'Could not load data');

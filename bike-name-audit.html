@@ -117,6 +117,341 @@
 <script>
 const scriptUrl = ''; // DISCONNECTED: this Vercel copy is intentionally not wired to the live backend (dev/testing only, see project CLAUDE.md)
 
+// ================== JSON-backed data layer (ported 13/08/2026) ==================
+// Reads ported: action=parts (getPartsData, full shape incl. categoryRows),
+// and the bare doGet default branch (getCustomerRowsFromJson -- copied
+// verbatim from customers.html/bikes.html, same per-file convention). This
+// page is entirely read-only (a diagnostic report), so there's nothing else
+// to port.
+//
+// KNOWN GAP (same as bikes.html/contract.html/parts.html): "sold" bike
+// detection via strikethrough font formatting has no JSON equivalent --
+// __struck is hardcoded false below, so hasStrikeInfo will be false and
+// the "Backend not updated yet" banner will always show. That's the
+// CORRECT/honest behavior here, not a bug to hide -- this audit page's
+// whole purpose is flagging exactly this kind of gap.
+const auditJsonCache = {};
+function fetchSheetJson(sheetName, year) {
+  const cacheKey = year ? `${year}/${sheetName}` : sheetName;
+  const url = year
+    ? `/api/data/${encodeURIComponent(sheetName)}?year=${encodeURIComponent(year)}`
+    : `/api/data/${encodeURIComponent(sheetName)}`;
+  if (!auditJsonCache[cacheKey]) {
+    auditJsonCache[cacheKey] = fetch(url).then(r => {
+      if (r.status === 401) throw new Error('Signed out -- please refresh to sign in again.');
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    }).then(res => {
+      if (!res.success) throw new Error(res.error || 'Could not load data.');
+      return res.rows || [];
+    }).catch(err => {
+      // A cached PROMISE stays truthy whether it resolved or rejected --
+      // clear the entry on failure so the next call actually retries
+      // instead of replaying the same stale failure forever.
+      delete auditJsonCache[cacheKey];
+      throw err;
+    });
+  }
+  return auditJsonCache[cacheKey];
+}
+function decodeSheetDate(val) {
+  if (val === null || val === undefined) return null;
+  if (typeof val !== 'string') return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(val)) {
+    const m = val.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  }
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(val)) {
+    const m = val.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/);
+    return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6]));
+  }
+  return null;
+}
+function pad2Json(n) { return String(n).padStart(2, '0'); }
+function formatDmyJson(date) {
+  if (!date) return '';
+  return pad2Json(date.getDate()) + '/' + pad2Json(date.getMonth() + 1) + '/' + date.getFullYear();
+}
+function columnLetterJson(col) {
+  let letter = '';
+  while (col > 0) {
+    const rem = (col - 1) % 26;
+    letter = String.fromCharCode(65 + rem) + letter;
+    col = Math.floor((col - 1) / 26);
+  }
+  return letter;
+}
+function partsCellToString(val) {
+  if (val === null || val === undefined) return '';
+  const d = decodeSheetDate(val);
+  if (d) return formatDmyJson(d);
+  return String(val);
+}
+function customerCellToString(key, val) {
+  if (val === null || val === undefined) return '';
+  if (typeof val === 'string' && key === 'returnTime' && /^\d{2}:\d{2}:\d{2}/.test(val)) {
+    return val.slice(0, 5);
+  }
+  const d = decodeSheetDate(val);
+  if (d) return formatDmyJson(d);
+  return String(val);
+}
+
+const HEADER_ROWS_B = 1;        // customer/Contract sheets: row 1 is the header
+const LEDGER_CONTACT_COL_B = 2; // column B -- the ledger-total note lives on the Contact cell
+
+// ---- Contract-sheet lookup matching, ported from Code.gs -- used ONLY to
+// enrich getCustomerRowsFromJson's rows with a phone number / contact
+// method / financials off the matching Contract row. Same convention as
+// every other page. ----
+function normalizeNameForContractMatch(name) {
+  return (name || '').toString().toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+function normalizeBikeNameForTaxLookup(s) {
+  return (s || '').toString().toLowerCase().replace(/[()]/g, ' ').replace(/[^a-z0-9]+/g, ' ').trim().replace(/\s+/g, ' ');
+}
+function normalizeBikeNameCore(s) {
+  let t = (s || '').toString().toLowerCase();
+  t = t.replace(/\(\s*\d{2,4}\s*cc?\s*\)/gi, ' ');
+  t = t.replace(/\b\d{2,4}\s?cc\b/gi, ' ');
+  t = t.replace(/[()]/g, ' ');
+  t = t.replace(/\b(yamaha|honda|gpx)\b/gi, ' ');
+  t = t.replace(/[^a-z0-9]+/g, ' ').trim().replace(/\s+/g, ' ');
+  return t;
+}
+function bikeNamesMatchForTaxLookup(a, b) {
+  const na = normalizeBikeNameForTaxLookup(a);
+  const nb = normalizeBikeNameForTaxLookup(b);
+  if (na && nb) {
+    if (na === nb) return true;
+    const paddedA = ' ' + na + ' ', paddedB = ' ' + nb + ' ';
+    if (paddedA.indexOf(paddedB) !== -1 || paddedB.indexOf(paddedA) !== -1) return true;
+  }
+  const ca = normalizeBikeNameCore(a), cb = normalizeBikeNameCore(b);
+  if (!ca || !cb) return false;
+  if (ca === cb) return true;
+  const paddedCa = ' ' + ca + ' ', paddedCb = ' ' + cb + ' ';
+  return paddedCa.indexOf(paddedCb) !== -1 || paddedCb.indexOf(paddedCa) !== -1;
+}
+function buildContractChatNameLookup(contractRows2D) {
+  const rows = [];
+  for (let i = HEADER_ROWS_B; i < contractRows2D.length; i++) {
+    const r = contractRows2D[i];
+    rows.push({
+      rowNumber: i + 1,
+      name: normalizeNameForContractMatch(r[3]),
+      bikeModel: (r[6] || '').toString().trim(),
+      number: (r[2] || '').toString().trim(),
+      chatName: (r[25] || '').toString().trim(),
+      status: (r[16] || '').toString().trim().toLowerCase(),
+      totalPrice: r[11],
+      paidBy: (r[12] || '').toString().trim(),
+      deposit: (r[13] || '').toString().trim(),
+      depositAmount: r[14],
+      depositCurrency: (r[26] || '').toString().trim(),
+      deliveryLink: (r[23] || '').toString().trim(),
+      contact: (r[1] || '').toString().trim(),
+      messengerId: (r[35] || '').toString().trim()
+    });
+  }
+  return rows;
+}
+function buildContractLookupIndex(contractLookupRows) {
+  const index = {};
+  for (const row of contractLookupRows) {
+    if (!row.name) continue;
+    if (!index[row.name]) index[row.name] = [];
+    index[row.name].push(row);
+  }
+  return index;
+}
+function lookupContractInfoForCustomerRowIndexed(contractIndex, name, bikeModel) {
+  const result = { chatName: '', number: '', contactMethod: '', messengerId: '', financials: null, rowNumber: null };
+  const nameTarget = normalizeNameForContractMatch(name);
+  if (!nameTarget) return result;
+  const bikeTarget = (bikeModel || '').toString().trim();
+  const candidateRows = contractIndex[nameTarget];
+  if (!candidateRows || !candidateRows.length) return result;
+
+  let needChatName = true, needNumber = true, needContactMethod = true, needMessengerId = true, needRented = true;
+  for (let i = candidateRows.length - 1; i >= 0 && (needChatName || needNumber || needContactMethod || needMessengerId || needRented); i--) {
+    const row = candidateRows[i];
+    if (bikeTarget && row.bikeModel && !bikeNamesMatchForTaxLookup(row.bikeModel, bikeTarget)) continue;
+    if (needChatName && row.chatName) { result.chatName = row.chatName; needChatName = false; }
+    if (needNumber && row.number) { result.number = row.number; needNumber = false; }
+    if (needContactMethod && row.contact) { result.contactMethod = row.contact; needContactMethod = false; }
+    if (needMessengerId && row.messengerId) { result.messengerId = row.messengerId; needMessengerId = false; }
+    if (needRented && row.status === 'rented') {
+      result.financials = { totalPrice: row.totalPrice, paidBy: row.paidBy, deposit: row.deposit, depositAmount: row.depositAmount, depositCurrency: row.depositCurrency, deliveryLink: row.deliveryLink };
+      result.rowNumber = row.rowNumber;
+      needRented = false;
+    }
+  }
+  return result;
+}
+function parseLedgerTotal(noteText) {
+  const m = (noteText || '').toString().match(/Total:\s*([\d.]+)\s*days?,\s*฿\s*([\d,]+(?:\.\d+)?)\s*$/i);
+  if (!m) return { days: 0, amount: 0 };
+  return { days: Number(m[1]) || 0, amount: Number(m[2].replace(/,/g, '')) || 0 };
+}
+
+// ---- Ports the doGet default branch (customer-search) -- copied verbatim
+// from customers.html/bikes.html. Returns the exact same { success, rows:
+// [{...}] } shape the old bare fetch(scriptUrl) call got back. ----
+async function getCustomerRowsFromJson() {
+  const [customerRows2D, contractRows2D, customerNotes] = await Promise.all([
+    fetchSheetJson('customer'),
+    fetchSheetJson('Contract'),
+    fetchSheetJson('customer_notes').catch(() => [])
+  ]);
+
+  const keys = ['timestamp', 'contact', 'name', 'nationality', 'passport', 'bikeModel',
+    'status', 'rentingDateFrom', 'returnDate', 'returnTime', 'deliverToHotel',
+    'totalPrice', 'paidBy', 'situation'];
+
+  const noteByRow = new Map();
+  (customerNotes || []).forEach(([r, c, t]) => { if (c === LEDGER_CONTACT_COL_B) noteByRow.set(r, t); });
+
+  const contractLookupRows = buildContractChatNameLookup(contractRows2D || []);
+  const contractLookupIndex = buildContractLookupIndex(contractLookupRows);
+
+  const dataRows = (customerRows2D || []).slice(HEADER_ROWS_B);
+  const rows = dataRows.map((row, i) => {
+    const obj = {};
+    keys.forEach((k, ki) => { obj[k] = customerCellToString(k, row[ki]); });
+    obj.confirmedReturnDate = customerCellToString('confirmedReturnDate', row[18]);
+
+    const contractInfo = lookupContractInfoForCustomerRowIndexed(contractLookupIndex, obj.name, obj.bikeModel);
+    obj.chatName = contractInfo.chatName;
+    obj.number = contractInfo.number;
+    obj.contactMethod = contractInfo.contactMethod;
+    obj.messengerId = contractInfo.messengerId;
+    const cf = contractInfo.financials;
+    obj.contractTotalPrice = cf ? customerCellToString('contractTotalPrice', cf.totalPrice) : '';
+    obj.contractPaidBy = cf ? (cf.paidBy || '') : '';
+    obj.deposit = cf ? (cf.deposit || '') : '';
+    obj.depositAmount = cf ? customerCellToString('depositAmount', cf.depositAmount) : '';
+    obj.depositCurrency = cf ? (cf.depositCurrency || '') : '';
+    obj.deliveryLink = cf ? (cf.deliveryLink || '') : '';
+    obj.pickupLink = (row[19] || '').toString().trim();
+    const sheetRow = HEADER_ROWS_B + i + 1;
+    obj.rowNumber = sheetRow;
+    const ledgerTotalForRow = parseLedgerTotal(noteByRow.get(sheetRow) || '');
+    obj.ledgerTotalDays = ledgerTotalForRow.days > 0 ? String(ledgerTotalForRow.days) : '';
+    return obj;
+  }).filter(r => r.name !== '');
+
+  return { success: true, rows };
+}
+
+// ---- Ports getBikeTaxCategories() -- same port as every other page. ----
+function getBikeTaxCategoriesFromJson(rows2D) {
+  try {
+    if (!rows2D || !rows2D.length) return [];
+    const headerRow = rows2D[0].map(h => (h || '').toString().trim().toLowerCase());
+    let bikeCol = headerRow.indexOf('bike model');
+    if (bikeCol === -1) bikeCol = headerRow.indexOf('bike');
+    const catCol = headerRow.indexOf('category');
+    if (bikeCol === -1 || catCol === -1) return [];
+    const makeCol = headerRow.indexOf('make');
+    const modelYearCol = headerRow.indexOf('model year');
+    const searchFrom = makeCol > -1 ? makeCol : 0;
+    const modelCol = headerRow.indexOf('model', searchFrom);
+    const ccCol = headerRow.indexOf('cc', searchFrom);
+    const keyCol = headerRow.indexOf('key', searchFrom);
+    let depositCol = headerRow.indexOf('deposit', searchFrom);
+    if (depositCol === -1) depositCol = headerRow.indexOf('deposit');
+    let boxCol = headerRow.indexOf('box', searchFrom);
+    if (boxCol === -1) boxCol = headerRow.indexOf('box');
+    let absCol = headerRow.indexOf('abs', searchFrom);
+    if (absCol === -1) absCol = headerRow.indexOf('abs');
+    let tractionCol = headerRow.indexOf('traction control', searchFrom);
+    if (tractionCol === -1) tractionCol = headerRow.indexOf('traction control');
+    let plateCol = -1;
+    for (let pc = 0; pc < headerRow.length; pc++) {
+      if (headerRow[pc].indexOf('plate') !== -1) { plateCol = pc; break; }
+    }
+    const rows = [];
+    for (let i = 1; i < rows2D.length; i++) {
+      const bike = (rows2D[i][bikeCol] || '').toString().trim();
+      if (!bike) continue;
+      const cat = (rows2D[i][catCol] || '').toString().trim();
+      const modelYearRaw = modelYearCol > -1 ? rows2D[i][modelYearCol] : '';
+      rows.push({
+        bike, category: cat,
+        modelYear: (modelYearRaw === '' || modelYearRaw === null || isNaN(Number(modelYearRaw))) ? '' : Number(modelYearRaw),
+        make: makeCol > -1 ? (rows2D[i][makeCol] || '').toString().trim() : '',
+        model: modelCol > -1 ? (rows2D[i][modelCol] || '').toString().trim() : '',
+        cc: ccCol > -1 ? (rows2D[i][ccCol] || '').toString().trim() : '',
+        key: keyCol > -1 ? (rows2D[i][keyCol] || '').toString().trim() : '',
+        deposit: depositCol > -1 ? (rows2D[i][depositCol] || '').toString().trim() : '',
+        box: boxCol > -1 ? (rows2D[i][boxCol] || '').toString().trim() : '',
+        abs: absCol > -1 ? (rows2D[i][absCol] || '').toString().trim() : '',
+        tractionControl: tractionCol > -1 ? (rows2D[i][tractionCol] || '').toString().trim() : '',
+        plate: plateCol > -1 ? (rows2D[i][plateCol] || '').toString().trim() : ''
+      });
+    }
+    return rows;
+  } catch (err) {
+    return [];
+  }
+}
+function readRatesPerDayTableFromJson(rows2D) {
+  try {
+    if (!rows2D || rows2D.length < 39) {
+      throw new Error('The "rates per day" sheet does not have the expected 30-day block at rows 10-39.');
+    }
+    const block = rows2D.slice(9, 39);
+    const rates = {};
+    for (let i = 0; i < block.length; i++) {
+      const row = block[i];
+      const day = Number(row[0]);
+      if (!day || isNaN(day)) continue;
+      const perCategory = [];
+      for (let c = 1; c <= 6; c++) {
+        const raw = row[c];
+        const v = (raw === '' || raw === null || raw === undefined) ? NaN : Number(raw);
+        perCategory.push(isNaN(v) ? null : v);
+      }
+      rates[day] = perCategory;
+    }
+    let completeDays = 0;
+    for (let d = 1; d <= 30; d++) {
+      if (rates[d] && rates[d].every(v => v !== null)) completeDays++;
+    }
+    if (completeDays < 25) {
+      throw new Error('The "rates per day" sheet doesn\'t look like the expected 30-day rate table (only ' + completeDays + ' of 30 days read cleanly) -- check it hasn\'t been moved, renamed, or restructured.');
+    }
+    return { rates, warning: null };
+  } catch (err) {
+    return { rates: null, warning: err.message };
+  }
+}
+// ---- action=parts -> getPartsDataFromJson (full shape) -- same port as
+// bikes.html/parts.html/available-bikes.html/oilchange.html/reply-assistant.html. ----
+async function getPartsDataFromJson() {
+  const [partsRows2D, bikeTaxRows2D, ratesRows2D] = await Promise.all([
+    fetchSheetJson('Parts_and_Oil_change'),
+    fetchSheetJson('Bike_Tax'),
+    fetchSheetJson('rates_per_day')
+  ]);
+  const rawHeaders = partsRows2D[0] || [];
+  const headers = rawHeaders.map((h, i) => {
+    const key = (h || '').toString().trim();
+    return key || ('Column ' + columnLetterJson(i + 1));
+  });
+  const rows = partsRows2D.slice(1).map(row => {
+    const obj = {};
+    headers.forEach((h, i2) => { obj[h] = partsCellToString(row[i2]); });
+    obj.__struck = false; // see KNOWN GAP note above
+    return obj;
+  }).filter(r => (r[headers[0]] || '').toString().trim() !== '');
+  const categoryRows = getBikeTaxCategoriesFromJson(bikeTaxRows2D);
+  const ratesResult = readRatesPerDayTableFromJson(ratesRows2D);
+  return { success: true, headers, rows, categoryRows, rates: ratesResult.rates, ratesWarning: ratesResult.warning };
+}
+// ================== end JSON-backed data layer ==================
+
 function setLoadStatus(msg) {
   const el = document.getElementById('loadStatus');
   if (!msg) { el.classList.remove('show'); el.textContent=''; return; }
@@ -174,8 +509,8 @@ async function runAudit() {
 
   try {
     const [partsRes, custRes] = await Promise.all([
-      fetch(scriptUrl + '?action=parts').then(r => r.json()),
-      fetch(scriptUrl).then(r => r.json()).catch(err => ({ success: false, error: err.message }))
+      getPartsDataFromJson(),
+      getCustomerRowsFromJson().catch(err => ({ success: false, error: err.message }))
     ]);
 
     if (!partsRes.success) throw new Error(partsRes.error || 'Could not load Parts/Bike Tax data');

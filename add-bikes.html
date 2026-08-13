@@ -454,6 +454,588 @@
 <script>
 const scriptUrl = ''; // DISCONNECTED: this Vercel copy is intentionally not wired to the live backend (dev/testing only, see project CLAUDE.md)
 
+// ================== JSON-backed data layer (ported 13/08/2026) ==================
+// Reads ported: action=bikeMakesModels (getBikeMakesModels), action=bikeDetails
+// (getBikeDetails), action=bikeIncomeSummary (getBikeIncomeSummary). Write
+// ported: action:'editBike' (editBike) -- a clean multi-sheet, in-place
+// cell-overwrite with no formula growth/row insertion, same complexity
+// class as parts.html's updateBike.
+//
+// NOT ported -- action:'addBike' (addNewBike), action:'sellBike' (sellBike),
+// action:'unsellBike' (unsellBike). All three are a genuinely HARDER
+// category of deferral than anything else ported so far in this project:
+// Code.gs relies on Google Sheets' own live formula engine to do part of
+// the work -- growing an existing "=x+y"-style formula string when a sale
+// amount is added, Range.copyTo({formulaOnly:true}) to copy a formula down
+// a row and have Sheets auto-adjust its relative references, and
+// sheet.insertRowAfter() automatically re-pointing every OTHER formula on
+// the sheet that referenced rows below the insertion point -- plus
+// addNewBike inserts one new row, in alphabetical order, across FOUR
+// sheets simultaneously (Parts and Oil change, Operation, the "bikes"
+// sheet's two mirrored income/Expenses lists, Bike Tax), with
+// strikethrough/tint "sold" formatting mirrored the same way. None of that
+// has a flat-JSON equivalent -- porting these three faithfully needs an
+// actual computation-model redesign (e.g. recomputing whatever those
+// formulas produce in JS, deciding how/where a "sold" flag lives without
+// cell notes or font formatting), not just relocating existing JS the way
+// every other write action in this project has been. Deferred as a
+// dedicated future pass; these three still hit the old (disconnected)
+// scriptUrl and fail cleanly, same as every other not-yet-ported write
+// action in this app.
+//
+// KNOWN GAP (shared by getBikeIncomeSummaryFromJson below): Code.gs flags
+// a sold bike via strikethrough font formatting, and records
+// soldAmount/soldDate/reason as a JSON note on the same cell -- neither
+// survives this app's flat JSON export, so both are hardcoded to their
+// "not sold" defaults below. This only matters in practice once
+// sellBike/unsellBike themselves are ported (see above) -- until then
+// nothing on this page can mark a bike sold anyway.
+const addBikesJsonCache = {};
+function fetchSheetJson(sheetName, year) {
+  const cacheKey = year ? `${year}/${sheetName}` : sheetName;
+  const url = year
+    ? `/api/data/${encodeURIComponent(sheetName)}?year=${encodeURIComponent(year)}`
+    : `/api/data/${encodeURIComponent(sheetName)}`;
+  if (!addBikesJsonCache[cacheKey]) {
+    addBikesJsonCache[cacheKey] = fetch(url).then(r => {
+      if (r.status === 401) throw new Error('Signed out -- please refresh to sign in again.');
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    }).then(res => {
+      if (!res.success) throw new Error(res.error || 'Could not load data.');
+      return res.rows || [];
+    }).catch(err => {
+      // A cached PROMISE stays truthy whether it resolved or rejected --
+      // clear the entry on failure so the next call actually retries
+      // instead of replaying the same stale failure forever.
+      delete addBikesJsonCache[cacheKey];
+      throw err;
+    });
+  }
+  return addBikesJsonCache[cacheKey];
+}
+async function fetchSheetWithMeta(sheetName, year) {
+  const url = year
+    ? `/api/data/${encodeURIComponent(sheetName)}?year=${encodeURIComponent(year)}`
+    : `/api/data/${encodeURIComponent(sheetName)}`;
+  const r = await fetch(url);
+  if (r.status === 401) throw new Error('Signed out -- please refresh to sign in again.');
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  const res = await r.json();
+  if (!res.success) throw new Error(res.error || 'Could not load data.');
+  return { rows: res.rows || [], modifiedTime: res.modifiedTime || null };
+}
+async function writeSheetJson(sheetName, rows, expectedModifiedTime, year) {
+  const url = year
+    ? `/api/data/${encodeURIComponent(sheetName)}?year=${encodeURIComponent(year)}`
+    : `/api/data/${encodeURIComponent(sheetName)}`;
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ rows, expectedModifiedTime })
+  });
+  const res = await r.json().catch(() => ({}));
+  if (r.status === 409) {
+    throw new Error(res.error || 'This record was changed by someone else in the meantime -- please reload and try again.');
+  }
+  if (!r.ok || !res.success) throw new Error(res.error || ('HTTP ' + r.status));
+  const cacheKey = year ? `${year}/${sheetName}` : sheetName;
+  delete addBikesJsonCache[cacheKey];
+  return res;
+}
+
+function pad2Json(n) { return String(n).padStart(2, '0'); }
+function decodeSheetDate(val) {
+  if (val === null || val === undefined) return null;
+  if (typeof val !== 'string') return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(val)) {
+    const m = val.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  }
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(val)) {
+    const m = val.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/);
+    return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6]));
+  }
+  return null;
+}
+function isoYmd(date) {
+  if (!date) return '';
+  return date.getFullYear() + '-' + pad2Json(date.getMonth() + 1) + '-' + pad2Json(date.getDate());
+}
+function isoDateInputToSheetValue(isoDate) {
+  const m = String(isoDate || '').trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return null;
+  return `${m[1]}-${m[2]}-${m[3]}T00:00:00`;
+}
+
+// ---- Bike-name matching (strict identity check, NOT the fuzzy
+// whole-word-substring version bikes.html/contract.html/customers.html use
+// for typed-lookup convenience) -- mirrors Code.gs's bikeNamesAreIdentical,
+// used here for the Add Bike duplicate guard and for finding a bike's
+// existing row on each of the four sheets editBike touches. ----
+function normalizeBikeNameForTaxLookup(s) {
+  return (s || '').toString().toLowerCase().replace(/[()]/g, ' ').replace(/[^a-z0-9]+/g, ' ').trim().replace(/\s+/g, ' ');
+}
+function normalizeBikeNameCore(s) {
+  let t = (s || '').toString().toLowerCase();
+  t = t.replace(/\(\s*\d{2,4}\s*cc?\s*\)/gi, ' ');
+  t = t.replace(/\b\d{2,4}\s?cc\b/gi, ' ');
+  t = t.replace(/[()]/g, ' ');
+  t = t.replace(/\b(yamaha|honda|gpx)\b/gi, ' ');
+  t = t.replace(/[^a-z0-9]+/g, ' ').trim().replace(/\s+/g, ' ');
+  return t;
+}
+function bikeNamesAreIdenticalJson(a, b) {
+  const na = normalizeBikeNameForTaxLookup(a);
+  const nb = normalizeBikeNameForTaxLookup(b);
+  if (na && nb && na === nb) return true;
+  const ca = normalizeBikeNameCore(a), cb = normalizeBikeNameCore(b);
+  return !!(ca && cb && ca === cb);
+}
+
+// ---- Generic bike-list helpers, mirroring Code.gs's findLastBikeRow /
+// findBikeRowByName / findRowByExactLabel -- adapted to operate on a flat
+// 2D rows array with 0-based row/column indices (row 0 = header) rather
+// than a live 1-based Sheet range. startRowIdx defaults to 1 (the first
+// data row, right under the header). ----
+function findLastBikeRowIdxJson(rows2D, colIdx, stopKeywords, startRowIdx) {
+  startRowIdx = startRowIdx === undefined ? 1 : startRowIdx;
+  const stopSet = (stopKeywords || []).map(k => k.toString().trim().toLowerCase());
+  let lastIdx = startRowIdx - 1;
+  for (let i = startRowIdx; i < rows2D.length; i++) {
+    const cell = (rows2D[i][colIdx] || '').toString().trim();
+    if (!cell) break;
+    if (stopSet.indexOf(cell.toLowerCase()) !== -1) break;
+    lastIdx = i;
+  }
+  return lastIdx;
+}
+function findBikeRowIdxByNameJson(rows2D, colIdx, bikeName, stopKeywords, startRowIdx) {
+  startRowIdx = startRowIdx === undefined ? 1 : startRowIdx;
+  const lastIdx = findLastBikeRowIdxJson(rows2D, colIdx, stopKeywords, startRowIdx);
+  if (lastIdx < startRowIdx) return -1;
+  for (let i = startRowIdx; i <= lastIdx; i++) {
+    const cell = (rows2D[i][colIdx] || '').toString().trim();
+    if (cell && bikeNamesAreIdenticalJson(cell, bikeName)) return i;
+  }
+  return -1;
+}
+function findRowIdxByExactLabelJson(rows2D, colIdx, label, fromIdx, toIdx) {
+  const target = label.toString().trim().toLowerCase();
+  for (let i = fromIdx; i <= toIdx && i < rows2D.length; i++) {
+    const cell = (rows2D[i][colIdx] || '').toString().trim().toLowerCase();
+    if (cell === target) return i;
+  }
+  return -1;
+}
+function findHeaderColIdxJson(headerRow, exactLabel) {
+  const target = exactLabel.toString().trim().toLowerCase();
+  for (let c = 0; c < headerRow.length; c++) {
+    const h = (headerRow[c] || '').toString().trim().toLowerCase();
+    if (h === target) return c;
+  }
+  return -1;
+}
+function findOperationBikeColIdxJson(headerRow) {
+  return findHeaderColIdxJson(headerRow, 'bike');
+}
+function findBikesSheetMonthColIdxJson(headerRow, monthName) {
+  const targetShort = monthName.toString().trim().toLowerCase().slice(0, 3);
+  for (let c = 0; c < headerRow.length; c++) {
+    const h = (headerRow[c] || '').toString().trim().toLowerCase();
+    if (h && h.slice(0, 3) === targetShort) return c;
+  }
+  return -1;
+}
+function looksLikeBikesSheetLabelJson(raw) {
+  const t = (raw || '').toString().trim().toLowerCase();
+  if (!t) return true;
+  if (t.indexOf('total') === 0) return true;
+  if (t === 'expenses' || t === 'expense' || t.indexOf('expense %') === 0) return true;
+  return false;
+}
+
+// ---- Ports getBikeTaxCategories() -- same port as bikes.html/contract.html
+// /customers.html/parts.html (duplicated per this project's per-file
+// convention), needed here as the source getBikeMakesModelsFromJson
+// derives makes/models from. ----
+function getBikeTaxCategoriesFromJson(rows2D) {
+  try {
+    if (!rows2D || !rows2D.length) return [];
+    const headerRow = rows2D[0].map(h => (h || '').toString().trim().toLowerCase());
+    let bikeCol = headerRow.indexOf('bike model');
+    if (bikeCol === -1) bikeCol = headerRow.indexOf('bike');
+    const catCol = headerRow.indexOf('category');
+    if (bikeCol === -1 || catCol === -1) return [];
+    const makeCol = headerRow.indexOf('make');
+    const modelYearCol = headerRow.indexOf('model year');
+    const searchFrom = makeCol > -1 ? makeCol : 0;
+    const modelCol = headerRow.indexOf('model', searchFrom);
+    const ccCol = headerRow.indexOf('cc', searchFrom);
+    const keyCol = headerRow.indexOf('key', searchFrom);
+    let depositCol = headerRow.indexOf('deposit', searchFrom);
+    if (depositCol === -1) depositCol = headerRow.indexOf('deposit');
+    let boxCol = headerRow.indexOf('box', searchFrom);
+    if (boxCol === -1) boxCol = headerRow.indexOf('box');
+    let absCol = headerRow.indexOf('abs', searchFrom);
+    if (absCol === -1) absCol = headerRow.indexOf('abs');
+    let tractionCol = headerRow.indexOf('traction control', searchFrom);
+    if (tractionCol === -1) tractionCol = headerRow.indexOf('traction control');
+    let plateCol = -1;
+    for (let pc = 0; pc < headerRow.length; pc++) {
+      if (headerRow[pc].indexOf('plate') !== -1) { plateCol = pc; break; }
+    }
+    const rows = [];
+    for (let i = 1; i < rows2D.length; i++) {
+      const bike = (rows2D[i][bikeCol] || '').toString().trim();
+      if (!bike) continue;
+      const cat = (rows2D[i][catCol] || '').toString().trim();
+      const modelYearRaw = modelYearCol > -1 ? rows2D[i][modelYearCol] : '';
+      rows.push({
+        bike, category: cat,
+        modelYear: (modelYearRaw === '' || modelYearRaw === null || isNaN(Number(modelYearRaw))) ? '' : Number(modelYearRaw),
+        make: makeCol > -1 ? (rows2D[i][makeCol] || '').toString().trim() : '',
+        model: modelCol > -1 ? (rows2D[i][modelCol] || '').toString().trim() : '',
+        cc: ccCol > -1 ? (rows2D[i][ccCol] || '').toString().trim() : '',
+        key: keyCol > -1 ? (rows2D[i][keyCol] || '').toString().trim() : '',
+        deposit: depositCol > -1 ? (rows2D[i][depositCol] || '').toString().trim() : '',
+        box: boxCol > -1 ? (rows2D[i][boxCol] || '').toString().trim() : '',
+        abs: absCol > -1 ? (rows2D[i][absCol] || '').toString().trim() : '',
+        tractionControl: tractionCol > -1 ? (rows2D[i][tractionCol] || '').toString().trim() : '',
+        plate: plateCol > -1 ? (rows2D[i][plateCol] || '').toString().trim() : ''
+      });
+    }
+    return rows;
+  } catch (err) {
+    return [];
+  }
+}
+
+// ---- action:'bikeMakesModels' -> getBikeMakesModelsFromJson ----
+async function getBikeMakesModelsFromJson() {
+  try {
+    const bikeTaxRows2D = await fetchSheetJson('Bike_Tax');
+    const categoryRows = getBikeTaxCategoriesFromJson(bikeTaxRows2D);
+
+    const makes = [];
+    const seenMakes = {};
+    const models = [];
+    const modelIndexByKey = {};
+    const ccSetByKey = {};
+
+    categoryRows.forEach(row => {
+      const make = (row.make || '').toString().trim();
+      const model = (row.model || '').toString().trim();
+      const cc = (row.cc || '').toString().trim();
+
+      if (make) {
+        const makeKey = make.toLowerCase();
+        if (!seenMakes[makeKey]) { seenMakes[makeKey] = true; makes.push(make); }
+      }
+      if (make && model) {
+        const modelKey = make.toLowerCase() + '||' + model.toLowerCase();
+        if (modelIndexByKey[modelKey] === undefined) {
+          modelIndexByKey[modelKey] = models.length;
+          ccSetByKey[modelKey] = {};
+          models.push({ make, model, cc: '' });
+        }
+        if (cc) ccSetByKey[modelKey][cc] = true;
+      }
+    });
+
+    Object.keys(modelIndexByKey).forEach(modelKey => {
+      const ccValues = Object.keys(ccSetByKey[modelKey]);
+      if (ccValues.length === 1) models[modelIndexByKey[modelKey]].cc = ccValues[0];
+    });
+
+    makes.sort((a, b) => a.localeCompare(b));
+    models.sort((a, b) => a.make.localeCompare(b.make) || a.model.localeCompare(b.model));
+
+    return { success: true, makes, models };
+  } catch (err) {
+    return { success: false, error: err.message, makes: [], models: [] };
+  }
+}
+
+// ---- action:'bikeDetails' -> getBikeDetailsFromJson ----
+async function getBikeDetailsFromJson(bikeNameParam) {
+  try {
+    const bikeName = (bikeNameParam || '').toString().trim();
+    if (!bikeName) throw new Error('Bike name is required.');
+
+    const taxRows2D = await fetchSheetJson('Bike_Tax');
+    const taxRowIdx = findBikeRowIdxByNameJson(taxRows2D, 1, bikeName, [], 1); // column B = index 1 = Bike
+    if (taxRowIdx === -1) {
+      throw new Error('"' + bikeName + '" was not found on the "Bike Tax" tab.');
+    }
+    const taxVals = taxRows2D[taxRowIdx];
+    const modelYearRaw = taxVals[2];
+    const porRorBorDate = decodeSheetDate(taxVals[4]);
+    const depositRaw = taxVals[17];
+
+    const details = {
+      bike: (taxVals[1] || '').toString().trim(),
+      modelYear: (modelYearRaw === '' || modelYearRaw === null || modelYearRaw === undefined || isNaN(Number(modelYearRaw))) ? '' : Number(modelYearRaw),
+      plateNo: (taxVals[3] || '').toString(),
+      porRorBorDate: porRorBorDate ? isoYmd(porRorBorDate) : '',
+      insurance: (taxVals[9] || '').toString(),
+      category: (taxVals[10] || '').toString(),
+      make: (taxVals[11] || '').toString(),
+      model: (taxVals[12] || '').toString(),
+      cc: (taxVals[13] || '').toString(),
+      key: (taxVals[14] || '').toString(),
+      abs: (taxVals[15] || '').toString(),
+      tractionControl: (taxVals[16] || '').toString(),
+      deposit: (depositRaw === '' || depositRaw === null || depositRaw === undefined || isNaN(Number(depositRaw))) ? '' : Number(depositRaw),
+      box: (taxVals[18] || '').toString(),
+      cost: '',
+      currentKm: ''
+    };
+
+    // ---- cost, from the "bikes" sheet's income list -- best-effort. ----
+    try {
+      const bikesRows2D = await fetchSheetJson('bikes');
+      const bikesHeaderRow = bikesRows2D[0] || [];
+      const bikesStopWords = ['total', 'totals', 'extras', 'deposit'];
+      const costCol = findHeaderColIdxJson(bikesHeaderRow, 'cost');
+      const incomeRowIdx = findBikeRowIdxByNameJson(bikesRows2D, 0, bikeName, bikesStopWords, 1);
+      if (incomeRowIdx !== -1 && costCol !== -1) {
+        const costVal = bikesRows2D[incomeRowIdx][costCol];
+        details.cost = (costVal === '' || costVal === null || costVal === undefined || isNaN(Number(costVal))) ? '' : Number(costVal);
+      }
+    } catch (costErr) { /* leave details.cost as '' */ }
+
+    // ---- currentKm, from Operation -- same best-effort treatment. ----
+    try {
+      const opRows2D = await fetchSheetJson('Operation');
+      const opHeaderRow = opRows2D[0] || [];
+      const opBikeCol = findOperationBikeColIdxJson(opHeaderRow);
+      const kmCol = findHeaderColIdxJson(opHeaderRow, 'current km');
+      const opRowIdx = (opBikeCol !== -1) ? findBikeRowIdxByNameJson(opRows2D, opBikeCol, bikeName, [], 1) : -1;
+      if (opRowIdx !== -1 && kmCol !== -1) {
+        const kmVal = opRows2D[opRowIdx][kmCol];
+        details.currentKm = (kmVal === '' || kmVal === null || kmVal === undefined || isNaN(Number(kmVal))) ? '' : Number(kmVal);
+      }
+    } catch (kmErr) { /* leave details.currentKm as '' */ }
+
+    return { success: true, bike: details };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+}
+
+// ---- action:'bikeIncomeSummary' -> getBikeIncomeSummaryFromJson ----
+async function getBikeIncomeSummaryFromJson() {
+  try {
+    const rows2D = await fetchSheetJson('bikes');
+    const headerRow = rows2D[0] || [];
+
+    const MONTH_NAMES = ['January','February','March','April','May','June','July','August',
+      'September','October','November','December'];
+    const monthCols = MONTH_NAMES
+      .map(m => ({ label: m.slice(0, 3), col: findBikesSheetMonthColIdxJson(headerRow, m) }))
+      .filter(m => m.col !== -1);
+
+    const costCol = findHeaderColIdxJson(headerRow, 'cost');
+    const incomeCol = findHeaderColIdxJson(headerRow, 'total');
+    const expensesCol = findHeaderColIdxJson(headerRow, 'expenses');
+    const profitCol = findHeaderColIdxJson(headerRow, 'profit');
+    const netProfitCol = findHeaderColIdxJson(headerRow, 'net profit');
+
+    const missingHeaders = [];
+    if (costCol === -1) missingHeaders.push('cost');
+    if (incomeCol === -1) missingHeaders.push('total');
+    if (expensesCol === -1) missingHeaders.push('expenses');
+    if (profitCol === -1) missingHeaders.push('profit');
+    if (netProfitCol === -1) missingHeaders.push('net profit');
+    if (missingHeaders.length) {
+      throw new Error('Could not find a "' + missingHeaders.join('", "') + '" column header (row 1) on the "bikes" sheet.');
+    }
+
+    function num(v) { return (v === '' || v === null || v === undefined || isNaN(Number(v))) ? 0 : Number(v); }
+
+    const bikes = [];
+    for (let i = 1; i < rows2D.length; i++) {
+      const row = rows2D[i];
+      const name = (row[0] || '').toString().trim();
+      if (!name) continue;
+      if (looksLikeBikesSheetLabelJson(name)) break;
+
+      const nameLower = name.toLowerCase();
+      const isSentinel = (nameLower === 'extras' || nameLower === 'deposit');
+
+      bikes.push({
+        name,
+        isSentinel,
+        sold: false,        // KNOWN GAP -- see block comment above
+        soldAmount: null,   // KNOWN GAP
+        soldDate: null,     // KNOWN GAP
+        reason: null,        // KNOWN GAP
+        cost: num(row[costCol]),
+        months: monthCols.map(mc => ({ label: mc.label, amount: num(row[mc.col]) })),
+        income: num(row[incomeCol]),
+        expenses: num(row[expensesCol]),
+        profit: num(row[profitCol]),
+        netProfit: num(row[netProfitCol])
+      });
+    }
+
+    return { success: true, bikes };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+}
+
+// ---- action:'editBike' -> editBikeFromJson. data: { originalBike, bike,
+// modelYear, plateNo, porRorBorDate (yyyy-MM-dd), insurance, category,
+// make, model, cc, key, abs, tractionControl, deposit, box, cost,
+// currentKm }. Finds each of the four sheets' row by ORIGINAL name
+// (bikeNamesAreIdenticalJson) and overwrites in place -- never repositions
+// a row, so a rename here doesn't disturb the alphabetical ordering (or
+// the "bikes" sheet's Q/expenses formula, which is a fixed reference to a
+// row NUMBER and is therefore untouched by anything this function does).
+// Parts and Oil change's name write is the one this can't function
+// without (throws, writes nothing else, on failure); Operation/bikes/
+// Bike Tax are each wrapped independently and reported back as `warning`
+// rather than failing the whole request -- same shape as Code.gs. ----
+async function editBikeFromJson(data) {
+  const originalBikeName = (data.originalBike || '').toString().trim();
+  const bikeName = (data.bike || '').toString().trim();
+  if (!originalBikeName) throw new Error('Original bike name is missing -- cannot tell which bike to edit.');
+  if (!bikeName) throw new Error('Bike name is required.');
+
+  // ---- Parts and Oil change: the master name (critical write). ----
+  const { rows: partsRows, modifiedTime: partsModifiedTime } = await fetchSheetWithMeta('Parts_and_Oil_change');
+  const lastPartsBikeRowIdx = findLastBikeRowIdxJson(partsRows, 0, []);
+  if (lastPartsBikeRowIdx < 1) throw new Error('No bikes found on the "Parts and Oil change" tab.');
+
+  let partsRowIdx = -1;
+  for (let i = 1; i <= lastPartsBikeRowIdx; i++) {
+    const existingName = (partsRows[i][0] || '').toString().trim();
+    if (existingName && bikeNamesAreIdenticalJson(existingName, originalBikeName)) { partsRowIdx = i; break; }
+  }
+  if (partsRowIdx === -1) {
+    throw new Error('"' + originalBikeName + '" was not found on the "Parts and Oil change" tab -- bike was NOT edited.');
+  }
+
+  // Duplicate guard: only matters if the name is actually changing.
+  if (!bikeNamesAreIdenticalJson(originalBikeName, bikeName)) {
+    for (let j = 1; j <= lastPartsBikeRowIdx; j++) {
+      const otherName = (partsRows[j][0] || '').toString().trim();
+      if (otherName && j !== partsRowIdx && bikeNamesAreIdenticalJson(otherName, bikeName)) {
+        throw new Error('A bike named "' + otherName + '" already exists -- pick a different name.');
+      }
+    }
+  }
+
+  const newPartsRows = partsRows.map(r => r.slice());
+  newPartsRows[partsRowIdx][0] = bikeName;
+  await writeSheetJson('Parts_and_Oil_change', newPartsRows, partsModifiedTime);
+
+  const warnings = [];
+
+  // ---- Operation: name + current km. ----
+  try {
+    const { rows: opRows, modifiedTime: opModifiedTime } = await fetchSheetWithMeta('Operation');
+    const opHeaderRow = opRows[0] || [];
+    const opBikeCol = findOperationBikeColIdxJson(opHeaderRow);
+    if (opBikeCol === -1) throw new Error('Could not find a "Bike" column header.');
+    const opRowIdx = findBikeRowIdxByNameJson(opRows, opBikeCol, originalBikeName, [], 1);
+    if (opRowIdx === -1) throw new Error('"' + originalBikeName + '" was not found on this tab.');
+
+    const newOpRows = opRows.map(r => r.slice());
+    newOpRows[opRowIdx][opBikeCol] = bikeName;
+
+    const kmCol = findHeaderColIdxJson(opHeaderRow, 'current km');
+    const hasCurrentKm = !(data.currentKm === '' || data.currentKm === undefined || data.currentKm === null || isNaN(Number(data.currentKm)));
+    if (kmCol !== -1 && hasCurrentKm) {
+      newOpRows[opRowIdx][kmCol] = Number(data.currentKm);
+    }
+    await writeSheetJson('Operation', newOpRows, opModifiedTime);
+  } catch (opErr) {
+    warnings.push('"Operation": ' + opErr.message);
+  }
+
+  // ---- bikes: cost + name (income list), name only (mirrored Expenses
+  // list) -- never touches the total/expenses/profit formula columns,
+  // since the row itself never moves. ----
+  try {
+    const { rows: bikesRows, modifiedTime: bikesModifiedTime } = await fetchSheetWithMeta('bikes');
+    const bikesHeaderRow = bikesRows[0] || [];
+    const bikesStopWords = ['total', 'totals', 'extras', 'deposit'];
+    const costCol = findHeaderColIdxJson(bikesHeaderRow, 'cost');
+    const incomeRowIdx = findBikeRowIdxByNameJson(bikesRows, 0, originalBikeName, bikesStopWords, 1);
+    if (incomeRowIdx === -1) throw new Error('"' + originalBikeName + '" was not found in the income list.');
+
+    const newBikesRows = bikesRows.map(r => r.slice());
+    newBikesRows[incomeRowIdx][0] = bikeName;
+    const hasCost = !(data.cost === '' || data.cost === undefined || data.cost === null || isNaN(Number(data.cost)));
+    if (costCol !== -1 && hasCost) {
+      newBikesRows[incomeRowIdx][costCol] = Number(data.cost);
+    }
+
+    let expensesWarning = null;
+    const expensesHeaderRowIdx = findRowIdxByExactLabelJson(newBikesRows, 0, 'expenses', 0, newBikesRows.length - 1);
+    if (expensesHeaderRowIdx !== -1) {
+      const expensesRowIdx = findBikeRowIdxByNameJson(newBikesRows, 0, originalBikeName, bikesStopWords, expensesHeaderRowIdx + 1);
+      if (expensesRowIdx !== -1) {
+        newBikesRows[expensesRowIdx][0] = bikeName;
+      } else {
+        expensesWarning = '"bikes": "' + originalBikeName + '" was not found in the Expenses list -- its name there was NOT updated.';
+      }
+    }
+
+    await writeSheetJson('bikes', newBikesRows, bikesModifiedTime);
+    if (expensesWarning) warnings.push(expensesWarning);
+  } catch (bikesErr) {
+    warnings.push('"bikes": ' + bikesErr.message);
+  }
+
+  // ---- Bike Tax: full registration/insurance/spec row, same fixed
+  // columns addNewBike would have written (B..S). Column A (index 0, a
+  // running number) and F/G/H/I (Tax placeholder, Status formula,
+  // day-count formula, second Tax formula) are deliberately left
+  // untouched, same as Code.gs. ----
+  try {
+    const { rows: taxRows, modifiedTime: taxModifiedTime } = await fetchSheetWithMeta('Bike_Tax');
+    const taxRowIdx = findBikeRowIdxByNameJson(taxRows, 1, originalBikeName, [], 1); // column B = index 1
+    if (taxRowIdx === -1) throw new Error('"' + originalBikeName + '" was not found on this tab.');
+
+    const hasModelYear = !(data.modelYear === '' || data.modelYear === undefined || data.modelYear === null || isNaN(Number(data.modelYear)));
+    const hasDeposit = !(data.deposit === '' || data.deposit === undefined || data.deposit === null || isNaN(Number(data.deposit)));
+    const porRorBorValue = data.porRorBorDate ? (isoDateInputToSheetValue(data.porRorBorDate) || '') : '';
+
+    const newTaxRows = taxRows.map(r => r.slice());
+    const row = newTaxRows[taxRowIdx];
+    row[1] = bikeName;                                   // B: Bike
+    row[2] = hasModelYear ? Number(data.modelYear) : '';  // C: Model Year
+    row[3] = data.plateNo || '';                          // D: Plate No.
+    row[4] = porRorBorValue;                              // E: (Por. Ror. Bor)
+    row[9] = data.insurance || '';                        // J: Insurance
+    row[10] = data.category || '';                        // K: category
+    row[11] = data.make || '';                            // L: make
+    row[12] = data.model || '';                           // M: model
+    row[13] = data.cc || '';                               // N: CC
+    row[14] = data.key || '';                              // O: key
+    row[15] = data.abs || '';                              // P: ABS
+    row[16] = data.tractionControl || '';                  // Q: Traction Control
+    row[17] = hasDeposit ? Number(data.deposit) : '';      // R: Deposit
+    row[18] = data.box || '';                               // S: Box
+
+    await writeSheetJson('Bike_Tax', newTaxRows, taxModifiedTime);
+  } catch (taxErr) {
+    warnings.push('"Bike Tax": ' + taxErr.message);
+  }
+
+  const responsePayload = { success: true, bike: bikeName };
+  if (warnings.length) {
+    responsePayload.warning = 'Bike updated, but: ' + warnings.join(' ');
+  }
+  return responsePayload;
+}
+// ================== end JSON-backed data layer ==================
+// 'addBike'/'sellBike'/'unsellBike' are NOT ported -- see the block comment above.
+
 const form = document.getElementById('addBikeForm');
 const submitBtn = document.getElementById('submitBtn');
 const statusBox = document.getElementById('statusBox');
@@ -661,8 +1243,7 @@ function populateMakeList(makes) {
 
 updateModelEnabledState();
 
-fetch(scriptUrl + '?action=bikeMakesModels')
-  .then(res => res.json())
+getBikeMakesModelsFromJson()
   .then(data => {
     if (!data || !data.success) return;
     populateMakeList(data.makes || []);
@@ -845,12 +1426,7 @@ editBikeSaveBtn.addEventListener('click', async () => {
   };
 
   try {
-    const res = await fetch(scriptUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify(payload)
-    });
-    const data = await res.json();
+    const data = await editBikeFromJson(payload);
 
     if (data.success) {
       const savedName = bike;
@@ -887,7 +1463,7 @@ async function startEditBike(bikeName) {
   renderFleetList();
   setFleetStatus('Loading bike details…', 'warn');
   try {
-    const res = await fetch(scriptUrl + '?action=bikeDetails&bike=' + encodeURIComponent(bikeName)).then(r => r.json());
+    const res = await getBikeDetailsFromJson(bikeName);
     if (!res.success) throw new Error(res.error || 'Could not load bike details.');
     openEditBikeModal(res.bike, bikeName);
     setFleetStatus(null);
@@ -1022,7 +1598,7 @@ function renderFleetList() {
 async function loadFleetList() {
   setFleetStatus('Loading bikes…', 'warn');
   try {
-    const res = await fetch(scriptUrl + '?action=bikeIncomeSummary').then(r => r.json());
+    const res = await getBikeIncomeSummaryFromJson();
     if (!res.success) throw new Error(res.error || 'Could not load the bike list.');
     // "Extras" and "Deposit" are sentinel rows on the bikes sheet, not real
     // bikes (see isSentinel on the backend) -- excluded here so they never

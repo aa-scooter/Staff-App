@@ -257,6 +257,106 @@
 <script>
 const scriptUrl = ''; // DISCONNECTED: this Vercel copy is intentionally not wired to the live backend (dev/testing only, see project CLAUDE.md)
 
+// ================== JSON-backed data layer (ported 13/08/2026) ==================
+// Only action=parts (the bike-name list feeding the search box) is ported
+// here -- getPartsBikeNamesFromJson below is copied verbatim from
+// contract.html (same per-file convention).
+//
+// NOT ported -- action=bikePhotos, action=photoFolders, action:'uploadPhoto',
+// action:'deletePhoto'. This entire page is a Google Drive PHOTO-FOLDER
+// manager (one Drive folder per bike, photos as actual Drive files) -- a
+// fundamentally different kind of backend than the flat-JSON row store
+// every other page in this project reads/writes. Porting these faithfully
+// needs real Drive-API integration (folder lookup/creation, file
+// upload/list/delete, serving back an image URL) wired into this Vercel
+// backend, which doesn't exist yet -- same category of "needs new
+// infrastructure, not just relocated JS" as contract.html's passport-photo
+// upload/AI-read actions. Deferred as a dedicated future pass; all four
+// still hit the old (disconnected) scriptUrl and fail cleanly.
+//
+// KNOWN GAP (same as bikes.html/contract.html/parts.html): "sold" bike
+// detection via strikethrough font formatting has no JSON equivalent --
+// __struck is hardcoded false below, so loadBikeNames() will list every
+// bike (including ones actually marked sold on the real sheet) until
+// Anton adds an explicit "sold" column.
+const bikephotosJsonCache = {};
+function fetchSheetJson(sheetName, year) {
+  const cacheKey = year ? `${year}/${sheetName}` : sheetName;
+  const url = year
+    ? `/api/data/${encodeURIComponent(sheetName)}?year=${encodeURIComponent(year)}`
+    : `/api/data/${encodeURIComponent(sheetName)}`;
+  if (!bikephotosJsonCache[cacheKey]) {
+    bikephotosJsonCache[cacheKey] = fetch(url).then(r => {
+      if (r.status === 401) throw new Error('Signed out -- please refresh to sign in again.');
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    }).then(res => {
+      if (!res.success) throw new Error(res.error || 'Could not load data.');
+      return res.rows || [];
+    }).catch(err => {
+      // A cached PROMISE stays truthy whether it resolved or rejected --
+      // clear the entry on failure so the next call actually retries
+      // instead of replaying the same stale failure forever.
+      delete bikephotosJsonCache[cacheKey];
+      throw err;
+    });
+  }
+  return bikephotosJsonCache[cacheKey];
+}
+function decodeSheetDate(val) {
+  if (val === null || val === undefined) return null;
+  if (typeof val !== 'string') return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(val)) {
+    const m = val.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  }
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(val)) {
+    const m = val.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/);
+    return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6]));
+  }
+  return null;
+}
+function pad2Json(n) { return String(n).padStart(2, '0'); }
+function formatDmyJson(date) {
+  if (!date) return '';
+  return pad2Json(date.getDate()) + '/' + pad2Json(date.getMonth() + 1) + '/' + date.getFullYear();
+}
+function columnLetterJson(col) {
+  let letter = '';
+  while (col > 0) {
+    const rem = (col - 1) % 26;
+    letter = String.fromCharCode(65 + rem) + letter;
+    col = Math.floor((col - 1) / 26);
+  }
+  return letter;
+}
+function partsCellToString(val) {
+  if (val === null || val === undefined) return '';
+  const d = decodeSheetDate(val);
+  if (d) return formatDmyJson(d);
+  return String(val);
+}
+// ---- Ports the bike-list part of getPartsData() -- same as contract.html's
+// getPartsBikeNamesFromJson. ----
+async function getPartsBikeNamesFromJson() {
+  const partsRows2D = await fetchSheetJson('Parts_and_Oil_change');
+  const rawHeaders = partsRows2D[0] || [];
+  const headers = rawHeaders.map((h, i) => {
+    const key = (h || '').toString().trim();
+    return key || ('Column ' + columnLetterJson(i + 1));
+  });
+  const rows = partsRows2D.slice(1).map(row => {
+    const obj = {};
+    headers.forEach((h, i2) => { obj[h] = partsCellToString(row[i2]); });
+    obj.__struck = false; // KNOWN GAP -- see comment above
+    return obj;
+  }).filter(r => (r[headers[0]] || '').toString().trim() !== '');
+  return { success: true, headers, rows };
+}
+// ================== end JSON-backed data layer ==================
+// bikePhotos/photoFolders/uploadPhoto/deletePhoto are NOT ported -- see
+// the block comment above.
+
 let bikeNames = [];
 let selectedBike = null;
 
@@ -380,8 +480,7 @@ function highlight(value, query) {
 
 function loadBikeNames() {
   setLoadStatus('loadStatus', 'Loading bikes…');
-  return fetch(scriptUrl + '?action=parts')
-    .then(res => res.json())
+  return getPartsBikeNamesFromJson()
     .then(data => {
       if (!data.success) throw new Error(data.error || 'Could not load bikes');
       const bikeHeader = data.headers[0];

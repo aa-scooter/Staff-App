@@ -210,6 +210,126 @@
 <script>
 const scriptUrl = ''; // DISCONNECTED: this Vercel copy is intentionally not wired to the live backend (dev/testing only, see project CLAUDE.md)
 
+// ================== JSON-backed data layer (ported 13/08/2026) ==================
+// Single read: action=bikeIncomeSummary (getBikeIncomeSummary) -- this page
+// has no write actions at all. getBikeIncomeSummaryFromJson below is
+// copied verbatim from add-bikes.html (same per-file convention).
+//
+// KNOWN GAP: Code.gs flags a sold bike via strikethrough font formatting,
+// and records soldAmount/soldDate/reason as a JSON note on the same cell --
+// neither survives this app's flat JSON export, so every bike here shows
+// as active (not sold) until sellBike/unsellBike themselves are ported
+// (still deferred on add-bikes.html -- see the block comment there).
+const bikeIncomeJsonCache = {};
+function fetchSheetJson(sheetName, year) {
+  const cacheKey = year ? `${year}/${sheetName}` : sheetName;
+  const url = year
+    ? `/api/data/${encodeURIComponent(sheetName)}?year=${encodeURIComponent(year)}`
+    : `/api/data/${encodeURIComponent(sheetName)}`;
+  if (!bikeIncomeJsonCache[cacheKey]) {
+    bikeIncomeJsonCache[cacheKey] = fetch(url).then(r => {
+      if (r.status === 401) throw new Error('Signed out -- please refresh to sign in again.');
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    }).then(res => {
+      if (!res.success) throw new Error(res.error || 'Could not load data.');
+      return res.rows || [];
+    }).catch(err => {
+      // A cached PROMISE stays truthy whether it resolved or rejected --
+      // clear the entry on failure so the next call actually retries
+      // instead of replaying the same stale failure forever.
+      delete bikeIncomeJsonCache[cacheKey];
+      throw err;
+    });
+  }
+  return bikeIncomeJsonCache[cacheKey];
+}
+function findHeaderColIdxJson(headerRow, exactLabel) {
+  const target = exactLabel.toString().trim().toLowerCase();
+  for (let c = 0; c < headerRow.length; c++) {
+    const h = (headerRow[c] || '').toString().trim().toLowerCase();
+    if (h === target) return c;
+  }
+  return -1;
+}
+function findBikesSheetMonthColIdxJson(headerRow, monthName) {
+  const targetShort = monthName.toString().trim().toLowerCase().slice(0, 3);
+  for (let c = 0; c < headerRow.length; c++) {
+    const h = (headerRow[c] || '').toString().trim().toLowerCase();
+    if (h && h.slice(0, 3) === targetShort) return c;
+  }
+  return -1;
+}
+function looksLikeBikesSheetLabelJson(raw) {
+  const t = (raw || '').toString().trim().toLowerCase();
+  if (!t) return true;
+  if (t.indexOf('total') === 0) return true;
+  if (t === 'expenses' || t === 'expense' || t.indexOf('expense %') === 0) return true;
+  return false;
+}
+// ---- action:'bikeIncomeSummary' -> getBikeIncomeSummaryFromJson ----
+async function getBikeIncomeSummaryFromJson() {
+  try {
+    const rows2D = await fetchSheetJson('bikes');
+    const headerRow = rows2D[0] || [];
+
+    const MONTH_NAMES = ['January','February','March','April','May','June','July','August',
+      'September','October','November','December'];
+    const monthCols = MONTH_NAMES
+      .map(m => ({ label: m.slice(0, 3), col: findBikesSheetMonthColIdxJson(headerRow, m) }))
+      .filter(m => m.col !== -1);
+
+    const costCol = findHeaderColIdxJson(headerRow, 'cost');
+    const incomeCol = findHeaderColIdxJson(headerRow, 'total');
+    const expensesCol = findHeaderColIdxJson(headerRow, 'expenses');
+    const profitCol = findHeaderColIdxJson(headerRow, 'profit');
+    const netProfitCol = findHeaderColIdxJson(headerRow, 'net profit');
+
+    const missingHeaders = [];
+    if (costCol === -1) missingHeaders.push('cost');
+    if (incomeCol === -1) missingHeaders.push('total');
+    if (expensesCol === -1) missingHeaders.push('expenses');
+    if (profitCol === -1) missingHeaders.push('profit');
+    if (netProfitCol === -1) missingHeaders.push('net profit');
+    if (missingHeaders.length) {
+      throw new Error('Could not find a "' + missingHeaders.join('", "') + '" column header (row 1) on the "bikes" sheet.');
+    }
+
+    function num(v) { return (v === '' || v === null || v === undefined || isNaN(Number(v))) ? 0 : Number(v); }
+
+    const bikes = [];
+    for (let i = 1; i < rows2D.length; i++) {
+      const row = rows2D[i];
+      const name = (row[0] || '').toString().trim();
+      if (!name) continue;
+      if (looksLikeBikesSheetLabelJson(name)) break;
+
+      const nameLower = name.toLowerCase();
+      const isSentinel = (nameLower === 'extras' || nameLower === 'deposit');
+
+      bikes.push({
+        name,
+        isSentinel,
+        sold: false,        // KNOWN GAP -- see block comment above
+        soldAmount: null,   // KNOWN GAP
+        soldDate: null,     // KNOWN GAP
+        reason: null,        // KNOWN GAP
+        cost: num(row[costCol]),
+        months: monthCols.map(mc => ({ label: mc.label, amount: num(row[mc.col]) })),
+        income: num(row[incomeCol]),
+        expenses: num(row[expensesCol]),
+        profit: num(row[profitCol]),
+        netProfit: num(row[netProfitCol])
+      });
+    }
+
+    return { success: true, bikes };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+}
+// ================== end JSON-backed data layer ==================
+
 let allBikes = [];
 
 function setLoadStatus(msg) {
@@ -278,7 +398,7 @@ function render() {
 async function loadBikes() {
   setLoadStatus('Loading bikes…');
   try {
-    const res = await fetch(scriptUrl + '?action=bikeIncomeSummary').then(r => r.json());
+    const res = await getBikeIncomeSummaryFromJson();
     if (!res.success) throw new Error(res.error || 'Could not load bike income data.');
     // Sold bikes (A-Z), then unsold bikes (A-Z), then "Extras" and
     // "Deposit" pinned to the very bottom in that fixed order -- those two
