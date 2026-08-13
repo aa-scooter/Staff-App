@@ -1,0 +1,9 @@
+{
+  "name": "aa-scooters-staff-app",
+  "version": "1.0.0",
+  "private": true,
+  "description": "AA Scooters staff app -- static pages + Vercel serverless API for Google Sign-In and Drive-backed JSON read/write. See project CLAUDE.md.",
+  "dependencies": {
+    "googleapis": "^174.0.0"
+  }
+}

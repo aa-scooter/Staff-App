@@ -1,0 +1,134 @@
+{
+  "customer": {
+    "file": "customer.json",
+    "rows": 1317,
+    "cols": 34,
+    "notes_file": "customer_notes.json"
+  },
+  "Contract": {
+    "file": "Contract.json",
+    "rows": 1289,
+    "cols": 37,
+    "notes_file": "Contract_notes.json"
+  },
+  "cash": {
+    "file": "cash.json",
+    "rows": 1357,
+    "cols": 26,
+    "notes_file": null
+  },
+  "Bike Tax": {
+    "file": "Bike_Tax.json",
+    "rows": 1024,
+    "cols": 34,
+    "notes_file": null
+  },
+  "waiting list": {
+    "file": "waiting_list.json",
+    "rows": 30,
+    "cols": 9,
+    "notes_file": null
+  },
+  "investment": {
+    "file": "investment.json",
+    "rows": 1018,
+    "cols": 8,
+    "notes_file": null
+  },
+  "Operation": {
+    "file": "Operation.json",
+    "rows": 998,
+    "cols": 25,
+    "notes_file": null
+  },
+  "checklist": {
+    "file": "checklist.json",
+    "rows": 997,
+    "cols": 15,
+    "notes_file": null
+  },
+  "Parts and Oil change": {
+    "file": "Parts_and_Oil_change.json",
+    "rows": 1011,
+    "cols": 31,
+    "notes_file": null
+  },
+  "rates per day": {
+    "file": "rates_per_day.json",
+    "rows": 1001,
+    "cols": 7,
+    "notes_file": null
+  },
+  "bikes": {
+    "file": "bikes.json",
+    "rows": 1064,
+    "cols": 44,
+    "notes_file": null
+  },
+  "Contacts": {
+    "file": "Contacts.json",
+    "rows": 1,
+    "cols": 4,
+    "notes_file": null
+  },
+  "bugs": {
+    "file": "bugs.json",
+    "rows": 18,
+    "cols": 6,
+    "notes_file": null
+  },
+  "July": {
+    "file": "July.json",
+    "rows": 1142,
+    "cols": 25,
+    "notes_file": "July_notes.json"
+  },
+  "August": {
+    "file": "August.json",
+    "rows": 1142,
+    "cols": 25,
+    "notes_file": "August_notes.json"
+  },
+  "template": {
+    "file": "template.json",
+    "rows": 1142,
+    "cols": 25,
+    "notes_file": null
+  },
+  "June": {
+    "file": "June.json",
+    "rows": 1142,
+    "cols": 25,
+    "notes_file": null
+  },
+  "January": {
+    "file": "January.json",
+    "rows": 1140,
+    "cols": 25,
+    "notes_file": null
+  },
+  "February": {
+    "file": "February.json",
+    "rows": 1142,
+    "cols": 25,
+    "notes_file": null
+  },
+  "march": {
+    "file": "march.json",
+    "rows": 1143,
+    "cols": 25,
+    "notes_file": null
+  },
+  "april": {
+    "file": "april.json",
+    "rows": 1143,
+    "cols": 25,
+    "notes_file": null
+  },
+  "may": {
+    "file": "may.json",
+    "rows": 1142,
+    "cols": 25,
+    "notes_file": null
+  }
+}

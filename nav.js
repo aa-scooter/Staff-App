@@ -10,6 +10,41 @@
 // Relies on the CSS custom properties --petrol, --cone, and --line already
 // being defined on :root by each page's own stylesheet (they all define
 // the same brand palette).
+
+// =====================================================================
+// Auth gate -- replaces the old plaintext-password sessionStorage lock
+// that used to live only on index.html (and, being client-side-only,
+// didn't actually protect anything -- any other page was reachable
+// directly with no check at all). Runs on every page that includes this
+// file (this IS the shared include), and asks the server (which holds the
+// real, httpOnly session cookie -- see lib/session.js) whether there's a
+// currently valid Google sign-in. The actual security boundary is server
+// side: every /api/data and /api/write route already refuses to serve
+// anything without a valid session regardless of this check (see
+// lib/apiAuth.js's withDrive) -- this redirect is purely the UX nicety of
+// sending a signed-out visitor to the sign-in screen instead of showing
+// them an empty, broken-looking page.
+//
+// Deliberately fails OPEN on a network error (doesn't redirect) -- a
+// transient hiccup checking session status shouldn't lock someone out of
+// even seeing the page shell; any actual data call will fail its own way
+// regardless if there's truly no valid session.
+(function () {
+  if (/(^|\/)login\.html$/.test(window.location.pathname)) return; // avoid a redirect loop on the sign-in page itself
+
+  fetch('/api/auth/session')
+    .then(function (res) { return res.json(); })
+    .then(function (data) {
+      if (!data || !data.loggedIn) {
+        var next = encodeURIComponent(window.location.pathname + window.location.search);
+        window.location.replace('/login.html?next=' + next);
+      }
+    })
+    .catch(function (err) {
+      console.warn('Could not check sign-in status:', err.message);
+    });
+})();
+
 (function () {
   // Same Apps Script web-app URL every page's own inline script points at.
   // Duplicated here (rather than reading the page's `scriptUrl` const)
@@ -363,7 +398,31 @@
     '  }\n' +
     '  .settings-status{\n' +
     '    font-size:11.5px; color:#c0392b; margin-top:6px;\n' +
-    '  }\n';
+    '  }\n' +
+    '  .settings-divider{\n' +
+    '    height:1px; background:#EFEAE0; margin:12px 0;\n' +
+    '  }\n' +
+    '  .settings-action-btn{\n' +
+    '    all:unset;\n' +
+    '    box-sizing:border-box;\n' +
+    '    display:block; width:100%; text-align:left;\n' +
+    '    padding:8px 9px; border-radius:7px;\n' +
+    '    font-size:12.5px; font-weight:600;\n' +
+    "    font-family:'Inter',sans-serif;\n" +
+    '    color:#5A6663; cursor:pointer;\n' +
+    '  }\n' +
+    '  .settings-action-btn:hover{ background:#F5EFE6; }\n' +
+    '  .settings-action-btn.danger{ color:#B36A2E; }\n' +
+    '  .settings-signout-btn{\n' +
+    '    all:unset;\n' +
+    '    box-sizing:border-box;\n' +
+    '    display:block; width:100%; text-align:left;\n' +
+    '    padding:8px 9px; border-radius:7px;\n' +
+    '    font-size:12.5px; font-weight:600;\n' +
+    "    font-family:'Inter',sans-serif;\n" +
+    '    color:#C53030; cursor:pointer;\n' +
+    '  }\n' +
+    '  .settings-signout-btn:hover{ background:#FCEBEB; }\n';
 
   function currentPage() {
     var path = window.location.pathname.split('/').pop();
@@ -516,6 +575,54 @@
     if (wrap) wrap.classList.remove('open');
   }
 
+  // ---- "Reset data from latest deploy" (Settings dropdown, testing-only
+  // -- see project notes) -- deliberately manual, never automatic on page
+  // load. Overwrites every JSON file on Drive with whatever's bundled in
+  // this deploy's /data folder, via POST /api/admin/reset. ----
+  function initDataResetWidget() {
+    var btn = document.getElementById('resetDataBtn');
+    if (!btn) return;
+    btn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      var statusEl = document.getElementById('resetDataStatus');
+      function setStatus(msg, isError) {
+        if (!statusEl) return;
+        statusEl.style.display = msg ? 'block' : 'none';
+        statusEl.textContent = msg || '';
+        statusEl.style.color = isError ? '#c0392b' : '#2F855A';
+      }
+      if (!confirm('Overwrite the live Drive data with the version currently deployed? This replaces whatever\'s been saved during testing.')) return;
+
+      btn.disabled = true;
+      setStatus('Resetting…', false);
+      fetch('/api/admin/reset', { method: 'POST' })
+        .then(function (res) { return res.json(); })
+        .then(function (data) {
+          if (!data || !data.success) {
+            setStatus((data && data.error) || 'Reset failed -- please try again.', true);
+            return;
+          }
+          setStatus('Reset ' + data.filesReset + ' file(s) from the deploy.', false);
+        })
+        .catch(function (err) { setStatus('Reset failed: ' + err.message, true); })
+        .finally(function () { btn.disabled = false; });
+    });
+  }
+
+  // ---- Sign out -- clears the session cookie server-side (see
+  // api/auth/logout.js) and sends the browser to the sign-in screen. ----
+  function initSignOutWidget() {
+    var btn = document.getElementById('signOutBtn');
+    if (!btn) return;
+    btn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      btn.disabled = true;
+      fetch('/api/auth/logout', { method: 'POST' })
+        .catch(function () { /* fall through to redirect regardless */ })
+        .finally(function () { window.location.href = '/login.html'; });
+    });
+  }
+
   function initSettingsWidget() {
     var btn = document.getElementById('settingsIconBtn');
     var wrap = document.getElementById('settingsWrap');
@@ -570,6 +677,13 @@
       '    </div>\n' +
       '    <div class="settings-hint">Used for passport scan, WhatsApp fill, reply draft, odometer read.</div>\n' +
       '    <div class="settings-status" id="settingsStatus" style="display:none;"></div>\n' +
+      '    <div class="settings-divider"></div>\n' +
+      '    <div class="settings-dropdown-label">Data (testing)</div>\n' +
+      '    <button type="button" class="settings-action-btn danger" id="resetDataBtn">Reset data from latest deploy</button>\n' +
+      '    <div class="settings-hint">Overwrites the live Drive data with whatever\'s bundled in the current deploy. Use to recover from bad test data -- stop using this once you trust the live data.</div>\n' +
+      '    <div class="settings-status" id="resetDataStatus" style="display:none;"></div>\n' +
+      '    <div class="settings-divider"></div>\n' +
+      '    <button type="button" class="settings-signout-btn" id="signOutBtn">Sign out</button>\n' +
       '  </div>\n' +
       '</div>';
 
@@ -592,6 +706,8 @@
     initBugsWidget();
     initNavDropdowns();
     initSettingsWidget();
+    initDataResetWidget();
+    initSignOutWidget();
   }
 
   // =====================================================================

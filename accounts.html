@@ -558,15 +558,29 @@ const ACCOUNTS_MONTH_FILES = {
 // customer/Contract/July/August).
 const ACCOUNTS_MONTH_HAS_NOTES = { 6: true, 7: true };
 
+// ---- Reads live off Drive via /api/data/<sheet> (see api/data/[sheet].js)
+// instead of a static /data/*.json bundled at deploy time -- this is what
+// actually makes the app read/write, not just read-only-off-a-snapshot
+// (see project decision, 13/08/2026). Cached per sheet name for the
+// lifetime of the page load only (a fresh page load always gets the
+// current data -- no stale-cache risk across visits). A 401 here means the
+// session cookie is missing/expired; the auth-gate in nav.js should
+// already have redirected to login.html before this ever runs, but the
+// error still surfaces clearly if that somehow didn't happen (e.g. the
+// session expired mid-visit).
 const accountsJsonCache = {};
-function fetchJsonCached(url) {
-  if (!accountsJsonCache[url]) {
-    accountsJsonCache[url] = fetch(url).then(r => {
+function fetchSheetJson(sheetName) {
+  if (!accountsJsonCache[sheetName]) {
+    accountsJsonCache[sheetName] = fetch(`/api/data/${encodeURIComponent(sheetName)}`).then(r => {
+      if (r.status === 401) throw new Error('Signed out -- please refresh to sign in again.');
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return r.json();
+    }).then(res => {
+      if (!res.success) throw new Error(res.error || 'Could not load data.');
+      return res.rows || [];
     });
   }
-  return accountsJsonCache[url];
+  return accountsJsonCache[sheetName];
 }
 
 // ---- Ported from Code.gs looksLikeSummaryLabel -- flags a label as a
@@ -691,11 +705,11 @@ function readSummaryItem(rows, item, warnings, sheetLabel) {
   return { label: item.displayLabel, value: formatSummaryValue(rawVal, !!item.percent) };
 }
 
-// ---- Read-only stand-in for Code.gs's getAccountsData(monthIndexRaw),
-// sourcing from the static per-month JSON export instead of a live sheet
-// read. Returns the exact same shape the live scriptUrl's ?action=accounts
-// used to, so renderExpenses/renderIncome/renderSummary below don't need to
-// change at all. ----
+// ---- Stand-in for Code.gs's getAccountsData(monthIndexRaw), sourcing from
+// the live Drive-backed JSON (via /api/data, see fetchSheetJson above)
+// instead of the spreadsheet. Returns the exact same shape the live
+// scriptUrl's ?action=accounts used to, so renderExpenses/renderIncome/
+// renderSummary below don't need to change at all. ----
 async function getAccountsDataFromJson(monthIndex) {
   const fileBase = ACCOUNTS_MONTH_FILES[monthIndex];
   if (!fileBase) {
@@ -704,12 +718,12 @@ async function getAccountsDataFromJson(monthIndex) {
 
   let rows, notes = [];
   try {
-    rows = await fetchJsonCached(`data/${fileBase}.json`);
+    rows = await fetchSheetJson(fileBase);
   } catch (err) {
     return { success: false, monthIndex, month: MONTH_NAMES[monthIndex], error: 'Could not load data for ' + MONTH_NAMES[monthIndex] + ': ' + err.message };
   }
   if (ACCOUNTS_MONTH_HAS_NOTES[monthIndex]) {
-    try { notes = await fetchJsonCached(`data/${fileBase}_notes.json`); } catch (err) { notes = []; }
+    try { notes = await fetchSheetJson(fileBase + '_notes'); } catch (err) { notes = []; }
   }
   const noteMap = new Map();
   notes.forEach(([r, c, t]) => noteMap.set(r + ',' + c, t));
