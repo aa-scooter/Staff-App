@@ -568,10 +568,19 @@ const ACCOUNTS_MONTH_HAS_NOTES = { 6: true, 7: true };
 // already have redirected to login.html before this ever runs, but the
 // error still surfaces clearly if that somehow didn't happen (e.g. the
 // session expired mid-visit).
+// year is optional -- omit it for global (year-independent) sheets, which
+// stay on the flat /api/data/<sheet> route. Pass it for monthly sheets
+// (e.g. "July", "July_notes"), which now live year-scoped on Drive (see
+// lib/monthSheets.js / api/data/[year]/[sheet].js -- storage layout change,
+// 13/08/2026): a bare "July.json" would otherwise collide between years.
 const accountsJsonCache = {};
-function fetchSheetJson(sheetName) {
-  if (!accountsJsonCache[sheetName]) {
-    accountsJsonCache[sheetName] = fetch(`/api/data/${encodeURIComponent(sheetName)}`).then(r => {
+function fetchSheetJson(sheetName, year) {
+  const cacheKey = year ? `${year}/${sheetName}` : sheetName;
+  const url = year
+    ? `/api/data/${encodeURIComponent(year)}/${encodeURIComponent(sheetName)}`
+    : `/api/data/${encodeURIComponent(sheetName)}`;
+  if (!accountsJsonCache[cacheKey]) {
+    accountsJsonCache[cacheKey] = fetch(url).then(r => {
       if (r.status === 401) throw new Error('Signed out -- please refresh to sign in again.');
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return r.json();
@@ -580,7 +589,7 @@ function fetchSheetJson(sheetName) {
       return res.rows || [];
     });
   }
-  return accountsJsonCache[sheetName];
+  return accountsJsonCache[cacheKey];
 }
 
 // ---- Ported from Code.gs looksLikeSummaryLabel -- flags a label as a
@@ -710,7 +719,12 @@ function readSummaryItem(rows, item, warnings, sheetLabel) {
 // instead of the spreadsheet. Returns the exact same shape the live
 // scriptUrl's ?action=accounts used to, so renderExpenses/renderIncome/
 // renderSummary below don't need to change at all. ----
-async function getAccountsDataFromJson(monthIndex) {
+async function getAccountsDataFromJson(monthIndex, year) {
+  // Defaults to the current calendar year -- there's no year picker in this
+  // UI yet (single-year app so far), but the Drive storage itself is now
+  // year-scoped per month (see fetchSheetJson above), so every read needs
+  // SOME year even before a picker exists to choose one explicitly.
+  if (!year) year = new Date().getFullYear();
   const fileBase = ACCOUNTS_MONTH_FILES[monthIndex];
   if (!fileBase) {
     return { success: false, monthIndex, month: MONTH_NAMES[monthIndex], error: 'No sheet found matching "' + MONTH_NAMES[monthIndex] + '".' };
@@ -718,12 +732,12 @@ async function getAccountsDataFromJson(monthIndex) {
 
   let rows, notes = [];
   try {
-    rows = await fetchSheetJson(fileBase);
+    rows = await fetchSheetJson(fileBase, year);
   } catch (err) {
     return { success: false, monthIndex, month: MONTH_NAMES[monthIndex], error: 'Could not load data for ' + MONTH_NAMES[monthIndex] + ': ' + err.message };
   }
   if (ACCOUNTS_MONTH_HAS_NOTES[monthIndex]) {
-    try { notes = await fetchSheetJson(fileBase + '_notes'); } catch (err) { notes = []; }
+    try { notes = await fetchSheetJson(fileBase + '_notes', year); } catch (err) { notes = []; }
   }
   const noteMap = new Map();
   notes.forEach(([r, c, t]) => noteMap.set(r + ',' + c, t));
