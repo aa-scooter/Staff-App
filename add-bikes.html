@@ -1,0 +1,1243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Add Bike — AA Scooters</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="nav.js" defer></script>
+<style>
+  :root{
+    --sand:#F5EFE6;
+    --ink:#1A2421;
+    --petrol:#0F3D3E;
+    --petrol-light:#175A5B;
+    --cone:#FF6B35;
+    --card:#FFFFFF;
+    --line:#DED4C2;
+    --muted:#5A6663;
+    --ok:#2F855A;
+    --err:#C53030;
+    --warn:#B7791F;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;
+    background:var(--sand);
+    color:var(--ink);
+    font-family:'Inter',sans-serif;
+    min-height:100vh;
+  }
+  .page-head{ max-width:520px; margin:0 auto; padding:22px 16px 4px; }
+  .page-head h1{
+    font-family:'Barlow Condensed',sans-serif;
+    font-weight:700; font-size:26px; color:var(--petrol); margin:0;
+  }
+  .page-head .sub{ color:var(--muted); font-size:13px; margin-top:6px; line-height:1.5; }
+
+  main{ max-width:520px; margin:0 auto; padding:20px 16px 60px; }
+
+  .card{
+    background:var(--card);
+    border:1px solid var(--line);
+    border-radius:14px;
+    padding:20px;
+    margin-bottom:16px;
+  }
+  .card h2{
+    font-family:'Barlow Condensed',sans-serif;
+    font-size:15px; font-weight:600; letter-spacing:.08em; text-transform:uppercase;
+    color:var(--petrol); margin:0 0 14px;
+    display:flex; align-items:center; gap:8px;
+  }
+  .card h2::before{
+    content:""; width:7px; height:7px; border-radius:50%;
+    background:var(--cone); display:inline-block;
+  }
+  label{
+    display:block; font-size:12.5px; font-weight:500; color:#5A6663;
+    margin:14px 0 5px;
+  }
+  label:first-of-type{ margin-top:0; }
+  input, select, textarea{
+    width:100%; padding:11px 12px; border:1px solid var(--line); border-radius:9px;
+    font-size:15px; font-family:'Inter',sans-serif; background:#FBFAF7; color:var(--ink);
+    transition:border-color .15s;
+  }
+  textarea{ resize:vertical; min-height:44px; }
+  input:focus, select:focus, textarea:focus{
+    outline:none; border-color:var(--petrol-light); background:#fff;
+  }
+  .hint{ font-size:11.5px; color:#8A948F; margin-top:4px; line-height:1.4; }
+  .row2{ display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .row2 > div{ min-width:0; }
+  .row2 label{ margin-top:14px; }
+  .row2 > div:first-child label:first-of-type,
+  .row2 > div:nth-child(2) label:first-of-type{ margin-top:14px; }
+
+  input:disabled{ background:#EFEBE3; color:#A8A399; cursor:not-allowed; }
+
+  /* Searchable dropdown (Model field) -- same pattern used for the bike
+     model field on contract.html, kept visually consistent. */
+  .field{ position:relative; }
+  .ac-list{
+    position:absolute; left:0; right:0; top:100%;
+    background:#fff; border:1px solid var(--line); border-top:none;
+    border-radius:0 0 9px 9px;
+    max-height:220px; overflow-y:auto;
+    z-index:20; display:none;
+    box-shadow:0 8px 18px rgba(15,61,62,.1);
+  }
+  .ac-list.show{ display:block; }
+  .ac-item{
+    padding:10px 12px; font-size:14px; cursor:pointer;
+    border-bottom:1px solid #F0EBE0;
+  }
+  .ac-item:last-child{ border-bottom:none; }
+  .ac-item:hover, .ac-item.hi{ background:#F5EFE6; }
+  .ac-item mark{ background:#FFE3D2; color:var(--ink); border-radius:2px; }
+
+  .check-row{
+    display:flex; align-items:center; gap:8px; margin-top:14px;
+  }
+  .check-row:first-of-type{ margin-top:0; }
+  .check-row input[type="checkbox"]{
+    width:18px; height:18px; accent-color:var(--petrol); cursor:pointer; flex-shrink:0;
+  }
+  .check-row label{
+    margin:0; font-size:13.5px; font-weight:600; color:var(--ink); cursor:pointer;
+  }
+  .check-grid{ display:grid; grid-template-columns:1fr 1fr; gap:10px 14px; }
+
+  .currency-wrap{ position:relative; }
+  .currency-wrap .prefix{
+    position:absolute; left:12px; top:50%; transform:translateY(-50%);
+    color:var(--muted); font-size:14px; pointer-events:none;
+  }
+  .currency-wrap input{ padding-left:28px; }
+
+  button{
+    width:100%; padding:15px; border:none; border-radius:10px;
+    background:var(--cone); color:#fff;
+    font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:17px;
+    letter-spacing:.04em; text-transform:uppercase; cursor:pointer;
+    margin-top:6px; transition:transform .1s, background .15s;
+  }
+  button:active{ transform:scale(.98); }
+  button:disabled{ background:#C9B9A8; cursor:not-allowed; }
+
+  .status{
+    margin-top:12px; font-size:13.5px; padding:10px 12px; border-radius:8px; display:none;
+    line-height:1.5;
+  }
+  .status.ok{ display:block; background:#E8F5EE; color:var(--ok); border:1px solid #BEE3CE; }
+  .status.err{ display:block; background:#FCEBEB; color:var(--err); border:1px solid #F3C6C6; }
+  .status.warn{ display:block; background:#FFF3E6; color:var(--warn); border:1px solid #F3D9B8; }
+
+  /* ---- Fleet list: List all bikes / Sell / Unsell ---- */
+  .btn-secondary{
+    background:var(--card); color:var(--petrol); border:1px solid var(--petrol);
+  }
+  .fleet-list-wrap{ display:none; margin-top:14px; }
+  .fleet-list-wrap.show{ display:block; }
+  .fleet-search{
+    width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:9px;
+    font-size:14px; font-family:'Inter',sans-serif; background:#FBFAF7; color:var(--ink);
+    margin-bottom:10px;
+  }
+  .fleet-search:focus{ outline:none; border-color:var(--petrol-light); background:#fff; }
+  .fleet-group-label{
+    font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:12px;
+    letter-spacing:.06em; text-transform:uppercase; color:var(--muted);
+    margin:14px 0 6px; padding-top:10px; border-top:1px solid var(--line);
+  }
+  .fleet-group-label:first-child{ margin-top:0; padding-top:0; border-top:none; }
+  .fleet-item{
+    border:1px solid var(--line); border-radius:10px; padding:12px 14px;
+    margin-bottom:8px; cursor:pointer; background:#FBFAF7;
+  }
+  .fleet-item:active{ transform:scale(.99); }
+  .fleet-item.sold{ opacity:.6; background:#FDF3F3; }
+  .fleet-item-row{ display:flex; align-items:center; justify-content:space-between; gap:10px; }
+  .fleet-item-name{ font-size:14.5px; font-weight:600; color:var(--ink); }
+  .fleet-item.sold .fleet-item-name{ text-decoration:line-through; }
+  .sold-tag{
+    display:inline-block; font-size:9.5px; font-weight:700; letter-spacing:.03em;
+    text-transform:uppercase; color:var(--err); background:#FCEBEB; border-radius:5px;
+    padding:2px 6px; margin-left:8px; text-decoration:none; vertical-align:middle;
+  }
+  .fleet-item-hint{ font-size:12px; color:var(--muted); margin-top:2px; }
+  .fleet-panel{
+    margin-top:10px; padding-top:10px; border-top:1px dashed var(--line);
+  }
+  .fleet-panel label{ margin:0 0 5px; }
+  .fleet-panel .btn-row{ display:flex; gap:8px; margin-top:10px; }
+  .fleet-panel .btn-row button{ margin-top:0; flex:1; }
+  .fleet-empty{ font-size:13px; color:#8A948F; padding:8px 2px; }
+  .fleet-list-wrap.busy #fleetList{ opacity:.55; pointer-events:none; }
+
+  /* ---- Edit bike: popup instead of reusing the Add Bike form, so editing
+     a bike from the fleet list never requires scrolling down to it ---- */
+  .modal-backdrop{
+    position:fixed; inset:0; background:rgba(15,36,33,.45);
+    display:none; align-items:flex-end; justify-content:center; z-index:1000;
+    padding:0;
+  }
+  .modal-backdrop.show{ display:flex; }
+  .modal-sheet{
+    background:var(--card); width:100%; max-width:520px;
+    border-radius:16px 16px 0 0; padding:20px 18px 24px;
+    max-height:90vh; overflow-y:auto;
+  }
+  @media (min-width:560px){
+    .modal-backdrop{ align-items:center; }
+    .modal-sheet{ border-radius:16px; }
+  }
+  .modal-head{
+    display:flex; align-items:center; justify-content:space-between;
+    margin-bottom:6px;
+  }
+  .modal-head h2{
+    font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:19px;
+    color:var(--petrol); margin:0; text-transform:uppercase; letter-spacing:.02em;
+  }
+  .modal-x{
+    width:32px; height:32px; padding:0; margin:0; flex-shrink:0;
+    background:#EFEBE3; color:var(--petrol); border-radius:8px;
+    font-size:18px; line-height:1; display:flex; align-items:center; justify-content:center;
+  }
+  #editBikeSheet .btn-row{ display:flex; gap:10px; margin-top:14px; }
+  #editBikeSheet .btn-row button{ margin-top:0; flex:1; }
+</style>
+</head>
+<body>
+
+<div id="topbar-mount"></div>
+
+<div class="page-head">
+  <h1>Add Bike</h1>
+  <div class="sub">Adds a brand-new bike to the fleet in one go — writes it to the Bike Tax, Parts and Oil change, Operation, and bikes tabs, so it shows up in every dropdown across the app right away.</div>
+</div>
+
+<main>
+  <div class="card">
+    <h2>Fleet</h2>
+    <button type="button" id="listBikesBtn" class="btn-secondary">List all bikes</button>
+    <div class="hint">Sell a bike (marks it retired and adds the sale amount to its total — without affecting this month's overall income total), undo a sale by mistake, or edit a bike's details.</div>
+
+    <div class="fleet-list-wrap" id="fleetListWrap">
+      <input type="text" class="fleet-search" id="fleetSearch" placeholder="Search bikes…">
+      <div id="fleetList"></div>
+      <div class="status" id="fleetStatusBox"></div>
+    </div>
+  </div>
+
+  <form id="addBikeForm">
+
+    <div class="card">
+      <h2>Add Bike</h2>
+      <label for="bike">Bike name *</label>
+      <input id="bike" required placeholder="e.g. Aerox Cool 3" autocomplete="off">
+      <div class="hint">This exact name is what will appear everywhere else in the app (Contract, Customer Record, Bikes Status, Available Bikes).</div>
+
+      <div class="row2">
+        <div>
+          <label for="make">Make</label>
+          <input id="make" list="makeList" placeholder="Yamaha" autocomplete="off">
+          <datalist id="makeList">
+            <option value="Yamaha">
+            <option value="Honda">
+            <option value="GPX">
+          </datalist>
+        </div>
+        <div class="field">
+          <label for="model">Model</label>
+          <input id="model" placeholder="Select a make first" autocomplete="off" disabled>
+          <div class="ac-list" data-for="model"></div>
+          <div class="hint" id="modelHint">Pick a make above to see its models, or type a new one.</div>
+        </div>
+      </div>
+
+      <div class="row2">
+        <div>
+          <label for="modelYear">Model year</label>
+          <input id="modelYear" type="number" min="1990" max="2100" step="1" placeholder="2024">
+        </div>
+        <div>
+          <label for="cc">CC</label>
+          <input id="cc" placeholder="155cc">
+        </div>
+      </div>
+
+      <label for="category">Pricing category</label>
+      <select id="category">
+        <option value="">— Not set —</option>
+        <option value="125CC">125CC</option>
+        <option value="150-155CC Standard Key">155CC Standard Key</option>
+        <option value="150-155CC Keyless">155CC Keyless</option>
+        <option value="Nmax 155CC Keyless">Nmax 155CC</option>
+        <option value="Forza 300CC">Forza 300CC</option>
+        <option value="XMAX 300 Keyless">XMAX 300</option>
+      </select>
+      <div class="hint">Must be one of these exact categories for Available Bikes' auto-pricing to recognize it. Leave "Not set" if unsure — pricing can be filled in later on the Bike Tax sheet.</div>
+    </div>
+
+    <div class="card">
+      <h2>Features</h2>
+      <div class="check-grid">
+        <div class="check-row">
+          <input type="checkbox" id="keyless">
+          <label for="keyless">Keyless entry</label>
+        </div>
+        <div class="check-row">
+          <input type="checkbox" id="abs">
+          <label for="abs">ABS</label>
+        </div>
+        <div class="check-row">
+          <input type="checkbox" id="tractionControl">
+          <label for="tractionControl">Traction control</label>
+        </div>
+        <div class="check-row">
+          <input type="checkbox" id="box">
+          <label for="box">Top box</label>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Registration &amp; Insurance</h2>
+      <label for="plateNo">Plate number</label>
+      <input id="plateNo" placeholder="e.g. 1 กจ 9669 ลำพูน" autocomplete="off">
+
+      <label for="porRorBorDate">Por Ror Bor (tax book) renewal date</label>
+      <input id="porRorBorDate" type="date">
+
+      <label for="insurance">Insurance</label>
+      <textarea id="insurance" placeholder="e.g. ไทยวิวัฒน์ 07/03/68 - 07/03/69"></textarea>
+    </div>
+
+    <div class="card">
+      <h2>Money &amp; Odometer</h2>
+      <div class="row2">
+        <div>
+          <label for="cost">Purchase cost (฿)</label>
+          <div class="currency-wrap">
+            <span class="prefix">฿</span>
+            <input id="cost" type="number" min="0" step="1" placeholder="35000">
+          </div>
+        </div>
+        <div>
+          <label for="deposit">Security deposit (฿)</label>
+          <div class="currency-wrap">
+            <span class="prefix">฿</span>
+            <input id="deposit" type="number" min="0" step="1" placeholder="2000">
+          </div>
+        </div>
+      </div>
+
+      <label for="currentKm">Starting odometer (km)</label>
+      <input id="currentKm" type="number" min="0" step="1" placeholder="0">
+      <div class="hint">Used as both "Current KM" and "Last Oil KM" on the Operation tab — assumes the oil is fresh as of today. Correct "Last Oil KM" on the Oil Change page later if that's not the case.</div>
+    </div>
+
+    <button type="submit" id="submitBtn">Add bike</button>
+    <div class="status" id="statusBox"></div>
+  </form>
+
+  <!-- Edit bike: a popup instead of reusing the Add Bike form above, so
+       editing a bike from the fleet list doesn't require scrolling down to
+       it -- fields are the same, but with their own "edit-" prefixed ids so
+       nothing collides with the Add Bike form's own fields (both can hold
+       different values on screen at the same time). -->
+  <div class="modal-backdrop" id="editBikeBackdrop">
+    <div class="modal-sheet" id="editBikeSheet">
+      <div class="modal-head">
+        <h2>Edit bike</h2>
+        <button type="button" class="modal-x" id="editBikeCloseBtn" aria-label="Close">&times;</button>
+      </div>
+
+      <label for="edit-bike">Bike name *</label>
+      <input id="edit-bike" autocomplete="off">
+      <div class="hint">This exact name is what will appear everywhere else in the app (Contract, Customer Record, Bikes Status, Available Bikes).</div>
+
+      <div class="row2">
+        <div>
+          <label for="edit-make">Make</label>
+          <input id="edit-make" autocomplete="off">
+        </div>
+        <div>
+          <label for="edit-model">Model</label>
+          <input id="edit-model" autocomplete="off">
+        </div>
+      </div>
+
+      <div class="row2">
+        <div>
+          <label for="edit-modelYear">Model year</label>
+          <input id="edit-modelYear" type="number" min="1990" max="2100" step="1">
+        </div>
+        <div>
+          <label for="edit-cc">CC</label>
+          <input id="edit-cc">
+        </div>
+      </div>
+
+      <label for="edit-category">Pricing category</label>
+      <select id="edit-category">
+        <option value="">— Not set —</option>
+        <option value="125CC">125CC</option>
+        <option value="150-155CC Standard Key">155CC Standard Key</option>
+        <option value="150-155CC Keyless">155CC Keyless</option>
+        <option value="Nmax 155CC Keyless">Nmax 155CC</option>
+        <option value="Forza 300CC">Forza 300CC</option>
+        <option value="XMAX 300 Keyless">XMAX 300</option>
+      </select>
+
+      <div class="check-grid">
+        <div class="check-row">
+          <input type="checkbox" id="edit-keyless">
+          <label for="edit-keyless">Keyless entry</label>
+        </div>
+        <div class="check-row">
+          <input type="checkbox" id="edit-abs">
+          <label for="edit-abs">ABS</label>
+        </div>
+        <div class="check-row">
+          <input type="checkbox" id="edit-tractionControl">
+          <label for="edit-tractionControl">Traction control</label>
+        </div>
+        <div class="check-row">
+          <input type="checkbox" id="edit-box">
+          <label for="edit-box">Top box</label>
+        </div>
+      </div>
+
+      <label for="edit-plateNo">Plate number</label>
+      <input id="edit-plateNo" autocomplete="off">
+
+      <label for="edit-porRorBorDate">Por Ror Bor (tax book) renewal date</label>
+      <input id="edit-porRorBorDate" type="date">
+
+      <label for="edit-insurance">Insurance</label>
+      <textarea id="edit-insurance"></textarea>
+
+      <div class="row2">
+        <div>
+          <label for="edit-cost">Purchase cost (฿)</label>
+          <div class="currency-wrap">
+            <span class="prefix">฿</span>
+            <input id="edit-cost" type="number" min="0" step="1">
+          </div>
+        </div>
+        <div>
+          <label for="edit-deposit">Security deposit (฿)</label>
+          <div class="currency-wrap">
+            <span class="prefix">฿</span>
+            <input id="edit-deposit" type="number" min="0" step="1">
+          </div>
+        </div>
+      </div>
+
+      <label for="edit-currentKm">Current odometer (km)</label>
+      <input id="edit-currentKm" type="number" min="0" step="1">
+
+      <div class="btn-row">
+        <button type="button" class="btn-secondary" id="editBikeCancelBtn">Cancel</button>
+        <button type="button" id="editBikeSaveBtn">Save changes</button>
+      </div>
+      <div class="status" id="editBikeStatus"></div>
+    </div>
+  </div>
+</main>
+
+<script>
+const scriptUrl = ''; // DISCONNECTED: this Vercel copy is intentionally not wired to the live backend (dev/testing only, see project CLAUDE.md)
+
+const form = document.getElementById('addBikeForm');
+const submitBtn = document.getElementById('submitBtn');
+const statusBox = document.getElementById('statusBox');
+
+function fieldValue(id) {
+  return document.getElementById(id).value.trim();
+}
+
+// ---- Auto-capitalization for free-text bike identity fields (bike name,
+// make, model). Title-cases each word (first letter up, rest down), EXCEPT
+// words that are one of these known model/spec abbreviations, which are
+// forced fully uppercase instead of just having their first letter
+// capitalized. Add more abbreviations here as they come up -- this is the
+// only place that needs editing.
+const ALL_CAPS_BIKE_WORDS = ['GT', 'TT', 'PCX', 'ABS', 'CBR'];
+
+function toTitleCaseBikeName(str) {
+  if (!str) return str;
+  return str.split(/\s+/).map(function (word) {
+    // Split off any leading/trailing punctuation (e.g. parentheses around
+    // "ABS") so it's not swept into the uppercase/lowercase change.
+    const m = word.match(/^([^a-zA-Z0-9]*)([a-zA-Z0-9]*)([^a-zA-Z0-9]*)$/);
+    if (!m) return word;
+    const prefix = m[1], core = m[2], suffix = m[3];
+    if (!core) return word;
+    if (ALL_CAPS_BIKE_WORDS.indexOf(core.toUpperCase()) !== -1) {
+      return prefix + core.toUpperCase() + suffix;
+    }
+    return prefix + core.charAt(0).toUpperCase() + core.slice(1).toLowerCase() + suffix;
+  }).join(' ');
+}
+
+function attachAutoTitleCase(inputId) {
+  const input = document.getElementById(inputId);
+  input.addEventListener('blur', () => {
+    const titled = toTitleCaseBikeName(input.value.trim());
+    if (titled !== input.value) input.value = titled;
+  });
+}
+
+['bike', 'make', 'model'].forEach(attachAutoTitleCase);
+
+// ---- Make / Model dropdowns, built from every bike already in the fleet
+// (fetched from the Bike Tax tab via action:'bikeMakesModels') rather than
+// a fixed list -- so a brand-new make or model typed here today shows up
+// as a suggestion the very next time this page loads, with nothing else
+// to maintain. Model is scoped to whichever make is currently entered
+// (and disabled entirely until a make is set), so picking "Yamaha"
+// doesn't show Honda's or GPX's models. ----
+const makeInput = document.getElementById('make');
+const modelInput = document.getElementById('model');
+const modelHint = document.getElementById('modelHint');
+let knownModels = []; // [{ make, model }, ...] -- every distinct pair seen
+
+// Case-insensitive, multi-word "contains all tokens" matcher -- same rule
+// used for every other search box in this app (see contract.html).
+function tokenMatch(value, query) {
+  if (!query) return true;
+  const v = (value || '').toString().toLowerCase();
+  const tokens = query.toLowerCase().trim().split(/\s+/).filter(Boolean);
+  return tokens.every(t => v.includes(t));
+}
+
+function highlight(value, query) {
+  let out = String(value || '');
+  const tokens = (query || '').toLowerCase().trim().split(/\s+/).filter(Boolean);
+  tokens.forEach(t => {
+    if (!t) return;
+    const re = new RegExp('(' + t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'ig');
+    out = out.replace(re, '<mark>$1</mark>');
+  });
+  return out;
+}
+
+function modelNamesForCurrentMake() {
+  const make = makeInput.value.trim().toLowerCase();
+  if (!make) return [];
+  return knownModels
+    .filter(m => m.make.toLowerCase() === make)
+    .map(m => m.model);
+}
+
+// ---- Auto-fills the CC field once Make + Model exactly match a pair
+// already in the fleet AND that pair has only ever been recorded at one
+// CC (getBikeMakesModels leaves cc as '' server-side whenever a model's
+// been seen at more than one CC, e.g. an older/newer generation -- so
+// there's nothing to guess at here, this only ever fills in a value it's
+// actually confident about). Never overwrites CC if the person has
+// already typed something into it themselves. ----
+function maybeAutoFillCC() {
+  const ccInput = document.getElementById('cc');
+  if (ccInput.value.trim()) return; // don't clobber a manually-entered CC
+
+  const make = makeInput.value.trim().toLowerCase();
+  const model = modelInput.value.trim().toLowerCase();
+  if (!make || !model) return;
+
+  const match = knownModels.find(m => m.make.toLowerCase() === make && m.model.toLowerCase() === model);
+  if (match && match.cc) ccInput.value = match.cc;
+}
+
+function updateModelEnabledState() {
+  const hasMake = !!makeInput.value.trim();
+  modelInput.disabled = !hasMake;
+  if (!hasMake) {
+    modelInput.value = '';
+    modelHint.textContent = 'Pick a make above to see its models, or type a new one.';
+  } else {
+    const count = modelNamesForCurrentMake().length;
+    modelHint.textContent = count
+      ? ('Showing ' + count + ' existing ' + makeInput.value.trim() + ' model' + (count === 1 ? '' : 's') + ' -- type a new one if it\'s not listed.')
+      : ('No existing models for "' + makeInput.value.trim() + '" yet -- type a new one.');
+  }
+}
+
+makeInput.addEventListener('input', updateModelEnabledState);
+makeInput.addEventListener('blur', () => {
+  // toTitleCaseBikeName (wired above) reformats the make on blur -- refresh
+  // the model hint/scope afterward so it reflects the corrected casing.
+  setTimeout(updateModelEnabledState, 0);
+});
+
+// Same searchable-dropdown pattern as attachBikeModelAutocomplete on
+// contract.html, but the suggestion list is recomputed from
+// modelNamesForCurrentMake() on every open, since which make is "current"
+// can change at any time.
+function attachModelAutocomplete() {
+  const list = document.querySelector('.ac-list[data-for="model"]');
+  let hiIndex = -1;
+
+  function close() {
+    list.classList.remove('show');
+    list.innerHTML = '';
+    hiIndex = -1;
+  }
+
+  function open(query) {
+    if (modelInput.disabled) { close(); return; }
+    const options = modelNamesForCurrentMake().filter(v => tokenMatch(v, query)).slice(0, 8);
+    if (options.length === 0) { close(); return; }
+    list.innerHTML = options.map((v, i) =>
+      `<div class="ac-item" data-index="${i}">${highlight(v, query)}</div>`
+    ).join('');
+    list.classList.add('show');
+    hiIndex = -1;
+    Array.from(list.children).forEach((el, i) => {
+      el.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        modelInput.value = options[i];
+        close();
+        maybeAutoFillCC();
+      });
+    });
+    list._options = options;
+  }
+
+  modelInput.addEventListener('input', () => open(modelInput.value.trim()));
+  modelInput.addEventListener('focus', () => open(modelInput.value.trim()));
+
+  modelInput.addEventListener('keydown', (e) => {
+    const items = Array.from(list.children);
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      if (hiIndex >= 0 && list._options) {
+        modelInput.value = list._options[hiIndex];
+        maybeAutoFillCC();
+      }
+      close();
+      return;
+    }
+    if (!items.length) return;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      hiIndex = Math.min(hiIndex + 1, items.length - 1);
+      items.forEach((el, i) => el.classList.toggle('hi', i === hiIndex));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      hiIndex = Math.max(hiIndex - 1, 0);
+      items.forEach((el, i) => el.classList.toggle('hi', i === hiIndex));
+    } else if (e.key === 'Escape') {
+      close();
+    }
+  });
+
+  document.addEventListener('click', (e) => {
+    if (!modelInput.contains(e.target) && !list.contains(e.target)) close();
+  });
+
+  // Catch-all for a model typed by hand (not picked from the dropdown)
+  // that happens to exactly match an existing make+model pair --
+  // toTitleCaseBikeName's own blur handler on this same field runs first
+  // (registered earlier), so this sees the corrected casing.
+  modelInput.addEventListener('blur', () => setTimeout(maybeAutoFillCC, 0));
+}
+attachModelAutocomplete();
+
+// Make field's own list still uses the browser's native <datalist> (a
+// plain dropdown is enough there -- it isn't scoped to anything else the
+// way Model is), just repopulated dynamically once real fleet data loads.
+function populateMakeList(makes) {
+  if (!makes || !makes.length) return; // keep the fallback options on error
+  const makeList = document.getElementById('makeList');
+  makeList.innerHTML = makes.map(m => `<option value="${m.replace(/"/g, '&quot;')}">`).join('');
+}
+
+updateModelEnabledState();
+
+fetch(scriptUrl + '?action=bikeMakesModels')
+  .then(res => res.json())
+  .then(data => {
+    if (!data || !data.success) return;
+    populateMakeList(data.makes || []);
+    knownModels = data.models || [];
+    updateModelEnabledState(); // in case a make was already typed before this resolved
+  })
+  .catch(() => { /* keep the hardcoded fallback makes; model just stays a free-text field */ });
+
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+
+  // A sell/unsell write is in progress -- every field here is already
+  // disabled while that's true (see setFleetBusyUI), but this is a belt-
+  // and-braces guard in case a submit ever slips through some other way.
+  if (fleetActionInFlight) return;
+
+  const bike = fieldValue('bike');
+  if (!bike) {
+    statusBox.textContent = 'Please enter a bike name.';
+    statusBox.className = 'status err';
+    document.getElementById('bike').focus();
+    return;
+  }
+
+  statusBox.className = 'status';
+  submitBtn.disabled = true;
+  submitBtn.textContent = 'Adding…';
+
+  const payload = {
+    action: 'addBike',
+    bike: bike,
+    make: fieldValue('make'),
+    model: fieldValue('model'),
+    modelYear: fieldValue('modelYear'),
+    cc: fieldValue('cc'),
+    category: document.getElementById('category').value,
+    key: document.getElementById('keyless').checked ? 'keyless' : '',
+    abs: document.getElementById('abs').checked ? 'yes' : '',
+    tractionControl: document.getElementById('tractionControl').checked ? 'yes' : '',
+    box: document.getElementById('box').checked ? 'yes' : '',
+    plateNo: fieldValue('plateNo'),
+    porRorBorDate: document.getElementById('porRorBorDate').value,
+    insurance: fieldValue('insurance'),
+    cost: fieldValue('cost'),
+    deposit: fieldValue('deposit'),
+    currentKm: fieldValue('currentKm')
+  };
+
+  try {
+    const res = await fetch(scriptUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+
+    if (data.success) {
+      if (data.warning) {
+        statusBox.textContent = '"' + bike + '" added, but: ' + data.warning;
+        statusBox.className = 'status warn';
+      } else {
+        statusBox.textContent = '"' + bike + '" added to the fleet — it now appears in every bike dropdown across the app.';
+        statusBox.className = 'status ok';
+      }
+      form.reset();
+    } else {
+      statusBox.textContent = 'Could not add bike: ' + (data.error || 'Unknown error.');
+      statusBox.className = 'status err';
+    }
+  } catch (err) {
+    statusBox.textContent = 'Could not reach the spreadsheet: ' + err.message;
+    statusBox.className = 'status err';
+  } finally {
+    submitBtn.disabled = false;
+    submitBtn.textContent = 'Add bike';
+  }
+});
+
+// ---- Edit bike: a popup (not the Add Bike form above) prepopulated with
+// an existing bike's details -- replaces the never-built "Remove a bike"
+// idea. Its fields all use "edit-" prefixed ids so nothing collides with
+// the Add Bike form's own fields. editingBikeName tracks which bike is
+// open in the popup (its name as of when Edit was clicked -- see editBike
+// in Code.gs for why the ORIGINAL name matters even though the name field
+// itself is editable). Declared here, right before first use, rather than
+// scattered elsewhere -- an earlier version of this feature declared its
+// state further down the file than where it was first read/written, which
+// threw "Cannot access before initialization" the instant the page loaded
+// and silently aborted the rest of the script, taking listBikesBtn's own
+// click listener down with it. ----
+let editingBikeName = null;
+const editBikeBackdrop = document.getElementById('editBikeBackdrop');
+const editBikeCloseBtn = document.getElementById('editBikeCloseBtn');
+const editBikeCancelBtn = document.getElementById('editBikeCancelBtn');
+const editBikeSaveBtn = document.getElementById('editBikeSaveBtn');
+const editBikeStatus = document.getElementById('editBikeStatus');
+
+function ef(id) { return document.getElementById('edit-' + id); }
+
+function openEditBikeModal(details, originalName) {
+  editingBikeName = originalName;
+
+  ef('bike').value = details.bike || originalName;
+  ef('make').value = details.make || '';
+  ef('model').value = details.model || '';
+  ef('modelYear').value = (details.modelYear === '' || details.modelYear === null || details.modelYear === undefined) ? '' : details.modelYear;
+  ef('cc').value = details.cc || '';
+  ef('category').value = details.category || '';
+  ef('keyless').checked = !!(details.key && details.key.toString().trim());
+  ef('abs').checked = !!(details.abs && details.abs.toString().trim());
+  ef('tractionControl').checked = !!(details.tractionControl && details.tractionControl.toString().trim());
+  ef('box').checked = !!(details.box && details.box.toString().trim());
+  ef('plateNo').value = details.plateNo || '';
+  ef('porRorBorDate').value = details.porRorBorDate || '';
+  ef('insurance').value = details.insurance || '';
+  ef('cost').value = (details.cost === '' || details.cost === null || details.cost === undefined) ? '' : details.cost;
+  ef('deposit').value = (details.deposit === '' || details.deposit === null || details.deposit === undefined) ? '' : details.deposit;
+  ef('currentKm').value = (details.currentKm === '' || details.currentKm === null || details.currentKm === undefined) ? '' : details.currentKm;
+
+  editBikeStatus.className = 'status';
+  editBikeStatus.textContent = '';
+  editBikeSaveBtn.disabled = false;
+  editBikeSaveBtn.textContent = 'Save changes';
+  editBikeBackdrop.classList.add('show');
+}
+
+function closeEditBikeModal() {
+  editBikeBackdrop.classList.remove('show');
+  editingBikeName = null;
+}
+
+editBikeCloseBtn.addEventListener('click', closeEditBikeModal);
+editBikeCancelBtn.addEventListener('click', closeEditBikeModal);
+
+// Click-outside-to-close, guarded against a click-drag text selection that
+// starts inside the popup but ends (mouseup) over the backdrop -- see
+// CLAUDE.md's modal/lightbox convention: only close if BOTH the mousedown
+// and the click itself landed on the backdrop, not just the click.
+let editBikeMouseDownOnBackdrop = false;
+editBikeBackdrop.addEventListener('mousedown', (e) => {
+  editBikeMouseDownOnBackdrop = (e.target === editBikeBackdrop);
+});
+editBikeBackdrop.addEventListener('click', (e) => {
+  if (e.target === editBikeBackdrop && editBikeMouseDownOnBackdrop) closeEditBikeModal();
+  editBikeMouseDownOnBackdrop = false;
+});
+
+editBikeSaveBtn.addEventListener('click', async () => {
+  const bike = ef('bike').value.trim();
+  if (!bike) {
+    editBikeStatus.textContent = 'Please enter a bike name.';
+    editBikeStatus.className = 'status err';
+    ef('bike').focus();
+    return;
+  }
+
+  editBikeStatus.className = 'status';
+  editBikeSaveBtn.disabled = true;
+  editBikeSaveBtn.textContent = 'Saving…';
+
+  const payload = {
+    action: 'editBike',
+    originalBike: editingBikeName,
+    bike: bike,
+    make: ef('make').value.trim(),
+    model: ef('model').value.trim(),
+    modelYear: ef('modelYear').value.trim(),
+    cc: ef('cc').value.trim(),
+    category: ef('category').value,
+    key: ef('keyless').checked ? 'keyless' : '',
+    abs: ef('abs').checked ? 'yes' : '',
+    tractionControl: ef('tractionControl').checked ? 'yes' : '',
+    box: ef('box').checked ? 'yes' : '',
+    plateNo: ef('plateNo').value.trim(),
+    porRorBorDate: ef('porRorBorDate').value,
+    insurance: ef('insurance').value.trim(),
+    cost: ef('cost').value.trim(),
+    deposit: ef('deposit').value.trim(),
+    currentKm: ef('currentKm').value.trim()
+  };
+
+  try {
+    const res = await fetch(scriptUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+
+    if (data.success) {
+      const savedName = bike;
+      closeEditBikeModal();
+      fleetListLoaded = false; // stale now -- force a fresh fetch
+      setFleetStatus(
+        data.warning ? ('"' + savedName + '" updated, but: ' + data.warning) : ('"' + savedName + '" updated.'),
+        data.warning ? 'warn' : 'ok'
+      );
+      await loadFleetList();
+    } else {
+      editBikeStatus.textContent = 'Could not save changes: ' + (data.error || 'Unknown error.');
+      editBikeStatus.className = 'status err';
+    }
+  } catch (err) {
+    editBikeStatus.textContent = 'Could not reach the spreadsheet: ' + err.message;
+    editBikeStatus.className = 'status err';
+  } finally {
+    editBikeSaveBtn.disabled = false;
+    editBikeSaveBtn.textContent = 'Save changes';
+  }
+});
+
+// name of the bike whose "Edit" button was just clicked, while its details
+// are still loading -- renderFleetList() disables every Edit button (not
+// just the one clicked) and shows "Loading…" on that one specifically
+// while this is set, so mashing the button (or clicking a different bike's
+// Edit at the same time) can't fire off a second overlapping request.
+let editLoadingBike = null;
+
+async function startEditBike(bikeName) {
+  if (fleetActionInFlight || editLoadingBike) return;
+  editLoadingBike = bikeName;
+  renderFleetList();
+  setFleetStatus('Loading bike details…', 'warn');
+  try {
+    const res = await fetch(scriptUrl + '?action=bikeDetails&bike=' + encodeURIComponent(bikeName)).then(r => r.json());
+    if (!res.success) throw new Error(res.error || 'Could not load bike details.');
+    openEditBikeModal(res.bike, bikeName);
+    setFleetStatus(null);
+    openFleetBike = null;
+  } catch (err) {
+    setFleetStatus('Could not load "' + bikeName + '" for editing: ' + err.message, 'err');
+  } finally {
+    editLoadingBike = null;
+    renderFleetList();
+  }
+}
+
+// ---- Fleet list: List all bikes / Sell / Unsell ----
+// Sourced from action:'bikeIncomeSummary' (the same feed the Bikes summary
+// page uses) rather than action:'parts', since it already carries the
+// "sold" flag AND (now) the recorded sale amount/date off the same note
+// sellBike()/unsellBike() in Code.gs read and write -- one fetch gets
+// everything this list needs to display and to open the right panel.
+const listBikesBtn = document.getElementById('listBikesBtn');
+const fleetListWrap = document.getElementById('fleetListWrap');
+const fleetSearch = document.getElementById('fleetSearch');
+const fleetList = document.getElementById('fleetList');
+const fleetStatusBox = document.getElementById('fleetStatusBox');
+
+let allFleetBikes = [];
+let fleetListLoaded = false;
+let openFleetBike = null; // name of the bike whose Sell/Unsell panel is expanded, or null
+let fleetActionInFlight = false;
+let sellWriteOffMode = false; // whether the open Sell panel's "Written off" checkbox is ticked (swaps the amount field for a Stolen/Lost/Destroyed reason dropdown)
+// editingBikeName / editBanner / editBannerName / cancelEditBtn are declared
+// up near statusBox -- see the comment there for why.
+
+function fleetMoney(n) {
+  const num = Number(n) || 0;
+  return '฿' + num.toLocaleString('en-US');
+}
+
+function setFleetStatus(msg, cls) {
+  if (!msg) { fleetStatusBox.className = 'status'; fleetStatusBox.textContent = ''; return; }
+  fleetStatusBox.textContent = msg;
+  fleetStatusBox.className = 'status ' + (cls || 'err');
+}
+
+function fleetItemHtml(bike) {
+  const isOpen = openFleetBike === bike.name;
+  const soldInfo = bike.sold
+    ? (bike.reason
+        ? (bike.reason + (bike.soldDate ? ' on ' + bike.soldDate : ''))
+        : (bike.soldAmount
+            ? ('Sold for ' + fleetMoney(bike.soldAmount) + (bike.soldDate ? ' on ' + bike.soldDate : ''))
+            : 'Marked sold (no recorded amount on file)'))
+    : '';
+
+  let panelHtml = '';
+  if (isOpen && !bike.sold) {
+    const writeOffFieldsHtml = sellWriteOffMode ? `
+      <label for="writeOffReason">Reason</label>
+      <select id="writeOffReason" ${fleetActionInFlight ? 'disabled' : ''}>
+        <option value="">— Select —</option>
+        <option value="Stolen">Stolen</option>
+        <option value="Lost">Lost</option>
+        <option value="Destroyed">Destroyed</option>
+      </select>
+    ` : `
+      <label for="sellAmountInput">Sell amount (฿)</label>
+      <div class="currency-wrap">
+        <span class="prefix">฿</span>
+        <input type="number" min="0" step="1" id="sellAmountInput" placeholder="e.g. 25000" ${fleetActionInFlight ? 'disabled' : ''}>
+      </div>
+    `;
+    panelHtml = `
+      <div class="fleet-panel">
+        <div class="check-row">
+          <input type="checkbox" id="writeOffToggle" ${sellWriteOffMode ? 'checked' : ''} ${fleetActionInFlight ? 'disabled' : ''}>
+          <label for="writeOffToggle">Written off (stolen, lost, or destroyed)</label>
+        </div>
+        ${writeOffFieldsHtml}
+        <div class="btn-row">
+          <button type="button" class="btn-secondary" data-fleet-cancel ${fleetActionInFlight ? 'disabled' : ''}>Cancel</button>
+          <button type="button" class="btn-secondary" data-fleet-edit="${encodeURIComponent(bike.name)}" ${(fleetActionInFlight || editLoadingBike) ? 'disabled' : ''}>${editLoadingBike === bike.name ? 'Loading…' : 'Edit'}</button>
+          <button type="button" data-fleet-confirm-sell="${encodeURIComponent(bike.name)}" ${fleetActionInFlight ? 'disabled' : ''}>${fleetActionInFlight ? (sellWriteOffMode ? 'Saving…' : 'Selling…') : (sellWriteOffMode ? 'Confirm write-off' : 'Confirm sell')}</button>
+        </div>
+      </div>
+    `;
+  } else if (isOpen && bike.sold) {
+    panelHtml = `
+      <div class="fleet-panel">
+        <div class="fleet-item-hint">${soldInfo || 'This bike is marked sold.'}</div>
+        <div class="btn-row">
+          <button type="button" class="btn-secondary" data-fleet-cancel ${fleetActionInFlight ? 'disabled' : ''}>Cancel</button>
+          <button type="button" class="btn-secondary" data-fleet-edit="${encodeURIComponent(bike.name)}" ${(fleetActionInFlight || editLoadingBike) ? 'disabled' : ''}>${editLoadingBike === bike.name ? 'Loading…' : 'Edit'}</button>
+          <button type="button" data-fleet-confirm-unsell="${encodeURIComponent(bike.name)}" ${fleetActionInFlight ? 'disabled' : ''}>${fleetActionInFlight ? 'Undoing…' : 'Confirm unsell'}</button>
+        </div>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="fleet-item ${bike.sold ? 'sold' : ''}" data-fleet-item="${encodeURIComponent(bike.name)}">
+      <div class="fleet-item-row">
+        <div class="fleet-item-name">${bike.name}${bike.sold ? '<span class="sold-tag">Sold</span>' : ''}</div>
+      </div>
+      ${!isOpen && soldInfo ? `<div class="fleet-item-hint">${soldInfo}</div>` : ''}
+      ${panelHtml}
+    </div>
+  `;
+}
+
+function renderFleetList() {
+  const q = fleetSearch.value.trim().toLowerCase();
+  const filtered = q ? allFleetBikes.filter(b => b.name.toLowerCase().includes(q)) : allFleetBikes;
+
+  if (!filtered.length) {
+    fleetList.innerHTML = '<div class="fleet-empty">' +
+      (allFleetBikes.length ? 'No bikes match that search.' : 'No bikes found.') + '</div>';
+    return;
+  }
+
+  const active = filtered.filter(b => !b.sold);
+  const sold = filtered.filter(b => b.sold);
+
+  let html = '';
+  if (active.length) {
+    html += active.map(fleetItemHtml).join('');
+  }
+  if (sold.length) {
+    html += '<div class="fleet-group-label">Sold</div>' + sold.map(fleetItemHtml).join('');
+  }
+  fleetList.innerHTML = html;
+}
+
+async function loadFleetList() {
+  setFleetStatus('Loading bikes…', 'warn');
+  try {
+    const res = await fetch(scriptUrl + '?action=bikeIncomeSummary').then(r => r.json());
+    if (!res.success) throw new Error(res.error || 'Could not load the bike list.');
+    // "Extras" and "Deposit" are sentinel rows on the bikes sheet, not real
+    // bikes (see isSentinel on the backend) -- excluded here so they never
+    // show up as something staff could accidentally try to Sell.
+    allFleetBikes = (res.bikes || []).filter(b => !b.isSentinel).sort((a, b) =>
+      a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
+    );
+    setFleetStatus(null);
+    fleetListLoaded = true;
+    renderFleetList();
+  } catch (err) {
+    setFleetStatus('Could not load bikes: ' + err.message, 'err');
+    fleetList.innerHTML = '';
+  }
+}
+
+listBikesBtn.addEventListener('click', () => {
+  const showing = fleetListWrap.classList.toggle('show');
+  listBikesBtn.textContent = showing ? 'Hide bike list' : 'List all bikes';
+  if (showing && !fleetListLoaded) loadFleetList();
+});
+
+fleetSearch.addEventListener('input', renderFleetList);
+
+// Locks down everything on the page while a sell/unsell write is actually
+// in flight -- not just the fleet list (search box, List/Hide toggle,
+// every other bike row) but the separate Add Bike form below it too, since
+// that writes to the exact same four sheets (Parts and Oil change, bikes,
+// Bike Tax, Operation) a sell/unsell does. Running both at once risked two
+// requests fighting over the same rows -- easier to just make one finish
+// before anything else on the page can be touched.
+//
+// modelInput is deliberately skipped in the blanket form-lock: it has its
+// OWN independent enabled/disabled rule (tied to whether Make has a value,
+// via updateModelEnabledState()) that this must not fight with -- forcing
+// it back to enabled once the busy lock lifts would wrongly re-enable it
+// even with Make still blank. Re-asserting that rule right after unlocking
+// (rather than just leaving modelInput alone the whole time) is what
+// keeps it correct in both directions.
+function setFleetBusyUI(busy) {
+  fleetActionInFlight = busy;
+  fleetSearch.disabled = busy;
+  listBikesBtn.disabled = busy;
+  fleetListWrap.classList.toggle('busy', busy);
+
+  submitBtn.disabled = busy;
+  Array.from(form.elements).forEach((el) => {
+    if (el === modelInput) return;
+    el.disabled = busy;
+  });
+  if (!busy) updateModelEnabledState();
+}
+
+async function confirmSellBike(bikeName, amount, reason) {
+  setFleetBusyUI(true);
+  renderFleetList();
+  setFleetStatus(null);
+  try {
+    const payload = reason
+      ? { action: 'sellBike', bike: bikeName, reason: reason }
+      : { action: 'sellBike', bike: bikeName, sellAmount: amount };
+
+    const res = await fetch(scriptUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(payload)
+    }).then(r => r.json());
+
+    const outcomeLabel = reason ? ('marked ' + reason.toLowerCase()) : ('marked sold for ' + fleetMoney(amount));
+
+    if (!res.success) {
+      setFleetStatus('Could not mark "' + bikeName + '" ' + (reason ? reason.toLowerCase() : 'sold') + ': ' + (res.error || 'Unknown error.'), 'err');
+      return;
+    }
+    if (res.warning) {
+      setFleetStatus('"' + bikeName + '" ' + outcomeLabel + ', but: ' + res.warning, 'warn');
+    } else {
+      setFleetStatus('"' + bikeName + '" ' + outcomeLabel + '.', 'ok');
+    }
+    openFleetBike = null;
+    sellWriteOffMode = false;
+    await loadFleetList();
+  } catch (err) {
+    setFleetStatus('Could not reach the spreadsheet: ' + err.message, 'err');
+  } finally {
+    setFleetBusyUI(false);
+    renderFleetList();
+  }
+}
+
+async function confirmUnsellBike(bikeName) {
+  setFleetBusyUI(true);
+  renderFleetList();
+  setFleetStatus(null);
+  try {
+    const res = await fetch(scriptUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ action: 'unsellBike', bike: bikeName })
+    }).then(r => r.json());
+
+    if (!res.success) {
+      setFleetStatus('Could not unsell "' + bikeName + '": ' + (res.error || 'Unknown error.'), 'err');
+      return;
+    }
+    if (res.warning) {
+      setFleetStatus('"' + bikeName + '" unsold, but: ' + res.warning, 'warn');
+    } else {
+      setFleetStatus('"' + bikeName + '" is no longer marked sold.', 'ok');
+    }
+    openFleetBike = null;
+    await loadFleetList();
+  } catch (err) {
+    setFleetStatus('Could not reach the spreadsheet: ' + err.message, 'err');
+  } finally {
+    setFleetBusyUI(false);
+    renderFleetList();
+  }
+}
+
+fleetList.addEventListener('click', (e) => {
+  if (fleetActionInFlight || editLoadingBike) return;
+
+  const cancelBtn = e.target.closest('[data-fleet-cancel]');
+  if (cancelBtn) {
+    openFleetBike = null;
+    sellWriteOffMode = false;
+    renderFleetList();
+    return;
+  }
+
+  // "Written off" checkbox -- lives inside .fleet-panel, so this has to be
+  // handled before the .fleet-panel bubble-guard further down (same reason
+  // the buttons above are).
+  const writeOffToggle = e.target.closest('#writeOffToggle');
+  if (writeOffToggle) {
+    sellWriteOffMode = writeOffToggle.checked;
+    renderFleetList();
+    return;
+  }
+
+  const confirmSellBtn = e.target.closest('[data-fleet-confirm-sell]');
+  if (confirmSellBtn) {
+    const bikeName = decodeURIComponent(confirmSellBtn.dataset.fleetConfirmSell);
+
+    if (sellWriteOffMode) {
+      const reasonSelect = document.getElementById('writeOffReason');
+      const reason = reasonSelect ? reasonSelect.value : '';
+      if (!reason) {
+        setFleetStatus('Select a reason (Stolen, Lost, or Destroyed).', 'err');
+        return;
+      }
+      if (!confirm('Mark "' + bikeName + '" as ' + reason + '? This retires it as a ฿0 write-off — it can be undone with Unsell if this is a mistake.')) {
+        return;
+      }
+      confirmSellBike(bikeName, 0, reason);
+      return;
+    }
+
+    const amountInput = document.getElementById('sellAmountInput');
+    const amount = amountInput ? Number(amountInput.value) : NaN;
+    if (!amountInput || amountInput.value.trim() === '' || isNaN(amount) || amount <= 0) {
+      setFleetStatus('Enter a valid sell amount.', 'err');
+      return;
+    }
+    if (!confirm('Sell "' + bikeName + '" for ' + fleetMoney(amount) + '? This marks it retired and adds ' +
+      fleetMoney(amount) + ' to its total — it can be undone with Unsell if this is a mistake.')) {
+      return;
+    }
+    confirmSellBike(bikeName, amount);
+    return;
+  }
+
+  const confirmUnsellBtn = e.target.closest('[data-fleet-confirm-unsell]');
+  if (confirmUnsellBtn) {
+    const bikeName = decodeURIComponent(confirmUnsellBtn.dataset.fleetConfirmUnsell);
+    const unsellBike = allFleetBikes.find(b => b.name === bikeName);
+    const unsellDetail = (unsellBike && unsellBike.reason)
+      ? (unsellBike.reason + ' write-off')
+      : ('sale' + ((unsellBike && unsellBike.soldAmount) ? (' of ' + fleetMoney(unsellBike.soldAmount)) : ''));
+    if (!confirm('Unsell "' + bikeName + '"? This undoes the ' + unsellDetail + ' and marks it active again.')) {
+      return;
+    }
+    confirmUnsellBike(bikeName);
+    return;
+  }
+
+  const editBtn = e.target.closest('[data-fleet-edit]');
+  if (editBtn) {
+    const bikeName = decodeURIComponent(editBtn.dataset.fleetEdit);
+    startEditBike(bikeName);
+    return;
+  }
+
+  // Clicking the item itself (the name/hint area, when its panel is
+  // collapsed) toggles that bike's panel open. Explicitly excludes clicks
+  // that land inside .fleet-panel -- e.g. the Sell Amount input -- since
+  // .fleet-panel is a child of this same [data-fleet-item] div, so
+  // .closest('[data-fleet-item]') matches those too. Without this guard,
+  // clicking into the amount field to type a number bubbled up to this
+  // same handler and collapsed the panel right back closed (it was
+  // already "open", so the toggle flipped it to closed) -- looked like the
+  // whole thing was refusing to let you type anything in.
+  if (e.target.closest('.fleet-panel')) return;
+
+  const item = e.target.closest('[data-fleet-item]');
+  if (item) {
+    const bikeName = decodeURIComponent(item.dataset.fleetItem);
+    openFleetBike = openFleetBike === bikeName ? null : bikeName;
+    sellWriteOffMode = false;
+    setFleetStatus(null);
+    renderFleetList();
+  }
+});
+</script>
+
+</body>
+</html>

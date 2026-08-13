@@ -1,0 +1,906 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Deposits — AA Scooters</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="nav.js" defer></script>
+<style>
+  :root{
+    --sand:#F5EFE6;
+    --ink:#1A2421;
+    --petrol:#0F3D3E;
+    --petrol-light:#175A5B;
+    --cone:#FF6B35;
+    --card:#FFFFFF;
+    --line:#DED4C2;
+    --muted:#5A6663;
+    --ok:#2F855A;
+    --bad:#C53030;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; background:var(--sand); color:var(--ink);
+    font-family:'Inter',sans-serif; min-height:100vh;
+  }
+
+  .page-head{ max-width:720px; margin:0 auto; padding:22px 16px 4px; }
+  .page-head-top{
+    display:flex; align-items:flex-start; justify-content:space-between;
+    gap:12px; flex-wrap:wrap;
+  }
+  .page-head h1{
+    font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:26px;
+    color:var(--petrol); margin:0;
+  }
+  .page-head .sub{ color:var(--muted); font-size:13px; margin-top:6px; line-height:1.5; }
+  .btn-add-deposit{
+    flex-shrink:0; display:inline-block; background:var(--cone); color:#fff;
+    border:none; font-family:'Barlow Condensed',sans-serif; font-weight:700;
+    font-size:13px; letter-spacing:.03em; text-transform:uppercase;
+    padding:11px 18px; border-radius:10px; white-space:nowrap; cursor:pointer;
+  }
+  .btn-add-deposit:active{ transform:scale(.97); }
+
+  main{ max-width:720px; margin:0 auto; padding:16px 16px 60px; }
+
+  .load-status{
+    font-size:12px; color:#B36A2E; background:#FFF3E6; border:1px solid #F3D9B8;
+    border-radius:7px; padding:7px 10px; margin-bottom:12px; display:none;
+  }
+  .load-status.show{ display:block; }
+
+  .total-bar{
+    display:flex; align-items:center; justify-content:space-between;
+    background:var(--petrol); color:#fff; border-radius:10px;
+    padding:12px 14px; margin-bottom:22px;
+  }
+  .total-bar .l{
+    font-family:'Barlow Condensed',sans-serif; font-size:12.5px; font-weight:600;
+    letter-spacing:.08em; text-transform:uppercase; color:#CFE3E0;
+  }
+  .total-bar .n{ font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:20px; }
+
+  /* One section per category (Bank / Wise / Revolut) */
+  .cat-section{ margin-bottom:26px; }
+  .cat-section:last-child{ margin-bottom:0; }
+  .cat-head{
+    display:flex; align-items:center; justify-content:space-between;
+    margin-bottom:10px;
+  }
+  .cat-head h2{
+    font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:18px;
+    color:var(--petrol); margin:0; display:flex; align-items:center; gap:8px;
+  }
+  .cat-head .cat-total{
+    font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:15px;
+    color:var(--ok);
+  }
+  .cat-dot{ width:10px; height:10px; border-radius:50%; display:inline-block; }
+  .cat-dot.bank{ background:var(--petrol); }
+  .cat-dot.wise{ background:#1A56B0; }
+  .cat-dot.revolut{ background:#6B21A8; }
+
+  .cat-sheet-total{
+    display:flex; gap:14px; flex-wrap:wrap;
+    font-size:11.5px; color:var(--muted); margin:-4px 0 12px;
+  }
+  .cat-sheet-total span{ white-space:nowrap; }
+  .cat-sheet-total b{ color:var(--ink); font-weight:600; }
+
+  .row{
+    background:var(--card); border:1px solid var(--line); border-radius:9px;
+    padding:10px 12px; margin-bottom:8px; font-size:13.5px;
+    display:flex; align-items:center; justify-content:space-between; gap:10px;
+    cursor:pointer;
+  }
+  .row:active{ transform:scale(.99); }
+  .row .left{ min-width:0; }
+  .row .title{ color:var(--ink); font-weight:500; }
+  .row .meta{ color:var(--muted); font-size:12px; margin-top:2px; }
+  .row .amt{ font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:15px; white-space:nowrap; color:var(--ok); }
+
+  .empty-hint{ font-size:13px; color:#8A948F; padding:8px 2px; }
+
+  /* Edit/Remove modal */
+  .modal-backdrop{
+    position:fixed; inset:0; background:rgba(15,36,33,.45);
+    display:none; align-items:flex-end; justify-content:center; z-index:1000;
+  }
+  .modal-backdrop.show{ display:flex; }
+  .modal-sheet{
+    background:var(--card); width:100%; max-width:480px;
+    border-radius:16px 16px 0 0; padding:20px 18px 24px;
+    max-height:90vh; overflow-y:auto;
+  }
+  @media (min-width:560px){
+    .modal-backdrop{ align-items:center; }
+    .modal-sheet{ border-radius:16px; }
+  }
+  .modal-sheet h3{
+    font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:20px;
+    color:var(--petrol); margin:0 0 14px;
+  }
+  .field{ margin-bottom:12px; }
+  .field label{
+    display:block; font-size:12px; font-weight:600; color:var(--muted);
+    margin-bottom:5px; text-transform:uppercase; letter-spacing:.04em;
+  }
+  .field input, .field select{
+    width:100%; padding:11px 12px; border:1px solid var(--line); border-radius:9px;
+    font-size:14.5px; font-family:'Inter',sans-serif; background:#FBFAF7; color:var(--ink);
+  }
+  .field input:focus, .field select:focus{ outline:none; border-color:var(--petrol-light); background:#fff; }
+  .field-checkbox-row{
+    display:flex; align-items:center; gap:8px; margin-bottom:12px;
+    font-size:13.5px; color:var(--ink); font-weight:500;
+  }
+  .field-checkbox-row input[type="checkbox"]{ width:17px; height:17px; accent-color:var(--cone); cursor:pointer; }
+  .field-checkbox-row label{ cursor:pointer; margin:0; text-transform:none; letter-spacing:normal; font-weight:500; }
+  .modal-error{
+    font-size:12.5px; color:var(--bad); background:#FCEBEB; border:1px solid #F3C6C6;
+    border-radius:7px; padding:7px 10px; margin-bottom:12px; display:none;
+  }
+  .modal-error.show{ display:block; }
+  .modal-progress{
+    font-size:12.5px; color:#2A5A8C; background:#EAF2FB; border:1px solid #BBD6F0;
+    border-radius:7px; padding:7px 10px; margin-bottom:12px; display:none; align-items:center; gap:9px;
+  }
+  .modal-progress.show{ display:flex; }
+  .modal-progress-spinner{
+    width:14px; height:14px; border:2px solid #BBD6F0; border-top-color:#2A5A8C;
+    border-radius:50%; flex-shrink:0; animation: modal-progress-spin 0.7s linear infinite;
+  }
+  @keyframes modal-progress-spin{ to{ transform:rotate(360deg); } }
+  .modal-btn-row{ display:flex; gap:10px; margin-top:16px; }
+  .modal-btn-row button{
+    flex:1; padding:13px; border:none; border-radius:10px;
+    font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:14px;
+    letter-spacing:.03em; text-transform:uppercase; cursor:pointer;
+  }
+  .modal-btn-row button:active{ transform:scale(.98); }
+  .btn-save{ background:var(--cone); color:#fff; }
+  .btn-cancel{ background:#EFEAE0; color:var(--petrol); }
+  .btn-delete{ background:var(--bad); color:#fff; }
+  .btn-save:disabled, .btn-delete:disabled, .btn-cancel:disabled{ opacity:.6; }
+
+  /* Cash deposit deduction card -- separate from the Bank/Wise/Revolut
+     categories above because cash deposits are never tracked on the
+     monthly sheet, only on the customer's Contract row. */
+  .cash-deduct-card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:16px 16px 18px; margin-top:28px;
+  }
+  .cash-deduct-card h2{
+    font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:18px;
+    color:var(--petrol); margin:0 0 4px;
+  }
+  .cash-deduct-card .sub{ color:var(--muted); font-size:12px; margin:0 0 14px; line-height:1.5; }
+  .cash-deduct-result{
+    font-size:12.5px; color:var(--ok); background:#EAF7EF; border:1px solid #BFE6CC;
+    border-radius:7px; padding:7px 10px; margin-bottom:12px; display:none;
+  }
+  .cash-deduct-result.show{ display:block; }
+  .cash-deduct-result.info{ color:#2A5A8C; background:#EAF2FB; border-color:#BBD6F0; }
+  .btn-cash-deduct{
+    display:block; width:100%; background:var(--cone); color:#fff; border:none;
+    font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:14px;
+    letter-spacing:.03em; text-transform:uppercase; padding:13px; border-radius:10px;
+    cursor:pointer; margin-top:2px;
+  }
+  .btn-cash-deduct:active{ transform:scale(.98); }
+  .btn-cash-deduct:disabled{ opacity:.6; }
+</style>
+</head>
+<body>
+
+<div id="topbar-mount"></div>
+
+<div class="page-head">
+  <div class="page-head-top">
+    <h1>Deposits</h1>
+    <button class="btn-add-deposit" id="addDepositBtn" type="button">+ Add Deposit</button>
+  </div>
+  <div class="sub" id="pageSub">Security deposits logged into the Bank (Scan), Wise, or Revolut tables this month — grouped by category, oldest first.</div>
+</div>
+
+<main>
+  <div class="load-status" id="loadStatus"></div>
+
+  <div class="total-bar">
+    <div class="l" id="totalLabel">Total Deposits (all categories)</div>
+    <div class="n" id="grandTotal">—</div>
+  </div>
+
+  <div id="depositsByCategory"></div>
+
+  <div class="cash-deduct-card">
+    <h2>Cash Deposit Deduction</h2>
+    <div class="sub">Cash deposits aren't logged above — they only live on the customer's Contract entry. Find the customer by name and this deducts straight from whatever deposit amount is on their contract. If nothing's recorded there, nothing is deducted (no error).</div>
+
+    <div class="field">
+      <label for="cashDeductName">Customer name</label>
+      <input type="text" id="cashDeductName" placeholder="Customer name">
+    </div>
+    <div class="field">
+      <label for="cashDeductAmount">Deduction amount (฿)</label>
+      <input type="number" min="0" step="any" id="cashDeductAmount" placeholder="0.00">
+    </div>
+    <div class="field">
+      <label for="cashDeductReason">Reason</label>
+      <input type="text" id="cashDeductReason" placeholder="e.g. mirror replacement">
+    </div>
+
+    <div class="modal-error" id="cashDeductError"></div>
+    <div class="modal-progress" id="cashDeductProgress"><span class="modal-progress-spinner"></span><span id="cashDeductProgressText">Connecting…</span></div>
+    <div class="cash-deduct-result" id="cashDeductResult"></div>
+
+    <button class="btn-cash-deduct" id="cashDeductBtn" type="button">Deduct from cash deposit</button>
+  </div>
+</main>
+
+<div class="modal-backdrop" id="modalBackdrop">
+  <div class="modal-sheet">
+    <h3 id="modalTitle">Edit Deposit</h3>
+    <div class="modal-error" id="modalError"></div>
+    <div class="modal-progress" id="modalProgress"><span class="modal-progress-spinner"></span><span id="modalProgressText">Connecting…</span></div>
+
+    <div class="field" id="fDepositCategoryField">
+      <label for="fDepositCategory">Deposit type</label>
+      <select id="fDepositCategory">
+        <option value="">Select…</option>
+        <option value="bank">Scan (Bank)</option>
+        <option value="wise">Wise</option>
+        <option value="revolut">Revolut</option>
+      </select>
+    </div>
+    <div class="field" id="fDepositDateField">
+      <label for="fDepositDate">Date</label>
+      <input type="date" id="fDepositDate">
+    </div>
+    <div class="field" id="fDepositNameField">
+      <label for="fDepositName">Name</label>
+      <input type="text" id="fDepositName" placeholder="Customer name">
+    </div>
+    <div class="field" id="fDepositAmountField">
+      <label for="fDepositAmount">Amount (฿)</label>
+      <input type="number" min="0" step="any" id="fDepositAmount" placeholder="0.00">
+    </div>
+
+    <div class="field-checkbox-row" id="fDeductToggleField" style="display:none;">
+      <input type="checkbox" id="fDeductToggle">
+      <label for="fDeductToggle">Deduct from this deposit</label>
+    </div>
+
+    <div id="fDeductFields" style="display:none;">
+      <div class="field">
+        <label for="fDeductBike">Bike</label>
+        <input type="text" id="fDeductBike" placeholder="Bike (auto-filled)">
+      </div>
+      <div class="field">
+        <label for="fDeductAmount">Deduction amount (฿)</label>
+        <input type="number" min="0" step="any" id="fDeductAmount" placeholder="0.00">
+      </div>
+      <div class="field">
+        <label for="fDeductReason">Reason</label>
+        <input type="text" id="fDeductReason" placeholder="e.g. mirror replacement">
+      </div>
+    </div>
+
+    <div class="modal-btn-row">
+      <button class="btn-delete" id="modalDeleteBtn" type="button">Remove deposit</button>
+      <button class="btn-cancel" id="modalCancelBtn" type="button">Cancel</button>
+      <button class="btn-save" id="modalSaveBtn" type="button">Save</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const scriptUrl = ''; // DISCONNECTED: this Vercel copy is intentionally not wired to the live backend (dev/testing only, see project CLAUDE.md)
+
+// Matches the CATEGORIES list in Code.gs's getDepositsData -- just used
+// here to control display order/labels/colors, since the server already
+// does the actual reading, header-checking and classification.
+const CATEGORIES = [
+  { key: 'bank', label: 'Bank' },
+  { key: 'wise', label: 'Wise' },
+  { key: 'revolut', label: 'Revolut' }
+];
+
+function setLoadStatus(msg, isError) {
+  const el = document.getElementById('loadStatus');
+  if (!msg) { el.classList.remove('show'); el.textContent = ''; return; }
+  el.textContent = msg;
+  el.style.color = isError ? '#C53030' : '#B36A2E';
+  el.style.background = isError ? '#FCEBEB' : '#FFF3E6';
+  el.style.borderColor = isError ? '#F3C6C6' : '#F3D9B8';
+  el.classList.add('show');
+}
+
+function money(n) {
+  if (n === '' || n === null || n === undefined || isNaN(Number(n))) return '—';
+  const num = Number(n);
+  const sign = num < 0 ? '-' : '';
+  return sign + '฿' + Math.abs(num).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+async function loadDeposits() {
+  setLoadStatus('Loading deposits…');
+  document.getElementById('depositsByCategory').innerHTML = '';
+
+  let res;
+  try {
+    res = await fetch(scriptUrl + '?action=deposits').then(r => r.json());
+  } catch (err) {
+    setLoadStatus('Failed to load deposits: ' + err.message, true);
+    return;
+  }
+
+  if (!res || !res.success) {
+    setLoadStatus((res && res.error) || 'Failed to load deposits — please try again.', true);
+    return;
+  }
+
+  // Only the current month's sheet is read -- older months are closed-out
+  // history, kept on their own sheets for record-keeping only.
+  if (res.month) {
+    document.getElementById('pageSub').textContent =
+      'Security deposits logged into the Bank (Scan), Wise, or Revolut tables on the ' + res.month + ' sheet — grouped by category, oldest first.';
+    document.getElementById('totalLabel').textContent = 'Total Deposits — ' + res.month;
+  }
+
+  // The server already found this month's "deposit scan/wise/revolut"
+  // table, skipped any it couldn't verify the header on, and returned
+  // rows oldest-first. If it couldn't read a section (header moved,
+  // sheet edited by hand, etc.) that's surfaced here as a warning rather
+  // than silently showing incomplete numbers.
+  if (res.warnings && res.warnings.length) {
+    setLoadStatus(res.warnings.join(' '), true);
+  } else {
+    setLoadStatus(null);
+  }
+
+  render(res.deposits || [], res.summary || {});
+}
+
+// Kept around (keyed by "category|row") so a row click can look up its
+// full entry without re-parsing the DOM -- used to prefill the edit modal.
+let allDeposits = [];
+
+// `summary` is the sheet's own total figures per category (see
+// getDepositsData/ACCOUNTS_SUMMARY-style reads in Code.gs) -- O15/P15 for
+// Bank, R15/S15 + R16/S16 for Wise, V15/W15 + V16/W16 for Revolut. Shown
+// alongside the client-computed cat-total (sum of the visible rows above)
+// rather than replacing it, since the sheet's own total can include
+// history the visible list doesn't (or vice versa if something's off).
+function render(deposits, summary) {
+  allDeposits = deposits;
+  const container = document.getElementById('depositsByCategory');
+
+  container.innerHTML = CATEGORIES.map(cat => {
+    const rows = deposits.filter(d => d.category === cat.key);
+    const total = rows.reduce((sum, d) => sum + (typeof d.amount === 'number' ? d.amount : 0), 0);
+    const rowsHtml = rows.length
+      ? rows.map(d => `
+        <div class="row" data-category="${d.category}" data-row="${d.row}">
+          <div class="left">
+            <div class="title">${d.name || '—'}</div>
+            <div class="meta">${d.date || ''}</div>
+          </div>
+          <div class="amt">${money(d.amount)}</div>
+        </div>
+      `).join('')
+      : '<div class="empty-hint">No ' + cat.label.toLowerCase() + ' deposits found.</div>';
+
+    const catSummary = (summary && summary[cat.key]) || {};
+    const sheetTotalHtml = [];
+    if (catSummary.total && catSummary.total.value !== null && catSummary.total.value !== undefined) {
+      sheetTotalHtml.push(`<span>${catSummary.total.label}: <b>${catSummary.total.value}</b></span>`);
+    }
+    if (catSummary.runningTotal && catSummary.runningTotal.value !== null && catSummary.runningTotal.value !== undefined) {
+      sheetTotalHtml.push(`<span>${catSummary.runningTotal.label}: <b>${catSummary.runningTotal.value}</b></span>`);
+    }
+
+    return `
+      <div class="cat-section">
+        <div class="cat-head">
+          <h2><span class="cat-dot ${cat.key}"></span>${cat.label}</h2>
+          <div class="cat-total">${money(total)}</div>
+        </div>
+        ${sheetTotalHtml.length ? `<div class="cat-sheet-total">${sheetTotalHtml.join('')}</div>` : ''}
+        ${rowsHtml}
+      </div>
+    `;
+  }).join('');
+
+  const grandTotal = deposits.reduce((sum, d) => sum + (typeof d.amount === 'number' ? d.amount : 0), 0);
+  document.getElementById('grandTotal').textContent = money(grandTotal);
+}
+
+// ---- Add / Edit / Remove modal ----
+// "+ Add Deposit" up top opens this same modal in add mode (pick a
+// deposit type, since there's no existing row to imply one). Clicking an
+// existing deposit row opens it in edit mode instead, to change its date,
+// name and amount, or remove it entirely (behind a confirmation prompt).
+// All three actions touch ONLY the date/amount/name cells for one row on
+// the sheet -- nothing else (running Wise/Revolut totals, income/expense
+// rows, other deposits) is read or written, matching
+// addDepositEntry/editDepositEntry/deleteDepositEntry in Code.gs.
+const modalBackdrop = document.getElementById('modalBackdrop');
+const modalTitle = document.getElementById('modalTitle');
+const modalError = document.getElementById('modalError');
+const modalProgress = document.getElementById('modalProgress');
+const modalProgressText = document.getElementById('modalProgressText');
+const modalSaveBtn = document.getElementById('modalSaveBtn');
+const modalDeleteBtn = document.getElementById('modalDeleteBtn');
+const modalCancelBtn = document.getElementById('modalCancelBtn');
+const addDepositBtn = document.getElementById('addDepositBtn');
+const fDepositCategoryField = document.getElementById('fDepositCategoryField');
+const fDepositCategory = document.getElementById('fDepositCategory');
+const fDepositDateField = document.getElementById('fDepositDateField');
+const fDepositDate = document.getElementById('fDepositDate');
+const fDepositNameField = document.getElementById('fDepositNameField');
+const fDepositName = document.getElementById('fDepositName');
+const fDepositAmountField = document.getElementById('fDepositAmountField');
+const fDepositAmount = document.getElementById('fDepositAmount');
+const fDeductToggleField = document.getElementById('fDeductToggleField');
+const fDeductToggle = document.getElementById('fDeductToggle');
+const fDeductFields = document.getElementById('fDeductFields');
+const fDeductBike = document.getElementById('fDeductBike');
+const fDeductAmount = document.getElementById('fDeductAmount');
+const fDeductReason = document.getElementById('fDeductReason');
+
+let modalMode = null; // 'add' or 'edit'
+let modalCategory = null;
+let modalRow = null;
+let modalProgressTimer = null;
+
+// dd/MM/yyyy (how the sheet stores it, and how the server returns it) <->
+// yyyy-MM-dd (what <input type="date"> needs).
+function dmyToIso(s) {
+  const m = (s || '').toString().trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (!m) return '';
+  const d = m[1].padStart(2, '0'), mo = m[2].padStart(2, '0'), y = m[3];
+  return `${y}-${mo}-${d}`;
+}
+
+function setModalError(msg) {
+  if (!msg) { modalError.classList.remove('show'); modalError.textContent = ''; return; }
+  modalError.textContent = msg;
+  modalError.classList.add('show');
+}
+
+function setModalButtonsDisabled(disabled) {
+  modalSaveBtn.disabled = disabled;
+  modalDeleteBtn.disabled = disabled;
+  modalCancelBtn.disabled = disabled;
+  fDepositCategory.disabled = disabled;
+  fDeductToggle.disabled = disabled;
+  fDeductBike.disabled = disabled;
+  fDeductAmount.disabled = disabled;
+  fDeductReason.disabled = disabled;
+}
+
+// Same normalization used on the Bikes Status page for matching customer
+// names loosely (trim/lowercase/collapse whitespace) -- kept as its own
+// copy here rather than a shared include, since this project has no
+// shared-JS mechanism between pages.
+function normalizeDeductName(s) {
+  return (s || '').toString().trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function isRentedSituationForDeduct(situation) {
+  const s = (situation || '').toString().trim().toLowerCase();
+  return s !== 'returned';
+}
+
+// Ticking "Deduct from this deposit" needs to know which bike this
+// customer currently has out, so the mid-rental charge lands on the right
+// bike's income row -- same "who's actually still renting this" rule the
+// Bikes Status page uses (situation isn't "Returned"). Deposits entries
+// only ever store a name, never a bike, so this is a fresh lookup against
+// the live customer/rental data every time the checkbox is ticked, matched
+// by name. Left blank (with a placeholder explaining why) on no match or
+// more than one match, rather than guessing -- staff can always type the
+// bike in by hand.
+async function autofillDeductBike(customerName) {
+  fDeductBike.value = '';
+  fDeductBike.placeholder = 'Looking up current rental…';
+  let res;
+  try {
+    res = await fetch(scriptUrl).then(r => r.json());
+  } catch (err) {
+    res = null;
+  }
+  // The checkbox may have been unticked (or the modal closed) while this
+  // fetch was in flight -- bail out quietly rather than writing into a
+  // field that's no longer relevant.
+  if (!fDeductToggle.checked) return;
+  if (!res || !res.success) {
+    fDeductBike.placeholder = 'Could not look up bike — enter manually';
+    return;
+  }
+  const target = normalizeDeductName(customerName);
+  const matches = (res.rows || []).filter(r =>
+    normalizeDeductName(r.name) === target && isRentedSituationForDeduct(r.situation)
+  );
+  if (matches.length === 1) {
+    fDeductBike.value = matches[0].bikeModel || '';
+    fDeductBike.placeholder = 'Bike (auto-filled)';
+  } else if (matches.length === 0) {
+    fDeductBike.placeholder = 'No current rental found — enter manually';
+  } else {
+    fDeductBike.placeholder = 'Multiple current rentals found — enter manually';
+  }
+}
+
+// Shows/hides the "Deduct from this deposit" checkbox itself (edit mode
+// only -- there's no existing deposit to deduct from while adding a new
+// one) and resets it back to unticked/empty every time the modal opens or
+// closes, so it never carries state over from a previous deposit.
+function resetDeductState(showToggle) {
+  fDeductToggleField.style.display = showToggle ? '' : 'none';
+  fDeductToggle.checked = false;
+  fDeductFields.style.display = 'none';
+  fDeductBike.value = '';
+  fDeductBike.placeholder = 'Bike (auto-filled)';
+  fDeductAmount.value = '';
+  fDeductReason.value = '';
+  fDepositDateField.style.display = '';
+  fDepositNameField.style.display = '';
+  fDepositAmountField.style.display = '';
+}
+
+fDeductToggle.addEventListener('change', () => {
+  const on = fDeductToggle.checked;
+  // Ticking swaps the modal from "edit this deposit's raw fields" to "log
+  // a deduction against it" -- the two don't make sense at the same time,
+  // so the plain date/name/amount fields hide while this is on. The name
+  // itself is still read from fDepositName.value under the hood (it's just
+  // not shown), so the deduction's income entry still gets attributed to
+  // the right customer.
+  fDeductFields.style.display = on ? '' : 'none';
+  fDepositDateField.style.display = on ? 'none' : '';
+  fDepositNameField.style.display = on ? 'none' : '';
+  fDepositAmountField.style.display = on ? 'none' : '';
+  setModalError(null);
+  if (on) {
+    autofillDeductBike(fDepositName.value.trim());
+  }
+});
+
+function startModalProgress(label) {
+  modalProgressText.textContent = label || 'Connecting…';
+  modalProgress.classList.add('show');
+  clearTimeout(modalProgressTimer);
+  modalProgressTimer = setTimeout(() => { modalProgressText.textContent = 'Saving…'; }, 500);
+}
+function stopModalProgress() {
+  clearTimeout(modalProgressTimer);
+  modalProgress.classList.remove('show');
+}
+
+function todayIso() {
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  return now.getFullYear() + '-' + pad(now.getMonth() + 1) + '-' + pad(now.getDate());
+}
+
+function openEditDepositModal(entry) {
+  modalMode = 'edit';
+  modalCategory = entry.category;
+  modalRow = entry.row;
+  setModalError(null);
+  modalTitle.textContent = 'Edit Deposit';
+  fDepositCategoryField.style.display = 'none';
+  modalDeleteBtn.style.display = '';
+  fDepositDate.value = dmyToIso(entry.date);
+  fDepositName.value = entry.name || '';
+  fDepositAmount.value = (typeof entry.amount === 'number') ? entry.amount : '';
+  resetDeductState(true);
+  modalBackdrop.classList.add('show');
+}
+
+function openAddDepositModal() {
+  modalMode = 'add';
+  modalCategory = null;
+  modalRow = null;
+  setModalError(null);
+  modalTitle.textContent = 'Add Deposit';
+  fDepositCategoryField.style.display = '';
+  fDepositCategory.value = '';
+  modalDeleteBtn.style.display = 'none';
+  fDepositDate.value = todayIso();
+  fDepositName.value = '';
+  fDepositAmount.value = '';
+  resetDeductState(false);
+  modalBackdrop.classList.add('show');
+}
+
+function closeDepositModal() {
+  modalBackdrop.classList.remove('show');
+  modalMode = null;
+  modalCategory = null;
+  modalRow = null;
+  resetDeductState(false);
+}
+
+document.getElementById('depositsByCategory').addEventListener('click', (e) => {
+  const rowEl = e.target.closest('.row[data-row]');
+  if (!rowEl) return;
+  const category = rowEl.dataset.category;
+  const row = Number(rowEl.dataset.row);
+  const entry = allDeposits.find(d => d.category === category && d.row === row);
+  if (entry) openEditDepositModal(entry);
+});
+
+addDepositBtn.addEventListener('click', openAddDepositModal);
+
+modalCancelBtn.addEventListener('click', closeDepositModal);
+modalBackdrop.addEventListener('click', (e) => {
+  if (e.target === modalBackdrop) closeDepositModal();
+});
+
+// "Deduct from this deposit" is a completely different save action from
+// the plain edit above -- it doesn't touch date/name at all, reduces the
+// amount via the server's own consumeDeposit() rather than overwriting it
+// directly, and logs an Income entry alongside. Handled first and returns
+// early so the plain edit/add logic below never also runs on the same
+// click.
+async function saveDeductFromDeposit() {
+  const deductionRaw = fDeductAmount.value.trim();
+  const deductionAmount = deductionRaw === '' ? NaN : Number(deductionRaw);
+  const reason = fDeductReason.value.trim();
+  const bikeModel = fDeductBike.value.trim();
+
+  if (deductionRaw === '' || isNaN(deductionAmount) || deductionAmount <= 0) {
+    setModalError('Enter a valid deduction amount.');
+    return;
+  }
+  if (!reason) {
+    setModalError('Enter a reason for the deduction.');
+    return;
+  }
+
+  const payload = {
+    action: 'deductDeposit',
+    category: modalCategory,
+    row: modalRow,
+    deductionAmount: deductionAmount,
+    reason: reason,
+    customerName: fDepositName.value.trim(),
+    bikeModel: bikeModel
+  };
+
+  setModalButtonsDisabled(true);
+  startModalProgress('Connecting…');
+  try {
+    const res = await fetch(scriptUrl, {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    }).then(r => r.json());
+    stopModalProgress();
+
+    if (!res.success) {
+      // Most commonly: the deduction is bigger than what's left in this
+      // deposit -- consumeDeposit() on the server refuses that outright
+      // rather than capping it or going negative, so nothing gets written
+      // at all. Staff handle that case manually instead (remove the whole
+      // deposit, collect the shortfall from the customer, log a fresh
+      // full-amount entry).
+      setModalError(res.error || 'Deduction failed — please try again.');
+      return;
+    }
+    closeDepositModal();
+    if (res.warning) alert('Deducted, but: ' + res.warning);
+    loadDeposits();
+  } catch (err) {
+    stopModalProgress();
+    setModalError('Deduction failed: ' + err.message);
+  } finally {
+    setModalButtonsDisabled(false);
+  }
+}
+
+modalSaveBtn.addEventListener('click', async () => {
+  setModalError(null);
+
+  if (modalMode === 'edit' && fDeductToggle.checked) {
+    await saveDeductFromDeposit();
+    return;
+  }
+
+  const amountRaw = fDepositAmount.value.trim();
+  const amount = amountRaw === '' ? '' : Number(amountRaw);
+
+  const isAdd = modalMode === 'add';
+  const category = isAdd ? fDepositCategory.value : modalCategory;
+
+  if (isAdd && !category) { setModalError('Select a deposit type.'); return; }
+  if (isAdd && (amountRaw === '' || isNaN(amount) || amount <= 0)) { setModalError('Enter a valid deposit amount.'); return; }
+  if (!isAdd && amountRaw !== '' && isNaN(amount)) { setModalError('Amount must be a number.'); return; }
+
+  const payload = isAdd
+    ? {
+        action: 'addDeposit',
+        category: category,
+        date: fDepositDate.value || '',
+        name: fDepositName.value.trim(),
+        amount: amount
+      }
+    : {
+        action: 'editDeposit',
+        category: modalCategory,
+        row: modalRow,
+        date: fDepositDate.value || '',
+        name: fDepositName.value.trim(),
+        amount: amount
+      };
+
+  setModalButtonsDisabled(true);
+  startModalProgress('Connecting…');
+  try {
+    const res = await fetch(scriptUrl, {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    }).then(r => r.json());
+    stopModalProgress();
+
+    if (!res.success) {
+      setModalError(res.error || 'Save failed — please try again.');
+      return;
+    }
+    closeDepositModal();
+    if (res.warning) alert('Saved, but: ' + res.warning);
+    loadDeposits();
+  } catch (err) {
+    stopModalProgress();
+    setModalError('Save failed: ' + err.message);
+  } finally {
+    setModalButtonsDisabled(false);
+  }
+});
+
+modalDeleteBtn.addEventListener('click', async () => {
+  const label = fDepositName.value.trim() || 'this deposit';
+  if (!confirm('Remove ' + label + '? This clears the date, name and amount for this deposit. This can\'t be undone.')) {
+    return;
+  }
+
+  setModalError(null);
+  const payload = {
+    action: 'deleteDeposit',
+    category: modalCategory,
+    row: modalRow
+  };
+
+  setModalButtonsDisabled(true);
+  startModalProgress('Connecting…');
+  try {
+    const res = await fetch(scriptUrl, {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    }).then(r => r.json());
+    stopModalProgress();
+
+    if (!res.success) {
+      setModalError(res.error || 'Remove failed — please try again.');
+      return;
+    }
+    closeDepositModal();
+    if (res.warning) alert('Removed, but: ' + res.warning);
+    loadDeposits();
+  } catch (err) {
+    stopModalProgress();
+    setModalError('Remove failed: ' + err.message);
+  } finally {
+    setModalButtonsDisabled(false);
+  }
+});
+
+// ---- Cash Deposit Deduction card ----
+// Cash deposits are only ever recorded on the customer's Contract row --
+// never on this month's Bank/Wise/Revolut sheet -- so this deliberately
+// does NOT reuse the edit-deposit modal above (that modal always operates
+// on an existing row from `deposits`, which cash never has). Staff just
+// type the customer's name; the server finds their current "Rented"
+// Contract row and deducts from whatever's recorded as its deposit
+// amount. No deposit-picking step, unlike Wise/Revolut/Scan.
+const cashDeductName = document.getElementById('cashDeductName');
+const cashDeductAmount = document.getElementById('cashDeductAmount');
+const cashDeductReason = document.getElementById('cashDeductReason');
+const cashDeductError = document.getElementById('cashDeductError');
+const cashDeductProgress = document.getElementById('cashDeductProgress');
+const cashDeductProgressText = document.getElementById('cashDeductProgressText');
+const cashDeductResult = document.getElementById('cashDeductResult');
+const cashDeductBtn = document.getElementById('cashDeductBtn');
+let cashDeductProgressTimer = null;
+
+function setCashDeductError(msg) {
+  if (!msg) { cashDeductError.classList.remove('show'); cashDeductError.textContent = ''; return; }
+  cashDeductError.textContent = msg;
+  cashDeductError.classList.add('show');
+}
+
+function setCashDeductResult(msg, isInfo) {
+  if (!msg) { cashDeductResult.classList.remove('show', 'info'); cashDeductResult.textContent = ''; return; }
+  cashDeductResult.textContent = msg;
+  cashDeductResult.classList.toggle('info', !!isInfo);
+  cashDeductResult.classList.add('show');
+}
+
+function startCashDeductProgress() {
+  cashDeductProgressText.textContent = 'Connecting…';
+  cashDeductProgress.classList.add('show');
+  clearTimeout(cashDeductProgressTimer);
+  cashDeductProgressTimer = setTimeout(() => { cashDeductProgressText.textContent = 'Deducting…'; }, 500);
+}
+function stopCashDeductProgress() {
+  clearTimeout(cashDeductProgressTimer);
+  cashDeductProgress.classList.remove('show');
+}
+
+cashDeductBtn.addEventListener('click', async () => {
+  setCashDeductError(null);
+  setCashDeductResult(null);
+
+  const customerName = cashDeductName.value.trim();
+  const amountRaw = cashDeductAmount.value.trim();
+  const amount = amountRaw === '' ? NaN : Number(amountRaw);
+  const reason = cashDeductReason.value.trim();
+
+  if (!customerName) { setCashDeductError('Enter a customer name.'); return; }
+  if (amountRaw === '' || isNaN(amount) || amount <= 0) { setCashDeductError('Enter a valid deduction amount.'); return; }
+  if (!reason) { setCashDeductError('Enter a reason for the deduction.'); return; }
+
+  const payload = {
+    action: 'deductCashDeposit',
+    customerName: customerName,
+    deductionAmount: amount,
+    reason: reason
+  };
+
+  cashDeductBtn.disabled = true;
+  startCashDeductProgress();
+  try {
+    const res = await fetch(scriptUrl, {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    }).then(r => r.json());
+    stopCashDeductProgress();
+
+    if (!res.success) {
+      setCashDeductError(res.error || 'Deduction failed — please try again.');
+      return;
+    }
+
+    if (!res.applied) {
+      // Per Anton: no cash deposit on file for this customer is not an
+      // error -- staff can click "deduct" and nothing happens.
+      setCashDeductResult(res.message || 'No cash deposit on file for this customer — nothing was deducted.', true);
+      return;
+    }
+
+    setCashDeductResult(
+      'Deducted ' + money(amount) + ' — new contract deposit balance: ' + money(res.newAmount) + '.',
+      false
+    );
+    if (res.warning) alert('Deducted, but: ' + res.warning);
+    cashDeductName.value = '';
+    cashDeductAmount.value = '';
+    cashDeductReason.value = '';
+  } catch (err) {
+    stopCashDeductProgress();
+    setCashDeductError('Deduction failed: ' + err.message);
+  } finally {
+    cashDeductBtn.disabled = false;
+  }
+});
+
+loadDeposits();
+</script>
+
+</body>
+</html>

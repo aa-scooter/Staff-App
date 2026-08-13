@@ -1,0 +1,4063 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Contract — Intake</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="nav.js" defer></script>
+<style>
+  :root{
+    --sand:#F5EFE6;
+    --ink:#1A2421;
+    --petrol:#0F3D3E;
+    --petrol-light:#175A5B;
+    --cone:#FF6B35;
+    --card:#FFFFFF;
+    --line:#DED4C2;
+    --ok:#2F855A;
+    --err:#C53030;
+    --warn:#B7791F;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;
+    background:var(--sand);
+    color:var(--ink);
+    font-family:'Inter',sans-serif;
+    min-height:100vh;
+  }
+  .page-head{
+    max-width:520px;
+    margin:0 auto;
+    padding:22px 16px 4px;
+  }
+  .page-head h1{
+    font-family:'Barlow Condensed',sans-serif;
+    font-weight:700;
+    font-size:26px;
+    color:var(--petrol);
+    margin:0;
+  }
+  .page-head .sub{
+    color:var(--muted);
+    font-size:13px;
+    margin-top:6px;
+  }
+  main{
+    max-width:520px;
+    margin:0 auto;
+    padding:20px 16px 60px;
+  }
+  .card{
+    background:var(--card);
+    border:1px solid var(--line);
+    border-radius:14px;
+    padding:20px;
+    margin-bottom:16px;
+  }
+  .card h2{
+    font-family:'Barlow Condensed',sans-serif;
+    font-size:15px;
+    font-weight:600;
+    letter-spacing:.08em;
+    text-transform:uppercase;
+    color:var(--petrol);
+    margin:0 0 14px;
+    display:flex;
+    align-items:center;
+    gap:8px;
+  }
+  .card h2::before{
+    content:"";
+    width:7px;height:7px;
+    border-radius:50%;
+    background:var(--cone);
+    display:inline-block;
+  }
+  label{
+    display:block;
+    font-size:12.5px;
+    font-weight:500;
+    color:#5A6663;
+    margin:14px 0 5px;
+  }
+  label:first-of-type{margin-top:0;}
+  .deal-row{
+    display:flex;
+    align-items:center;
+    gap:8px;
+    margin-top:14px;
+  }
+  .deal-row input[type="checkbox"]{
+    width:18px;
+    height:18px;
+    accent-color:var(--petrol);
+    cursor:pointer;
+  }
+  .deal-row label{
+    margin:0;
+    font-size:13.5px;
+    font-weight:600;
+    color:var(--ink);
+    cursor:pointer;
+  }
+  input, select{
+    width:100%;
+    padding:11px 12px;
+    border:1px solid var(--line);
+    border-radius:9px;
+    font-size:15px;
+    font-family:'Inter',sans-serif;
+    background:#FBFAF7;
+    color:var(--ink);
+    transition:border-color .15s;
+  }
+  input:focus, select:focus{
+    outline:none;
+    border-color:var(--petrol-light);
+    background:#fff;
+  }
+  .row2{display:grid; grid-template-columns:1fr 1fr; gap:10px;}
+  .row2 > div{min-width:0;}
+  button{
+    width:100%;
+    padding:15px;
+    border:none;
+    border-radius:10px;
+    background:var(--cone);
+    color:#fff;
+    font-family:'Barlow Condensed',sans-serif;
+    font-weight:700;
+    font-size:17px;
+    letter-spacing:.04em;
+    text-transform:uppercase;
+    cursor:pointer;
+    margin-top:20px;
+    transition:transform .1s, background .15s;
+  }
+  button:active{transform:scale(.98);}
+  button:disabled{background:#C9B9A8; cursor:not-allowed;}
+  .status{
+    margin-top:12px;
+    font-size:13.5px;
+    padding:10px 12px;
+    border-radius:8px;
+    display:none;
+  }
+  .status.ok{display:block; background:#E8F5EE; color:var(--ok); border:1px solid #BEE3CE;}
+  .status.err{display:block; background:#FCEBEB; color:var(--err); border:1px solid #F3C6C6;}
+  .status.warn{display:block; background:#FFF3E6; color:var(--warn); border:1px solid #F3D9B8;}
+  .status.progress{display:flex; align-items:center; gap:9px; background:#EAF2FB; color:#2A5A8C; border:1px solid #BBD6F0;}
+  .status-spinner{
+    width:14px; height:14px; border:2px solid #BBD6F0; border-top-color:#2A5A8C;
+    border-radius:50%; flex-shrink:0; animation: status-spin 0.7s linear infinite;
+  }
+  @keyframes status-spin{ to{ transform:rotate(360deg); } }
+  .odo{
+    display:flex; align-items:center; justify-content:space-between;
+    font-family:'Barlow Condensed',sans-serif;
+    font-size:12.5px; letter-spacing:.08em; text-transform:uppercase;
+    color:#7A8A86; margin-bottom:14px;
+  }
+  .odo b{color:var(--petrol); font-size:14px;}
+  .hidden{display:none;}
+
+  .tabs{
+    display:flex; gap:8px;
+    max-width:520px; margin:0 auto; padding:14px 16px 0;
+  }
+  .tab-btn{
+    width:auto; flex:1; margin-top:0;
+    background:#fff; color:var(--petrol);
+    border:1px solid var(--line);
+    padding:11px;
+    font-size:13.5px; letter-spacing:.06em;
+  }
+  .tab-btn.active{
+    background:var(--petrol); color:#fff; border-color:var(--petrol);
+  }
+
+  .field{ position:relative; }
+  .ac-list{
+    position:absolute; left:0; right:0; top:100%;
+    background:#fff; border:1px solid var(--line); border-top:none;
+    border-radius:0 0 9px 9px;
+    max-height:220px; overflow-y:auto;
+    z-index:20; display:none;
+    box-shadow:0 8px 18px rgba(15,61,62,.1);
+  }
+  .ac-list.show{ display:block; }
+  .ac-item{
+    padding:10px 12px; font-size:14px; cursor:pointer;
+    border-bottom:1px solid #F0EBE0;
+  }
+  .ac-item:last-child{ border-bottom:none; }
+  .ac-item:hover, .ac-item.hi{ background:#F5EFE6; }
+  .ac-item mark{ background:#FFE3D2; color:var(--ink); border-radius:2px; }
+
+  .results{ margin-top:10px; }
+  .result-card{
+    border:1px solid var(--line); border-radius:10px;
+    padding:12px 14px; margin-bottom:10px; background:#FBFAF7;
+  }
+  .result-card .rc-title{
+    font-family:'Barlow Condensed',sans-serif; font-weight:700;
+    font-size:16px; color:var(--petrol); margin-bottom:4px;
+  }
+  .result-card .rc-row{
+    font-size:12.5px; color:#5A6663; line-height:1.6;
+  }
+  .result-card .rc-row b{ color:var(--ink); font-weight:600; }
+  .results-empty{
+    font-size:13px; color:#8A948F; padding:14px 2px; text-align:center;
+  }
+  .results-count{
+    font-size:12px; color:#7A8A86; margin:12px 2px 0;
+    font-family:'Barlow Condensed',sans-serif; letter-spacing:.06em; text-transform:uppercase;
+  }
+  .search-clear{
+    margin-top:14px; background:#fff; color:var(--petrol);
+    border:1px solid var(--line);
+  }
+  /* ---- Page gate: hide the tabs + form until the bikes list has
+     loaded from the spreadsheet, so nobody can start typing an entry
+     before the bike autocomplete is ready. ---- */
+  body:not(.bikes-ready) .tabs,
+  body:not(.bikes-ready) main{ display:none; }
+  .page-gate{
+    display:none;
+    max-width:520px; margin:26px auto; padding:0 16px;
+  }
+  body:not(.bikes-ready) .page-gate{ display:block; }
+  .page-gate .gate-card{
+    background:#FCEBEB; border:1px solid #F3C6C6; border-radius:14px;
+    padding:22px 20px; display:flex; align-items:center; gap:12px;
+  }
+  .page-gate .gate-msg{
+    color:#C62828; font-size:14.5px; font-weight:600; line-height:1.5;
+  }
+  .gate-spinner{
+    width:20px; height:20px; flex-shrink:0;
+    border:3px solid #F3C6C6; border-top-color:#C62828;
+    border-radius:50%; animation:gate-spin .7s linear infinite;
+  }
+  @keyframes gate-spin{ to{ transform:rotate(360deg); } }
+  .gate-retry{
+    width:auto; margin-top:0; padding:9px 16px;
+    background:#C62828; font-size:14px; display:none;
+  }
+  .page-gate.gate-error .gate-spinner{ display:none; }
+  .page-gate.gate-error .gate-retry{ display:inline-block; }
+
+  .load-status{
+    font-size:12px; color:#B36A2E; background:#FFF3E6;
+    border:1px solid #F3D9B8; border-radius:7px;
+    padding:7px 10px; margin:-4px 0 12px;
+    display:none;
+  }
+  .load-status.show{ display:block; }
+
+  /* ---- "Pending contracts" picker + Rent/Cancel confirm modals ---- */
+  .modal-backdrop{
+    position:fixed; inset:0; background:rgba(26,36,33,.55);
+    display:none; align-items:center; justify-content:center;
+    z-index:100; padding:20px;
+  }
+  .modal-backdrop.show{ display:flex; }
+  .modal-card{
+    background:#fff; border-radius:14px; max-width:480px; width:100%;
+    max-height:80vh; overflow-y:auto; padding:18px;
+  }
+  .modal-head{
+    display:flex; align-items:center; justify-content:space-between;
+    margin-bottom:10px;
+  }
+  .modal-head h2{
+    font-family:'Barlow Condensed',sans-serif; font-size:15px; font-weight:600;
+    letter-spacing:.08em; text-transform:uppercase; color:var(--petrol); margin:0;
+  }
+  .modal-close{
+    width:auto; margin:0; padding:2px 8px; background:transparent;
+    color:var(--ink); font-size:22px; line-height:1; border:none; box-shadow:none;
+  }
+  .modal-close:active{ transform:none; }
+  .pending-item{ cursor:pointer; transition:background .12s, border-color .12s; }
+  .pending-item:hover{ background:#F5EFE6; border-color:var(--petrol-light); }
+  .head-btn-row{ display:flex; gap:8px; margin-top:10px; }
+  .head-btn-row button{
+    flex:1; margin-top:0; font-size:12.5px; padding:6px 10px; border-radius:8px;
+    border:1px solid var(--line); background:#fff; color:var(--muted); cursor:pointer;
+  }
+  .passport-ai-btn{
+    width:auto; display:block; margin-top:8px; padding:8px 14px; border-radius:8px;
+    border:1px solid var(--line); background:#fff; color:var(--muted);
+    font-family:'Inter',sans-serif; font-weight:600; font-size:12.5px;
+    text-transform:none; letter-spacing:normal; cursor:pointer;
+  }
+  .passport-ai-btn:hover{ border-color:var(--petrol-light); color:var(--petrol); }
+  .passport-ai-btn:disabled{ background:#fff; color:var(--muted); opacity:.6; cursor:not-allowed; }
+  .confirm-actions{ display:flex; gap:10px; margin-top:16px; }
+  .confirm-actions button{ margin-top:0; }
+  .confirm-rent-btn{ background:var(--ok); }
+  .confirm-cancel-btn{ background:var(--err); }
+  .confirm-back-btn{ background:#fff; color:var(--petrol); border:1px solid var(--line); }
+
+  /* ---- Search results, made clickable to edit a contract ---- */
+  .result-card.clickable{ cursor:pointer; transition:background .12s, border-color .12s; }
+  .result-card.clickable:hover{ background:#F5EFE6; border-color:var(--petrol-light); }
+  #editForm label:first-of-type{ margin-top:14px; }
+
+  /* ---- Helmets -- optional, repeatable "+ Add helmet" line items on both
+     the Add and Edit forms. Entirely optional: a contract can be created
+     or saved with zero lines and the "No helmets" box left unticked --
+     that's the normal "not decided yet" state, not an error. ---- */
+  .helmet-none-label{
+    display:flex; align-items:center; gap:8px; margin:0 0 12px; cursor:pointer;
+    font-size:13.5px; color:var(--ink); font-weight:500;
+  }
+  .helmet-none-label input{ width:auto; margin:0; }
+  .helmet-lines{ display:flex; flex-direction:column; gap:8px; }
+  .helmet-line{ display:flex; align-items:center; gap:8px; }
+  .helmet-line select{ margin:0; }
+  .helmet-type-select{ flex:1.3; min-width:0; }
+  .helmet-size-select{ flex:1; min-width:0; }
+  .helmet-remove-btn{
+    width:32px; height:32px; flex-shrink:0; margin:0; padding:0;
+    border-radius:8px; border:1px solid var(--line); background:#fff;
+    color:var(--err); font-size:18px; line-height:1; cursor:pointer;
+  }
+  .helmet-remove-btn:active{ transform:none; }
+  .helmet-add-btn{
+    width:auto; margin-top:12px; padding:9px 16px; border-radius:9px;
+    background:#fff; color:var(--petrol); border:1px solid var(--line);
+    font-family:'Inter',sans-serif; font-weight:600; font-size:13.5px;
+    text-transform:none; letter-spacing:normal; cursor:pointer;
+  }
+  .helmet-add-btn:hover{ border-color:var(--petrol-light); }
+  .helmet-add-btn:active{ transform:none; }
+  .helmet-empty-note{ font-size:12.5px; color:#8A948F; padding:2px 2px 0; }
+</style>
+</head>
+<body>
+
+<div id="topbar-mount"></div>
+
+<div class="page-head">
+  <h1>Contract</h1>
+  <div class="sub">Adds a row straight into the "Contract" tab</div>
+  <div class="head-btn-row">
+    <button type="button" id="pendingContractsBtn">Pending contracts</button>
+  </div>
+</div>
+
+<!-- "Pending contracts" picker modal -->
+<div class="modal-backdrop" id="pendingBackdrop">
+  <div class="modal-card" id="pendingCard">
+    <div class="modal-head">
+      <h2>Pending contracts</h2>
+      <button type="button" class="modal-close" id="pendingCloseBtn">&times;</button>
+    </div>
+    <div id="pendingListBox">
+      <div class="results-empty">Loading…</div>
+    </div>
+  </div>
+</div>
+
+<!-- Rent / Cancel confirmation modal, shown after picking a pending record -->
+<div class="modal-backdrop" id="confirmBackdrop">
+  <div class="modal-card" id="confirmCard">
+    <div class="modal-head">
+      <h2>Pending contract</h2>
+      <button type="button" class="modal-close" id="confirmCloseBtn">&times;</button>
+    </div>
+    <div id="confirmDetailsBox"></div>
+    <div id="confirmPromptBox" class="results-empty" style="text-align:left; padding:8px 2px 0; display:none;"></div>
+    <div class="confirm-actions" id="confirmActionsBox"></div>
+    <div class="status" id="confirmStatusBox"></div>
+  </div>
+</div>
+
+<!-- Edit contract modal -- shown when a Search-tab result is clicked.
+     Covers every Contract-sheet field, including status. Saving only
+     ever overwrites that one Contract row -- nothing else in the app. -->
+<div class="modal-backdrop" id="editBackdrop">
+  <div class="modal-card" id="editCard">
+    <div class="modal-head">
+      <h2>Edit contract</h2>
+      <button type="button" class="modal-close" id="editCloseBtn">&times;</button>
+    </div>
+    <div class="head-btn-row" id="editViewDocsRow" style="margin-bottom:8px;">
+      <button type="button" id="editViewPdfBtn">View Contract</button>
+      <button type="button" id="editUpdateContractBtn">Update Contract</button>
+      <button type="button" id="editViewPhotoBtn">View Photo of Passport</button>
+    </div>
+    <div class="head-btn-row" style="margin-bottom:14px;">
+      <button type="button" id="editViewReceiptBtn">View Receipt</button>
+      <button type="button" id="editReceiptBtn">Edit Receipt</button>
+      <button type="button" id="editViewChecklistBtn">View Checklist</button>
+    </div>
+    <!-- Send Contract + Receipt -- pulls both PDFs as real files (via the
+         backend, action:'getFilesForShare') and hands them to the phone's
+         native share sheet (Web Share API's `files` support), so staff
+         pick WhatsApp there with the actual documents attached. Replaces
+         an earlier version of this button that just linked to the Drive
+         copies -- see editSendDocsBtn's click handler below for why: on
+         Android, tapping a drive.google.com link hands the page off to
+         the Drive app itself, and threading through Drive -> its own
+         "Send a copy" -> WhatsApp was breaking the back button (Android
+         would kill the original tab in the background, so backing out of
+         WhatsApp dropped staff straight to the phone home screen instead
+         of back into this page). Doing it all from one Web Share call
+         keeps everything in this same page/tab the whole time. -->
+    <div class="head-btn-row" id="editSendDocsRow" style="margin-bottom:14px;">
+      <button type="button" id="editSendDocsBtn">Send Contract + Receipt</button>
+    </div>
+    <div class="results-empty" id="editNoDocsMsg" style="display:none; padding:0 0 14px; text-align:left;">No contract document was generated/saved for this record.</div>
+    <form id="editForm">
+      <label for="e_name">Name</label>
+      <input id="e_name">
+
+      <label for="e_nationality">Nationality</label>
+      <input id="e_nationality">
+
+      <label for="e_passport">Passport number</label>
+      <input id="e_passport">
+
+      <label for="e_passportPhoto">Photo of passport (optional)</label>
+      <div class="row2">
+        <input id="e_passportPhoto" type="file" accept="image/*" style="grid-column:1;">
+        <button type="button" id="e_passportPhotoUploadBtn" style="margin-top:0;">Upload photo</button>
+      </div>
+      <div class="status" id="e_passportPhotoStatusBox" style="margin-bottom:0;"></div>
+
+      <label for="e_number">Number</label>
+      <input id="e_number" type="tel">
+
+      <label for="e_contact">How to contact us</label>
+      <select id="e_contact">
+        <option value=""></option>
+        <option value="WhatsApp">WhatsApp</option>
+        <option value="Messenger">Messenger</option>
+        <option value="Phone">Phone</option>
+        <option value="Line">Line</option>
+        <option value="other">Other…</option>
+      </select>
+      <input id="e_contactOther" placeholder="Enter contact method" class="hidden" style="margin-top:8px;">
+
+      <label for="e_messengerId" class="hidden" id="e_messengerIdLabel">Messenger username or profile link</label>
+      <input id="e_messengerId" placeholder="e.g. cjayverona or facebook.com/cjayverona" class="hidden" style="margin-top:8px;">
+
+      <label for="e_chatName">Chat name (WhatsApp/FB name, if different — internal only, never printed)</label>
+      <input id="e_chatName" placeholder="Optional">
+
+      <label for="e_whatsappContactPhoto">Photo of WhatsApp "Edit contact" screen (optional — never saved)</label>
+      <input id="e_whatsappContactPhoto" type="file" accept="image/*">
+      <button type="button" id="e_whatsappAiFillBtn" class="passport-ai-btn">Fill from WhatsApp (AI)</button>
+      <div class="status" id="e_whatsappAiStatusBox" style="margin-bottom:0;"></div>
+
+      <label for="e_bikeModel">Bike model</label>
+      <div class="field">
+        <input id="e_bikeModel" autocomplete="off">
+        <div class="ac-list" data-for="e_bikeModel"></div>
+      </div>
+
+      <div class="row2">
+        <div>
+          <label for="e_rentingDateFrom">Renting from</label>
+          <input id="e_rentingDateFrom" type="date">
+        </div>
+        <div>
+          <label for="e_returnDate">Return date</label>
+          <input id="e_returnDate" type="date">
+        </div>
+      </div>
+      <div class="row2">
+        <div>
+          <label for="e_returnTime">Return time</label>
+          <input id="e_returnTime" type="time">
+        </div>
+        <div>
+          <label for="e_deliverToHotel">Deliver to hotel</label>
+          <select id="e_deliverToHotel">
+            <option value="">—</option>
+            <option value="Yes">Yes</option>
+            <option value="No">No</option>
+          </select>
+        </div>
+      </div>
+      <!-- No Delivery Time field here on purpose -- it's derived
+           automatically from Return time above (same moment the customer
+           actually takes possession of the bike, whether picked up or
+           delivered), never entered separately. Delivery link stays as
+           its own optional field -- see CLAUDE.md / this project's
+           delivery-time history for why. -->
+      <div id="e_deliveryLinkRow" class="hidden">
+        <label for="e_deliveryLink">Delivery link (optional)</label>
+        <input id="e_deliveryLink" type="url" placeholder="Paste Google Maps link">
+      </div>
+
+      <!-- Helmets -- same optional, repeatable line-item pattern as the Add
+           form -- see that form's comment above its own Helmets card. -->
+      <label style="margin-top:20px; font-family:'Barlow Condensed',sans-serif; font-size:13px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; color:var(--petrol);">Helmets</label>
+      <label class="helmet-none-label" for="e_helmetNone" style="margin-top:8px;">
+        <input type="checkbox" id="e_helmetNone">
+        No helmets for this rental
+      </label>
+      <div class="helmet-lines" id="e_helmetLinesBox"></div>
+      <button type="button" class="helmet-add-btn" id="e_addHelmetBtn">+ Add helmet</button>
+
+      <div class="row2" style="margin-top:14px;">
+        <div>
+          <label for="e_totalPrice">Total price (฿)</label>
+          <input id="e_totalPrice" type="number" min="0" step="1">
+        </div>
+        <div>
+          <label for="e_paidBy">Paid by</label>
+          <select id="e_paidBy">
+            <option value=""></option>
+            <option value="cash">Cash</option>
+            <option value="scan">Scan</option>
+            <option value="wise">Wise</option>
+            <option value="revolut">Revolut</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="deal-row">
+        <input type="checkbox" id="e_dealCheckbox">
+        <label for="e_dealCheckbox">Deal</label>
+      </div>
+
+      <label for="e_deposit">Deposit</label>
+      <select id="e_deposit">
+        <option value=""></option>
+        <option value="Scan">Scan</option>
+        <option value="Cash">Cash</option>
+        <option value="Wise">Wise</option>
+        <option value="Passport">Passport</option>
+      </select>
+      <input id="e_depositAmount" type="number" min="0" step="1" placeholder="Deposit amount (฿)" class="hidden" style="margin-top:8px;">
+
+      <label id="e_depositCurrencyToggleLabel" style="display:flex; align-items:center; gap:8px; margin-top:8px; cursor:pointer;" class="hidden">
+        <input type="checkbox" id="e_depositCurrencyToggle" style="width:auto; margin:0;">
+        Change currency
+      </label>
+      <div class="field hidden" id="e_depositCurrencyWrap" style="margin-top:8px;">
+        <input id="e_depositCurrency" autocomplete="off" placeholder="Search country or currency code…">
+        <div class="ac-list" data-for="e_depositCurrency"></div>
+      </div>
+
+      <label style="display:flex; align-items:center; gap:8px; margin-top:14px; cursor:pointer;">
+        <input type="checkbox" id="e_deliveryFeeApplies" style="width:auto; margin:0;">
+        Delivery fee applies
+      </label>
+      <input id="e_deliveryFee" type="number" min="0" step="1" placeholder="Delivery fee amount (฿)" class="hidden" style="margin-top:8px;">
+
+      <label for="e_status">Status</label>
+      <select id="e_status">
+        <option value="">—</option>
+        <option value="Pending">Pending</option>
+        <option value="Rented">Rented</option>
+        <option value="Returned">Returned</option>
+        <option value="Canceled">Canceled</option>
+      </select>
+
+      <button type="submit" id="editSubmitBtn">Save changes</button>
+      <div class="status" id="editStatusBox"></div>
+    </form>
+  </div>
+</div>
+
+<!-- Edit Receipt modal -- opened from the edit modal's "Edit Receipt"
+     button. A receipt is now always auto-generated the moment a contract
+     is created, so this is always an EDIT of the existing one, never a
+     from-scratch first print. Every field is prefilled straight from the
+     contract's own current data (never from whatever was on the last
+     generated receipt) -- e.g. for an extension, staff change the dates
+     and fee by hand here. Two views inside the same card: #receiptFormView
+     (every field, editable) and #receiptConfirmView (a synopsis +
+     Confirm/Back, shown after the form is submitted). Confirming replaces
+     the existing receipt PDF for this contract -- see
+     generateReceiptDocument in Code.gs. -->
+<div class="modal-backdrop" id="receiptBackdrop">
+  <div class="modal-card" id="receiptCard">
+    <div class="modal-head">
+      <h2>Edit Receipt</h2>
+      <button type="button" class="modal-close" id="receiptCloseBtn">&times;</button>
+    </div>
+
+    <div id="receiptFormView">
+      <form id="receiptForm">
+        <label for="r_receiptDate">Date</label>
+        <input id="r_receiptDate" type="date" required>
+
+        <label for="r_name">Name</label>
+        <input id="r_name" required>
+
+        <label for="r_bikeModel">Scooter type</label>
+        <input id="r_bikeModel">
+
+        <label for="r_cc">Engine size (CC)</label>
+        <input id="r_cc" placeholder="e.g. 125cc">
+
+        <div class="row2">
+          <div>
+            <label for="r_periodFrom">Rental period from</label>
+            <input id="r_periodFrom" type="date">
+          </div>
+          <div>
+            <label for="r_periodTo">Rental period to</label>
+            <input id="r_periodTo" type="date">
+          </div>
+        </div>
+
+        <div class="row2">
+          <div>
+            <label for="r_rentalFee">Rental fee (฿)</label>
+            <input id="r_rentalFee" type="number" min="0" step="1">
+          </div>
+          <div>
+            <label for="r_deliveryFee">Delivery fee (฿)</label>
+            <input id="r_deliveryFee" type="number" min="0" step="1">
+          </div>
+        </div>
+
+        <div class="row2">
+          <div>
+            <label for="r_otherLabel">Other charge -- description</label>
+            <input id="r_otherLabel" placeholder="e.g. Damage fee">
+          </div>
+          <div>
+            <label for="r_otherAmount">Other charge -- amount (฿)</label>
+            <input id="r_otherAmount" type="number" min="0" step="1">
+          </div>
+        </div>
+
+        <label for="r_totalPaid">Total amount paid (฿)</label>
+        <input id="r_totalPaid" type="number" min="0" step="1" required>
+
+        <label for="r_paymentMethod">Payment method</label>
+        <select id="r_paymentMethod">
+          <option value="cash">Cash</option>
+          <option value="scan">Thai QR Scan</option>
+          <option value="wise">Wise</option>
+          <option value="revolut">Revolut</option>
+          <option value="other">Other</option>
+        </select>
+        <input id="r_otherMethodText" placeholder="Describe the payment method" class="hidden" style="margin-top:8px;">
+
+        <label for="r_receivedBy">Received by</label>
+        <input id="r_receivedBy">
+
+        <button type="submit" id="receiptSubmitBtn">Review changes</button>
+        <div class="status" id="receiptFormStatusBox"></div>
+      </form>
+    </div>
+
+    <div id="receiptConfirmView" style="display:none;">
+      <div id="receiptSynopsisBox" style="font-size:13.5px; line-height:1.7;"></div>
+      <div class="confirm-actions">
+        <button type="button" class="confirm-rent-btn" id="receiptConfirmBtn">Confirm &amp; Regenerate</button>
+        <button type="button" class="confirm-back-btn" id="receiptBackBtn">Back to edit</button>
+      </div>
+      <div class="status" id="receiptConfirmStatusBox"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Shown INSTEAD of the tabs + form until the bikes list has loaded
+     from the spreadsheet (see the body:not(.bikes-ready) CSS rules). -->
+<div class="page-gate" id="pageGate">
+  <div class="gate-card">
+    <div class="gate-spinner"></div>
+    <div>
+      <div class="gate-msg" id="pageGateMsg">Loading bikes from the spreadsheet…</div>
+      <button type="button" class="gate-retry" id="pageGateRetry">Try again</button>
+    </div>
+  </div>
+</div>
+
+<div class="tabs">
+  <button type="button" class="tab-btn active" id="tabAdd">＋ Add new</button>
+  <button type="button" class="tab-btn" id="tabSearch">🔍 Search</button>
+</div>
+
+<main>
+
+  <form id="intakeForm">
+    <div class="card">
+      <div class="odo">Session entries <b id="sessionCount">0</b></div>
+      <h2>Customer</h2>
+      <label for="name">Name</label>
+      <input id="name" required placeholder="Mr. Christian Jay Verona">
+
+      <label for="nationality">Nationality</label>
+      <div class="field">
+        <input id="nationality" placeholder="Start typing or click for the list…" autocomplete="off">
+        <div class="ac-list" data-for="nationality"></div>
+      </div>
+
+      <label for="passport">Passport number</label>
+      <input id="passport" placeholder="Optional">
+
+      <label for="passportPhoto">Photo of passport (optional)</label>
+      <input id="passportPhoto" type="file" accept="image/*">
+      <button type="button" id="passportAiFillBtn" class="passport-ai-btn">Fill from Passport (AI)</button>
+      <div class="status" id="passportAiStatusBox" style="margin-bottom:0;"></div>
+
+      <label for="number">Number</label>
+      <input id="number" type="tel" placeholder="e.g. 081 234 5678">
+
+      <label for="contact">How to contact us</label>
+      <select id="contact">
+        <option value=""></option>
+        <option value="WhatsApp">WhatsApp</option>
+        <option value="Messenger">Messenger</option>
+        <option value="Phone">Phone</option>
+        <option value="Line">Line</option>
+        <option value="other">Other…</option>
+      </select>
+      <input id="contactOther" placeholder="Enter contact method" class="hidden" style="margin-top:8px;">
+
+      <label for="messengerId" class="hidden" id="messengerIdLabel">Messenger username or profile link</label>
+      <input id="messengerId" placeholder="e.g. cjayverona or facebook.com/cjayverona" class="hidden" style="margin-top:8px;">
+
+      <label for="chatName">Chat name (WhatsApp/FB name, if different — internal only, never printed)</label>
+      <input id="chatName" placeholder="Optional">
+
+      <label for="whatsappContactPhoto">Photo of WhatsApp "Edit contact" screen (optional — never saved)</label>
+      <input id="whatsappContactPhoto" type="file" accept="image/*">
+      <button type="button" id="whatsappAiFillBtn" class="passport-ai-btn">Fill from WhatsApp (AI)</button>
+      <div class="status" id="whatsappAiStatusBox" style="margin-bottom:0;"></div>
+    </div>
+
+    <div class="card">
+      <h2>Rental</h2>
+      <label for="bikeModel">Bike model</label>
+      <div class="field">
+        <input id="bikeModel" required placeholder="GT red 2" autocomplete="off">
+        <div class="ac-list" data-for="bikeModel"></div>
+      </div>
+      <div class="load-status" id="bikeModelLoadStatus">Loading bikes…</div>
+
+      <div class="row2">
+        <div>
+          <label for="rentingDateFrom">Renting from</label>
+          <input id="rentingDateFrom" type="date" required>
+        </div>
+        <div>
+          <label for="returnDate">Return date</label>
+          <input id="returnDate" type="date" required>
+        </div>
+      </div>
+      <div class="row2">
+        <div>
+          <label for="returnTime">Return time</label>
+          <input id="returnTime" type="time">
+        </div>
+        <div>
+          <label for="deliverToHotel">Deliver to hotel</label>
+          <select id="deliverToHotel">
+            <option value="">—</option>
+            <option value="Yes">Yes</option>
+            <option value="No">No</option>
+          </select>
+        </div>
+      </div>
+      <!-- No Delivery Time field here on purpose -- it's derived
+           automatically from Return time above (same moment the customer
+           actually takes possession of the bike, whether picked up or
+           delivered), never entered separately. Delivery link stays as
+           its own optional field. -->
+      <div id="deliveryLinkRow" class="hidden">
+        <label for="deliveryLink">Delivery link (optional)</label>
+        <input id="deliveryLink" type="url" placeholder="Paste Google Maps link">
+      </div>
+    </div>
+
+    <!-- Helmets -- entirely optional. Staff can save a contract with this
+         whole section untouched (e.g. a walk-in pickup where helmets
+         haven't been decided yet) and come back to it later via "Update
+         Contract" on the Edit screen once they have been. Ticking "No
+         helmets" is a deliberate, separate statement ("customer takes zero
+         helmets") from just leaving the list empty ("not decided yet") --
+         see generateContractDocument's comment in Code.gs. -->
+    <div class="card">
+      <h2>Helmets</h2>
+      <label class="helmet-none-label" for="helmetNone">
+        <input type="checkbox" id="helmetNone">
+        No helmets for this rental
+      </label>
+      <div class="helmet-lines" id="helmetLinesBox"></div>
+      <button type="button" class="helmet-add-btn" id="addHelmetBtn">+ Add helmet</button>
+    </div>
+
+    <div class="card">
+      <h2>Payment</h2>
+      <div class="row2">
+        <div>
+          <label for="totalPrice">Total price (฿)</label>
+          <input id="totalPrice" type="number" min="0" step="1" placeholder="2500" required>
+        </div>
+        <div>
+          <label for="paidBy">Paid by</label>
+          <select id="paidBy">
+            <option value=""></option>
+            <option value="cash">Cash</option>
+            <option value="scan">Scan</option>
+            <option value="wise">Wise</option>
+            <option value="revolut">Revolut</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="deal-row">
+        <input type="checkbox" id="dealCheckbox">
+        <label for="dealCheckbox">Deal</label>
+      </div>
+
+      <label for="deposit">Deposit</label>
+      <select id="deposit">
+        <option value=""></option>
+        <option value="Scan">Scan</option>
+        <option value="Cash">Cash</option>
+        <option value="Wise">Wise</option>
+        <option value="Passport">Passport</option>
+      </select>
+      <input id="depositAmount" type="number" min="0" step="1" placeholder="Deposit amount (฿)" class="hidden" style="margin-top:8px;">
+
+      <label id="depositCurrencyToggleLabel" style="display:flex; align-items:center; gap:8px; margin-top:8px; cursor:pointer;" class="hidden">
+        <input type="checkbox" id="depositCurrencyToggle" style="width:auto; margin:0;">
+        Change currency
+      </label>
+      <div class="field hidden" id="depositCurrencyWrap" style="margin-top:8px;">
+        <input id="depositCurrency" autocomplete="off" placeholder="Search country or currency code…">
+        <div class="ac-list" data-for="depositCurrency"></div>
+      </div>
+
+      <label style="display:flex; align-items:center; gap:8px; margin-top:14px; cursor:pointer;">
+        <input type="checkbox" id="deliveryFeeApplies" style="width:auto; margin:0;">
+        Delivery fee applies
+      </label>
+      <input id="deliveryFee" type="number" min="0" step="1" placeholder="Delivery fee amount (฿)" class="hidden" style="margin-top:8px;">
+    </div>
+
+    <button type="submit" id="submitBtn">Create contract</button>
+    <div class="status" id="statusBox"></div>
+  </form>
+
+  <div id="searchView" class="hidden">
+    <div class="card">
+      <h2>Find a contract</h2>
+      <div class="load-status" id="loadStatus">Loading records…</div>
+
+      <label for="s_name">Name</label>
+      <div class="field">
+        <input id="s_name" data-key="name" autocomplete="off" placeholder="Start typing…">
+        <div class="ac-list" data-for="s_name"></div>
+      </div>
+
+      <label for="s_nationality">Nationality</label>
+      <div class="field">
+        <input id="s_nationality" data-key="nationality" autocomplete="off" placeholder="Start typing…">
+        <div class="ac-list" data-for="s_nationality"></div>
+      </div>
+
+      <label for="s_passport">Passport number</label>
+      <div class="field">
+        <input id="s_passport" data-key="passport" autocomplete="off" placeholder="Start typing…">
+        <div class="ac-list" data-for="s_passport"></div>
+      </div>
+
+      <label for="s_number">Number</label>
+      <div class="field">
+        <input id="s_number" data-key="number" autocomplete="off" placeholder="Start typing…">
+        <div class="ac-list" data-for="s_number"></div>
+      </div>
+
+      <label for="s_contact">Contact method</label>
+      <div class="field">
+        <input id="s_contact" data-key="contact" autocomplete="off" placeholder="Start typing…">
+        <div class="ac-list" data-for="s_contact"></div>
+      </div>
+
+      <label for="s_bikeModel">Bike model</label>
+      <div class="field">
+        <input id="s_bikeModel" data-key="bikeModel" autocomplete="off" placeholder="e.g. GT">
+        <div class="ac-list" data-for="s_bikeModel"></div>
+      </div>
+
+      <div class="row2">
+        <div>
+          <label for="s_rentingDateFrom">Renting from</label>
+          <div class="field">
+            <input id="s_rentingDateFrom" data-key="rentingDateFrom" autocomplete="off" placeholder="dd/mm/yyyy">
+            <div class="ac-list" data-for="s_rentingDateFrom"></div>
+          </div>
+        </div>
+        <div>
+          <label for="s_returnDate">Return date</label>
+          <div class="field">
+            <input id="s_returnDate" data-key="returnDate" autocomplete="off" placeholder="dd/mm/yyyy">
+            <div class="ac-list" data-for="s_returnDate"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="row2">
+        <div>
+          <label for="s_deliverToHotel">Deliver to hotel</label>
+          <div class="field">
+            <input id="s_deliverToHotel" data-key="deliverToHotel" autocomplete="off" placeholder="Yes / No">
+            <div class="ac-list" data-for="s_deliverToHotel"></div>
+          </div>
+        </div>
+        <div>
+          <label for="s_paidBy">Paid by</label>
+          <div class="field">
+            <input id="s_paidBy" data-key="paidBy" autocomplete="off" placeholder="cash / scan…">
+            <div class="ac-list" data-for="s_paidBy"></div>
+          </div>
+        </div>
+      </div>
+
+      <button type="button" class="search-clear" id="clearSearch">Clear fields</button>
+    </div>
+
+    <div class="card">
+      <h2>Results</h2>
+      <div class="results-count" id="resultsCount"></div>
+      <div class="results" id="resultsBox">
+        <div class="results-empty">Type into any field above to search.</div>
+      </div>
+    </div>
+  </div>
+
+</main>
+
+<script>
+const scriptUrl = ''; // DISCONNECTED: this Vercel copy is intentionally not wired to the live backend (dev/testing only, see project CLAUDE.md)
+let sessionCount = 0;
+
+const form = document.getElementById('intakeForm');
+const statusBox = document.getElementById('statusBox');
+const submitBtn = document.getElementById('submitBtn');
+
+// Lightweight "what's happening" indicator shown while a save is in
+// flight. Apps Script doesn't give us real progress events, so this fakes
+// reasonable stages by time: "Connecting…" immediately, then "Saving…"
+// shortly after if still pending. stopSaveProgress() cancels the pending
+// stage-change timer; the caller then overwrites statusBox with the real
+// result (ok/warn/err) once the request settles.
+let saveProgressTimer = null;
+function startSaveProgress() {
+  statusBox.className = 'status progress';
+  statusBox.innerHTML = '<span class="status-spinner"></span><span>Connecting…</span>';
+  clearTimeout(saveProgressTimer);
+  saveProgressTimer = setTimeout(() => {
+    statusBox.innerHTML = '<span class="status-spinner"></span><span>Saving…</span>';
+  }, 500);
+}
+function stopSaveProgress() {
+  clearTimeout(saveProgressTimer);
+}
+
+// While a save is in flight, disable every button on the page -- not just
+// the submit button -- so a double-click (or hitting some other button
+// mid-save) can't fire off a second write and create a duplicate contract
+// row.
+function setAllButtonsDisabled(disabled) {
+  document.querySelectorAll('button').forEach(b => {
+    if (disabled) {
+      if (!b.disabled) b.dataset.reenableAfterSave = '1';
+      b.disabled = true;
+    } else if (b.dataset.reenableAfterSave) {
+      b.disabled = false;
+      delete b.dataset.reenableAfterSave;
+    }
+  });
+}
+
+function setDefaultsToNow() {
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  const dateStr = now.getFullYear() + '-' + pad(now.getMonth() + 1) + '-' + pad(now.getDate());
+  const timeStr = pad(now.getHours()) + ':' + pad(now.getMinutes());
+  document.getElementById('rentingDateFrom').value = dateStr;
+  document.getElementById('returnTime').value = timeStr;
+}
+
+const contactSelect = document.getElementById('contact');
+const contactOther = document.getElementById('contactOther');
+// ---- Messenger username/link field -- only shown when "How to contact
+// us" is literally "Messenger" (not "Phone", "Line", or "other" text --
+// those still fall back to the existing WhatsApp number-based link on
+// Bikes Status, unchanged). Staff can paste either a bare username or a
+// full profile link here -- see extractFacebookUsername_'s comment in
+// Code.gs for how either gets turned into the same normalized value. ----
+const messengerIdLabel = document.getElementById('messengerIdLabel');
+const messengerIdInput = document.getElementById('messengerId');
+function refreshMessengerIdVisibility() {
+  if (contactSelect.value === 'Messenger') {
+    messengerIdLabel.classList.remove('hidden');
+    messengerIdInput.classList.remove('hidden');
+  } else {
+    messengerIdLabel.classList.add('hidden');
+    messengerIdInput.classList.add('hidden');
+    messengerIdInput.value = '';
+  }
+}
+contactSelect.addEventListener('change', () => {
+  if (contactSelect.value === 'other') {
+    contactOther.classList.remove('hidden');
+    contactOther.required = true;
+  } else {
+    contactOther.classList.add('hidden');
+    contactOther.required = false;
+    contactOther.value = '';
+  }
+  refreshMessengerIdVisibility();
+});
+
+// ---- Deposit -- Scan / Cash / Wise / Passport. An amount is required for
+// every method except Passport (nothing but the passport itself is held
+// in that case).
+const depositSelect = document.getElementById('deposit');
+const depositAmount = document.getElementById('depositAmount');
+function depositNeedsAmount() {
+  return depositSelect.value !== '' && depositSelect.value !== 'Passport';
+}
+const refreshDepositCurrencyVisibility = wireDepositCurrencyToggle(
+  'depositCurrencyToggle', 'depositCurrencyWrap', 'depositCurrency',
+  'depositCurrencyToggleLabel', depositNeedsAmount
+);
+function refreshDepositAmountVisibility() {
+  if (depositNeedsAmount()) {
+    depositAmount.classList.remove('hidden');
+    depositAmount.required = true;
+  } else {
+    depositAmount.classList.add('hidden');
+    depositAmount.required = false;
+    depositAmount.value = '';
+  }
+  refreshDepositCurrencyVisibility();
+}
+depositSelect.addEventListener('change', refreshDepositAmountVisibility);
+
+// ---- Delivery fee -- a plain tick box; ticking it reveals an amount
+// field, same show/hide pattern as the deposit amount above. ----
+const deliveryFeeAppliesCheckbox = document.getElementById('deliveryFeeApplies');
+const deliveryFeeInput = document.getElementById('deliveryFee');
+function refreshDeliveryFeeVisibility() {
+  if (deliveryFeeAppliesCheckbox.checked) {
+    deliveryFeeInput.classList.remove('hidden');
+    deliveryFeeInput.required = true;
+  } else {
+    deliveryFeeInput.classList.add('hidden');
+    deliveryFeeInput.required = false;
+    deliveryFeeInput.value = '';
+  }
+}
+deliveryFeeAppliesCheckbox.addEventListener('change', refreshDeliveryFeeVisibility);
+
+// ---- Deliver to hotel -- picking "Yes" reveals the (optional) delivery
+// link field. There's no separate delivery TIME field here at all: the
+// backend derives it automatically from "Return time" above (the moment
+// the customer actually takes possession of the bike, whether picked up
+// or delivered -- same value either way), so there's nothing extra to
+// type in and nothing here that can block submitting. ----
+const deliverToHotelSelect = document.getElementById('deliverToHotel');
+const deliveryLinkRow = document.getElementById('deliveryLinkRow');
+const deliveryLinkInput = document.getElementById('deliveryLink');
+function refreshDeliveryLinkVisibility() {
+  if (deliverToHotelSelect.value === 'Yes') {
+    deliveryLinkRow.classList.remove('hidden');
+  } else {
+    deliveryLinkRow.classList.add('hidden');
+    deliveryLinkInput.value = '';
+  }
+}
+deliverToHotelSelect.addEventListener('change', refreshDeliveryLinkVisibility);
+
+/* ---------------- Helmets -- shared helpers ----------------
+   Both the Add form and the Edit modal use this same repeatable
+   "+ Add helmet" line-item pattern, each with its own independent state
+   array (helmetLines / editHelmetLines below) and its own DOM container,
+   so these helpers take those as parameters rather than hard-coding one
+   form's elements. Entirely optional everywhere it's used: an empty
+   lines array + an unticked "None" box is the normal "not decided yet"
+   state, not something that blocks saving. */
+
+const HELMET_TYPES = ['Half size', 'Full size', 'Kids', 'Full face'];
+const HELMET_SIZES = ['S', 'M', 'L', 'XL'];
+
+// Renders `lines` (an array of {type, size}) into `boxEl`, wiring up each
+// row's type/size selects and its remove (×) button. `rerender` is called
+// after any change that affects what should be ON SCREEN (adding/removing
+// a line, or a type change that shows/hides that row's size select) --
+// it's passed in by the caller so this stays reusable for both forms.
+function renderHelmetLines(lines, boxEl, rerender) {
+  if (!lines.length) {
+    boxEl.innerHTML = '<div class="helmet-empty-note">No helmets added yet -- optional, leave blank if not decided.</div>';
+    return;
+  }
+  boxEl.innerHTML = lines.map((l, i) => `
+    <div class="helmet-line" data-index="${i}">
+      <select class="helmet-type-select" data-index="${i}">
+        <option value="">Select type…</option>
+        ${HELMET_TYPES.map(t => `<option value="${t}"${l.type === t ? ' selected' : ''}>${t}</option>`).join('')}
+      </select>
+      <select class="helmet-size-select" data-index="${i}"${l.type === 'Full size' ? '' : ' style="display:none;"'}>
+        <option value="">Size…</option>
+        ${HELMET_SIZES.map(s => `<option value="${s}"${l.size === s ? ' selected' : ''}>${s}</option>`).join('')}
+      </select>
+      <button type="button" class="helmet-remove-btn" data-index="${i}" title="Remove">&times;</button>
+    </div>
+  `).join('');
+
+  boxEl.querySelectorAll('.helmet-type-select').forEach(sel => {
+    sel.addEventListener('change', () => {
+      const i = Number(sel.dataset.index);
+      lines[i].type = sel.value;
+      if (sel.value !== 'Full size') lines[i].size = '';
+      rerender();
+    });
+  });
+  boxEl.querySelectorAll('.helmet-size-select').forEach(sel => {
+    sel.addEventListener('change', () => {
+      lines[Number(sel.dataset.index)].size = sel.value;
+    });
+  });
+  boxEl.querySelectorAll('.helmet-remove-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      lines.splice(Number(btn.dataset.index), 1);
+      rerender();
+    });
+  });
+}
+
+// Tallies a helmet-lines array into the 7 counts Code.gs expects. Each
+// type's count is the TOTAL number of lines of that type -- printed as one
+// ticked box matching that total, not a running tally (see
+// generateContractDocument's comment in Code.gs). Sizes only accumulate
+// for "Full size" lines that also have a size chosen; a "Full size" line
+// left without a size picked isn't counted anywhere (better to undercount
+// than silently guess a size).
+function tallyHelmets(lines) {
+  const t = {
+    helmetHalfSizeQty: 0, helmetFullSizeS: 0, helmetFullSizeM: 0,
+    helmetFullSizeL: 0, helmetFullSizeXL: 0, helmetKidsQty: 0, helmetFullFaceQty: 0
+  };
+  lines.forEach(l => {
+    if (l.type === 'Half size') t.helmetHalfSizeQty++;
+    else if (l.type === 'Kids') t.helmetKidsQty++;
+    else if (l.type === 'Full face') t.helmetFullFaceQty++;
+    else if (l.type === 'Full size' && l.size) {
+      if (l.size === 'S') t.helmetFullSizeS++;
+      else if (l.size === 'M') t.helmetFullSizeM++;
+      else if (l.size === 'L') t.helmetFullSizeL++;
+      else if (l.size === 'XL') t.helmetFullSizeXL++;
+    }
+  });
+  return t;
+}
+
+// The reverse of tallyHelmets -- rebuilds a generic lines array from a
+// loaded Contract row's stored counts, so opening the Edit modal shows
+// e.g. "2 Small Full size" as two separate Full size / S lines rather
+// than losing that shape. Individual helmets aren't distinguishable from
+// each other once tallied (there's no per-helmet identity stored, only
+// counts) -- reconstructing N generic lines per count is lossless for
+// editing purposes since only the counts are ever saved back anyway.
+function helmetLinesFromTally(r) {
+  const lines = [];
+  const push = (n, type, size) => { for (let i = 0; i < (Number(n) || 0); i++) lines.push({ type, size: size || '' }); };
+  push(r.helmetHalfSizeQty, 'Half size');
+  push(r.helmetFullSizeS, 'Full size', 'S');
+  push(r.helmetFullSizeM, 'Full size', 'M');
+  push(r.helmetFullSizeL, 'Full size', 'L');
+  push(r.helmetFullSizeXL, 'Full size', 'XL');
+  push(r.helmetKidsQty, 'Kids');
+  push(r.helmetFullFaceQty, 'Full face');
+  return lines;
+}
+
+/* ---- Helmets -- Add form wiring ---- */
+let helmetLines = [];
+const helmetLinesBox = document.getElementById('helmetLinesBox');
+const addHelmetBtn = document.getElementById('addHelmetBtn');
+const helmetNoneCheckbox = document.getElementById('helmetNone');
+function rerenderHelmetLines() {
+  renderHelmetLines(helmetLines, helmetLinesBox, rerenderHelmetLines);
+}
+addHelmetBtn.addEventListener('click', () => {
+  helmetLines.push({ type: '', size: '' });
+  if (helmetNoneCheckbox.checked) helmetNoneCheckbox.checked = false;
+  rerenderHelmetLines();
+});
+helmetNoneCheckbox.addEventListener('change', () => {
+  if (helmetNoneCheckbox.checked && helmetLines.length) {
+    helmetLines = [];
+    rerenderHelmetLines();
+  }
+});
+rerenderHelmetLines();
+
+/* ---------------- Pending contracts picker (Rent / Cancel) ---------------- */
+
+const pendingBtn = document.getElementById('pendingContractsBtn');
+const pendingBackdrop = document.getElementById('pendingBackdrop');
+const pendingListBox = document.getElementById('pendingListBox');
+const pendingCloseBtn = document.getElementById('pendingCloseBtn');
+
+// Click-outside-to-close, guarded against mid-drag closes: only close if
+// BOTH the mousedown and the click landed on the backdrop itself (not just
+// the click), so e.g. selecting text inside the card and releasing the
+// mouse over the backdrop edge doesn't incorrectly close the modal.
+let pendingMouseDownOnBackdrop = false;
+pendingBackdrop.addEventListener('mousedown', (e) => {
+  pendingMouseDownOnBackdrop = (e.target === pendingBackdrop);
+});
+pendingBackdrop.addEventListener('click', (e) => {
+  if (e.target === pendingBackdrop && pendingMouseDownOnBackdrop) closePendingModal();
+  pendingMouseDownOnBackdrop = false;
+});
+pendingCloseBtn.addEventListener('click', closePendingModal);
+
+function openPendingModal() {
+  pendingBackdrop.classList.add('show');
+  pendingListBox.innerHTML = '<div class="results-empty">Loading…</div>';
+  // Force a fresh fetch every time the picker opens, so a just-canceled or
+  // just-rented record never lingers stale in the list.
+  sheetRows = null;
+  rowsPromise = null;
+  loadRows().then(rows => renderPendingList(rows));
+}
+function closePendingModal() {
+  pendingBackdrop.classList.remove('show');
+}
+pendingBtn.addEventListener('click', openPendingModal);
+
+function renderPendingList(rows) {
+  const pending = (rows || []).filter(r => (r.status || '').toString().trim().toLowerCase() === 'pending');
+  if (!pending.length) {
+    pendingListBox.innerHTML = '<div class="results-empty">No pending contracts.</div>';
+    return;
+  }
+  pendingListBox.innerHTML = pending.map((r, i) => `
+    <div class="result-card pending-item" data-index="${i}">
+      <div class="rc-title">${r.name || '—'} — ${r.bikeModel || '—'}</div>
+      <div class="rc-row"><b>Rented:</b> ${formatDateDisplay(r.rentingDateFrom)} &nbsp; <b>Return:</b> ${formatDateDisplay(r.returnDate)}</div>
+      <div class="rc-row"><b>Total:</b> ${r.totalPrice ? '฿' + r.totalPrice : '—'} &nbsp; <b>Deposit:</b> ${r.deposit || '—'}${String(r.isDeal).toUpperCase() === 'TRUE' ? ' &nbsp; <b style="color:var(--cone);">Deal</b>' : ''}</div>
+    </div>
+  `).join('');
+  Array.from(pendingListBox.querySelectorAll('.pending-item')).forEach((el, i) => {
+    el.addEventListener('click', () => {
+      openConfirmModal(pending[i]);
+    });
+  });
+}
+
+/* ---- Rent / Cancel confirmation, shown after picking a pending record.
+   Two steps: first choose Rent (green) or Cancel (red), then a second
+   "are you sure?" prompt before anything actually happens -- Cancel
+   writes to the sheet and Rent navigates away, so neither should ever
+   fire off a single accidental click. ---- */
+
+const confirmBackdrop = document.getElementById('confirmBackdrop');
+const confirmDetailsBox = document.getElementById('confirmDetailsBox');
+const confirmPromptBox = document.getElementById('confirmPromptBox');
+const confirmActionsBox = document.getElementById('confirmActionsBox');
+const confirmCloseBtn = document.getElementById('confirmCloseBtn');
+const confirmStatusBox = document.getElementById('confirmStatusBox');
+let currentPendingRecord = null;
+let confirmStep = 'choose'; // 'choose' | 'confirmRent' | 'confirmCancel'
+
+let confirmMouseDownOnBackdrop = false;
+confirmBackdrop.addEventListener('mousedown', (e) => {
+  confirmMouseDownOnBackdrop = (e.target === confirmBackdrop);
+});
+confirmBackdrop.addEventListener('click', (e) => {
+  if (e.target === confirmBackdrop && confirmMouseDownOnBackdrop) closeConfirmModal();
+  confirmMouseDownOnBackdrop = false;
+});
+confirmCloseBtn.addEventListener('click', closeConfirmModal);
+
+function openConfirmModal(r) {
+  currentPendingRecord = r;
+  confirmStep = 'choose';
+  confirmStatusBox.className = 'status';
+  confirmStatusBox.textContent = '';
+
+  // Shows every field this contract will actually be rented out with --
+  // not just the shortlist the pending-list card shows -- since this is
+  // the last checkpoint before "Yes, rent it" submits it as-is (no review
+  // screen after this one anymore, see doRent's comment). If something
+  // here is wrong, close this and use Search -> click the record -> edit
+  // -> save instead of continuing.
+  const depositLine = r.deposit
+    ? r.deposit + (r.depositAmount ? ' (฿' + r.depositAmount + (r.depositCurrency ? ' ' + r.depositCurrency : '') + ')' : '')
+    : '—';
+
+  confirmDetailsBox.innerHTML = `
+    <div class="result-card">
+      <div class="rc-title">${r.name || '—'} — ${r.bikeModel || '—'}</div>
+      <div class="rc-row"><b>Nationality:</b> ${r.nationality || '—'} &nbsp; <b>Passport:</b> ${r.passport || '—'}</div>
+      <div class="rc-row"><b>Number:</b> ${r.number || '—'} &nbsp; <b>Contact via:</b> ${r.contact || '—'}${r.chatName ? ' (' + r.chatName + ')' : ''}</div>
+      <div class="rc-row"><b>Renting from:</b> ${formatDateDisplay(r.rentingDateFrom)} &nbsp; <b>Return:</b> ${formatDateDisplay(r.returnDate)}</div>
+      <div class="rc-row"><b>Return time:</b> ${formatTimeDisplay(r.returnTime)} &nbsp; <b>Deliver to hotel:</b> ${r.deliverToHotel || '—'}</div>
+      <div class="rc-row"><b>Total:</b> ${r.totalPrice ? '฿' + r.totalPrice : '—'} &nbsp; <b>Paid by:</b> ${r.paidBy || '—'}</div>
+      <div class="rc-row"><b>Deposit:</b> ${depositLine}</div>
+      ${r.deliveryFee ? `<div class="rc-row"><b>Delivery fee:</b> ฿${r.deliveryFee}</div>` : ''}
+      ${String(r.isDeal).toUpperCase() === 'TRUE' ? `<div class="rc-row"><b>Deal:</b> Yes</div>` : ''}
+    </div>
+  `;
+  renderConfirmActions();
+  confirmBackdrop.classList.add('show');
+}
+function closeConfirmModal() {
+  confirmBackdrop.classList.remove('show');
+  currentPendingRecord = null;
+  confirmStep = 'choose';
+}
+
+// Rebuilds the button row (and the "are you sure" prompt text, if any) for
+// the current step. Buttons are recreated fresh each render rather than
+// reused, since both their label and what they do change between steps.
+function renderConfirmActions() {
+  const r = currentPendingRecord;
+  const custName = (r && r.name) ? r.name : 'this customer';
+
+  if (confirmStep === 'confirmRent') {
+    confirmPromptBox.style.display = 'block';
+    confirmPromptBox.textContent = 'Rent this out to ' + custName + '? This uses this contract\'s details as-is -- if anything needs fixing first, use Search to edit the contract, then come back here.';
+    confirmActionsBox.innerHTML = `
+      <button type="button" class="confirm-rent-btn" id="confirmYesBtn">Yes, rent it</button>
+      <button type="button" class="confirm-back-btn" id="confirmBackBtn">Back</button>
+    `;
+    document.getElementById('confirmYesBtn').addEventListener('click', doRent);
+    document.getElementById('confirmBackBtn').addEventListener('click', () => {
+      confirmStep = 'choose';
+      renderConfirmActions();
+    });
+  } else if (confirmStep === 'confirmCancel') {
+    confirmPromptBox.style.display = 'block';
+    confirmPromptBox.textContent = 'Cancel this contract for ' + custName + '? This cannot be undone.';
+    confirmActionsBox.innerHTML = `
+      <button type="button" class="confirm-cancel-btn" id="confirmYesBtn">Yes, cancel it</button>
+      <button type="button" class="confirm-back-btn" id="confirmBackBtn">Back</button>
+    `;
+    document.getElementById('confirmYesBtn').addEventListener('click', doCancel);
+    document.getElementById('confirmBackBtn').addEventListener('click', () => {
+      confirmStep = 'choose';
+      renderConfirmActions();
+    });
+  } else if (confirmStep === 'alreadyDone') {
+    // Reached only from doRent()'s catch block, when a failed submission
+    // turns out to no longer be Pending on re-check -- i.e. it likely
+    // already went through server-side and the error was just a lost
+    // response. Deliberately offers no way to resubmit from here (no
+    // "Yes, rent it" button at all) -- see doRent()'s comment.
+    confirmPromptBox.style.display = 'none';
+    confirmPromptBox.textContent = '';
+    confirmActionsBox.innerHTML = `
+      <button type="button" class="confirm-back-btn" id="confirmCloseWarnBtn">Close</button>
+    `;
+    document.getElementById('confirmCloseWarnBtn').addEventListener('click', closeConfirmModal);
+  } else {
+    confirmPromptBox.style.display = 'none';
+    confirmPromptBox.textContent = '';
+    confirmActionsBox.innerHTML = `
+      <button type="button" class="confirm-rent-btn" id="confirmRentBtn">Rent</button>
+      <button type="button" class="confirm-cancel-btn" id="confirmCancelBtn">Cancel</button>
+    `;
+    document.getElementById('confirmRentBtn').addEventListener('click', () => {
+      confirmStep = 'confirmRent';
+      renderConfirmActions();
+    });
+    document.getElementById('confirmCancelBtn').addEventListener('click', () => {
+      confirmStep = 'confirmCancel';
+      renderConfirmActions();
+    });
+  }
+}
+
+function toIsoDateForInput(str) {
+  if (!str) return '';
+  const d = parseFlexibleDate(str);
+  if (!d) return '';
+  const pad = (n) => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+}
+
+// ---- "Yes, rent it" -- submits this pending record straight to the
+// server (the same plain intake call customers.html's own Add form makes,
+// with no `action` field -- Code.gs's doPost falls through to its default
+// customer-intake branch), instead of routing through that page for a
+// manual review + click. The Contract row itself only flips from Pending
+// to Rented once this submission lands (handled server-side, matching by
+// name + bike). This uses the Contract record's data exactly as it
+// currently sits on the sheet -- if anything's wrong, fix it first via
+// Search -> click the record -> edit -> save (action:'editContract'),
+// rather than during this step, since there's no review screen anymore.
+async function doRent() {
+  if (!currentPendingRecord) return;
+  const r = currentPendingRecord;
+  const yesBtn = document.getElementById('confirmYesBtn');
+  const backBtn = document.getElementById('confirmBackBtn');
+  if (yesBtn) { yesBtn.disabled = true; yesBtn.textContent = 'Renting…'; }
+  if (backBtn) backBtn.disabled = true;
+  confirmStatusBox.className = 'status';
+  try {
+    const payload = {
+      name: r.name || '',
+      nationality: r.nationality || '',
+      passport: r.passport || '',
+      contact: r.contact || '',
+      bikeModel: r.bikeModel || '',
+      rentingDateFrom: toIsoDateForInput(r.rentingDateFrom),
+      returnDate: toIsoDateForInput(r.returnDate),
+      returnTime: r.returnTime || '',
+      deliverToHotel: r.deliverToHotel || '',
+      totalPrice: r.totalPrice || '',
+      paidBy: (r.paidBy || '').toString().toLowerCase(),
+      deposit: r.deposit || '',
+      depositAmount: r.depositAmount || '',
+      source: 'Direct',
+      // Carries this contract's Deal flag (stored as a note on the Contract
+      // sheet's contact column -- see getContractRows/addContractEntry/
+      // editContractEntry in Code.gs) through to the same customer-intake
+      // action customers.html's own Add form and bikes.html's long-extend
+      // flow use. That action's appendLedgerEntry call is what actually
+      // appends the visible "(price, days) Deal" tag onto the new customer
+      // row's contact cell -- same mechanism, just fed from here instead.
+      isDeal: String(r.isDeal).toUpperCase() === 'TRUE'
+    };
+    const res = await fetch(scriptUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error || 'Unknown error');
+    if (data.warning) {
+      confirmStatusBox.textContent = 'Rented, but: ' + data.warning;
+      confirmStatusBox.className = 'status warn';
+    } else {
+      confirmStatusBox.textContent = 'Rented out to ' + (r.name || 'this customer') + '.';
+      confirmStatusBox.className = 'status ok';
+    }
+    sheetRows = null;
+    rowsPromise = null;
+    await loadRows();
+    renderPendingList(sheetRows);
+    setTimeout(closeConfirmModal, data.warning ? 2500 : 900);
+  } catch (err) {
+    // A failed fetch here doesn't necessarily mean nothing happened --
+    // Apps Script can finish the write and still lose the response over a
+    // flaky connection, which is the confirmed cause of a real
+    // double-booking (see doRent's comment above; also fixed server-side
+    // via guardAgainstDuplicateSubmission_ in Code.gs, but that's a
+    // backstop, not a reason to skip checking here too). Before ever
+    // re-enabling "Yes, rent it" -- which would let a genuine double-submit
+    // happen again -- re-check this exact contract's live status. If it's
+    // moved on from Pending, the first attempt evidently landed; refuse to
+    // resubmit and warn instead, rather than trusting the button.
+    sheetRows = null;
+    rowsPromise = null;
+    let freshRows = null;
+    try {
+      freshRows = await loadRows();
+    } catch (checkErr) {
+      freshRows = null; // couldn't verify -- fall through to the generic error below
+    }
+    const freshRow = freshRows ? freshRows.find(fr => fr.rowNumber === r.rowNumber) : null;
+    const alreadyWentThrough = !!freshRow && (freshRow.status || '').toString().trim().toLowerCase() !== 'pending';
+
+    if (alreadyWentThrough) {
+      confirmStatusBox.textContent = 'This contract\'s status is no longer Pending (now "' + freshRow.status +
+        '"), even though this request just reported an error -- it looks like it already went through. ' +
+        'Not submitting again. Check Search or the customer sheet before doing anything else with this booking.';
+      confirmStatusBox.className = 'status warn';
+      confirmStep = 'alreadyDone';
+      renderConfirmActions();
+      renderPendingList(freshRows);
+      return;
+    }
+
+    confirmStatusBox.textContent = 'Could not rent: ' + err.message;
+    confirmStatusBox.className = 'status err';
+    if (yesBtn) { yesBtn.disabled = false; yesBtn.textContent = 'Yes, rent it'; }
+    if (backBtn) backBtn.disabled = false;
+  }
+}
+
+// ---- "Yes, cancel it" -- sets this Contract row's status to Canceled via
+// the exact rowNumber (no name/bike guessing needed, the row came straight
+// from the sheet), then refreshes the pending list behind the confirm
+// modal so the canceled record disappears from it. ----
+async function doCancel() {
+  if (!currentPendingRecord) return;
+  const r = currentPendingRecord;
+  const yesBtn = document.getElementById('confirmYesBtn');
+  const backBtn = document.getElementById('confirmBackBtn');
+  if (yesBtn) { yesBtn.disabled = true; yesBtn.textContent = 'Canceling…'; }
+  if (backBtn) backBtn.disabled = true;
+  confirmStatusBox.className = 'status';
+  try {
+    const res = await fetch(scriptUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ action: 'cancelContract', rowNumber: r.rowNumber })
+    });
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error || 'Unknown error');
+    confirmStatusBox.textContent = 'Contract canceled.';
+    confirmStatusBox.className = 'status ok';
+    sheetRows = null;
+    rowsPromise = null;
+    await loadRows();
+    renderPendingList(sheetRows);
+    setTimeout(closeConfirmModal, 700);
+  } catch (err) {
+    confirmStatusBox.textContent = 'Could not cancel: ' + err.message;
+    confirmStatusBox.className = 'status err';
+    if (yesBtn) { yesBtn.disabled = false; yesBtn.textContent = 'Yes, cancel it'; }
+    if (backBtn) backBtn.disabled = false;
+  }
+}
+
+/* ---------------- Edit contract (Search tab, click any result) ----------------
+   Covers every Contract-sheet field, including status. Saving posts
+   action:'editContract', which ONLY overwrites that one Contract row --
+   nothing else in the app (no customer/income/cash/bikes/deposit sheets,
+   no document regeneration). ---- */
+
+const editBackdrop = document.getElementById('editBackdrop');
+const editCloseBtn = document.getElementById('editCloseBtn');
+const editForm = document.getElementById('editForm');
+const editSubmitBtn = document.getElementById('editSubmitBtn');
+const editStatusBox = document.getElementById('editStatusBox');
+let currentEditRecord = null;
+
+/* ---- Helmets -- Edit modal wiring. Uses the same renderHelmetLines /
+   tallyHelmets / helmetLinesFromTally helpers as the Add form, with its
+   own separate state array and DOM container. ---- */
+let editHelmetLines = [];
+const editHelmetLinesBox = document.getElementById('e_helmetLinesBox');
+const editAddHelmetBtn = document.getElementById('e_addHelmetBtn');
+const editHelmetNoneCheckbox = document.getElementById('e_helmetNone');
+function rerenderEditHelmetLines() {
+  renderHelmetLines(editHelmetLines, editHelmetLinesBox, rerenderEditHelmetLines);
+}
+editAddHelmetBtn.addEventListener('click', () => {
+  editHelmetLines.push({ type: '', size: '' });
+  if (editHelmetNoneCheckbox.checked) editHelmetNoneCheckbox.checked = false;
+  rerenderEditHelmetLines();
+});
+editHelmetNoneCheckbox.addEventListener('change', () => {
+  if (editHelmetNoneCheckbox.checked && editHelmetLines.length) {
+    editHelmetLines = [];
+    rerenderEditHelmetLines();
+  }
+});
+rerenderEditHelmetLines();
+
+// Click-outside-to-close, guarded against mid-drag closes: only close if
+// BOTH the mousedown and the click landed on the backdrop itself.
+let editMouseDownOnBackdrop = false;
+editBackdrop.addEventListener('mousedown', (e) => {
+  editMouseDownOnBackdrop = (e.target === editBackdrop);
+});
+editBackdrop.addEventListener('click', (e) => {
+  if (e.target === editBackdrop && editMouseDownOnBackdrop) closeEditModal();
+  editMouseDownOnBackdrop = false;
+});
+editCloseBtn.addEventListener('click', closeEditModal);
+
+// "View Contract" -- opens the PDF link stored on this row (contractPdfUrl
+// from getContractRows). If a row has no stored link yet (e.g. it's an old
+// contract from before this column existed), this falls back to
+// action:'findContractDocument' on the backend, which searches Drive for
+// this customer's subfolder (by name + phone) and the contract file dated
+// to this record's rental start date -- same reconstruction logic
+// generateContractDocument itself uses to decide where a NEW contract
+// goes. Whatever is found gets cached onto the record (and backfilled
+// onto the sheet row server-side) so the next click is instant. If
+// nothing at all can be found, offers to generate a fresh one (same
+// backend action, 'regenerateContract', that "Update Contract" uses).
+//
+// "Update Contract" -- always available, always confirmed: regenerates
+// the contract PDF from this row's own current fields and overrides
+// whatever PDF already existed for it.
+const editViewDocsRow = document.getElementById('editViewDocsRow');
+const editViewPdfBtn = document.getElementById('editViewPdfBtn');
+const editUpdateContractBtn = document.getElementById('editUpdateContractBtn');
+const editNoDocsMsg = document.getElementById('editNoDocsMsg');
+
+// Contracts are PDF-only now (same as receipts -- the filled Google Doc is
+// only ever a temporary intermediate step on the backend, never kept).
+// Builds the payload regenerateContract needs from this row's own current
+// fields, exactly as loaded/shown on the Edit-contract form.
+function buildRegenerateContractPayload() {
+  const r = currentEditRecord;
+  return {
+    action: 'regenerateContract',
+    rowNumber: r.rowNumber,
+    name: r.name,
+    nationality: r.nationality,
+    passport: r.passport,
+    number: r.number,
+    bikeModel: r.bikeModel,
+    rentingDateFrom: toIsoDateForInput(r.rentingDateFrom),
+    returnDate: toIsoDateForInput(r.returnDate),
+    returnTime: r.returnTime,
+    deliverToHotel: r.deliverToHotel,
+    totalPrice: r.totalPrice,
+    paidBy: r.paidBy,
+    deposit: r.deposit,
+    depositAmount: r.depositAmount,
+    depositCurrency: r.depositCurrency,
+    deliveryFeeApplies: !!(r.deliveryFee && r.deliveryFee.toString().toLowerCase() !== 'no'),
+    deliveryFee: r.deliveryFee,
+    // Helmets -- straight from the loaded row, same as everything else in
+    // this payload (see this function's own comment above).
+    helmetHalfSizeQty: r.helmetHalfSizeQty,
+    helmetFullSizeS: r.helmetFullSizeS,
+    helmetFullSizeM: r.helmetFullSizeM,
+    helmetFullSizeL: r.helmetFullSizeL,
+    helmetFullSizeXL: r.helmetFullSizeXL,
+    helmetKidsQty: r.helmetKidsQty,
+    helmetFullFaceQty: r.helmetFullFaceQty,
+    helmetNone: String(r.helmetNone).toUpperCase() === 'TRUE'
+  };
+}
+
+// Shared regenerate call used by both "Update Contract" (deliberate,
+// always-confirmed override) and "View Contract"'s fallback offer when no
+// PDF can be found at all. Returns true/false; caller handles the button
+// state and confirm prompt, since those differ between the two callers.
+async function performContractRegeneration() {
+  editStatusBox.className = 'status';
+  editStatusBox.textContent = 'Generating…';
+  try {
+    const res = await fetch(scriptUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(buildRegenerateContractPayload())
+    });
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error || 'Unknown error');
+    currentEditRecord.contractPdfUrl = data.pdfUrl;
+    editStatusBox.textContent = 'Contract updated.';
+    editStatusBox.className = 'status ok';
+    return true;
+  } catch (err) {
+    editStatusBox.textContent = 'Could not update the contract: ' + err.message;
+    editStatusBox.className = 'status err';
+    return false;
+  }
+}
+
+async function viewContract() {
+  if (!currentEditRecord) return;
+  if (currentEditRecord.contractPdfUrl) {
+    window.open(currentEditRecord.contractPdfUrl, '_blank', 'noopener');
+    return;
+  }
+
+  const originalText = editViewPdfBtn.textContent;
+  editViewPdfBtn.disabled = true;
+  editViewPdfBtn.textContent = 'Searching…';
+  editStatusBox.className = 'status';
+  editStatusBox.textContent = '';
+  try {
+    const res = await fetch(scriptUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({
+        action: 'findContractDocument',
+        rowNumber: currentEditRecord.rowNumber,
+        name: currentEditRecord.name,
+        number: currentEditRecord.number,
+        rentingDateFrom: toIsoDateForInput(currentEditRecord.rentingDateFrom)
+      })
+    });
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error || 'Unknown error');
+    if (data.pdfUrl) currentEditRecord.contractPdfUrl = data.pdfUrl;
+
+    if (currentEditRecord.contractPdfUrl) {
+      window.open(currentEditRecord.contractPdfUrl, '_blank', 'noopener');
+      editViewPdfBtn.disabled = false;
+      editViewPdfBtn.textContent = originalText;
+      return;
+    }
+  } catch (err) {
+    // Falls through to the "generate one?" offer below -- whether the
+    // search threw (no folder/file found at all) or simply came back
+    // empty, the end result for the user is the same: no PDF to open.
+  }
+  editViewPdfBtn.disabled = false;
+  editViewPdfBtn.textContent = originalText;
+
+  const proceed = confirm('No contract document found for this customer. Would you like to generate one now?');
+  if (!proceed) return;
+  editViewPdfBtn.disabled = true;
+  editViewPdfBtn.textContent = 'Generating…';
+  const ok = await performContractRegeneration();
+  editViewPdfBtn.disabled = false;
+  editViewPdfBtn.textContent = originalText;
+  if (ok && currentEditRecord.contractPdfUrl) {
+    window.open(currentEditRecord.contractPdfUrl, '_blank', 'noopener');
+  }
+}
+
+async function updateContract() {
+  if (!currentEditRecord) return;
+  const proceed = confirm('Are you sure you want to update the contract? This will override the existing one.');
+  if (!proceed) return;
+
+  const originalText = editUpdateContractBtn.textContent;
+  editUpdateContractBtn.disabled = true;
+  editUpdateContractBtn.textContent = 'Updating…';
+  await performContractRegeneration();
+  editUpdateContractBtn.disabled = false;
+  editUpdateContractBtn.textContent = originalText;
+}
+
+editViewPdfBtn.addEventListener('click', viewContract);
+editUpdateContractBtn.addEventListener('click', updateContract);
+
+// "View Photo of Passport" -- opens the stored link if this record has
+// one. If not (e.g. the photo was uploaded from the Add-new-contract page
+// BEFORE this contract row even existed, so there was nothing to backfill
+// a link onto at the time), falls back to action:'findPassportPhoto' on
+// the backend, which searches this customer's subfolder (by name +
+// phone) for a file dated to this record's rental start date -- same
+// reconstruction approach as viewContract's PDF fallback.
+const editViewPhotoBtn = document.getElementById('editViewPhotoBtn');
+editViewPhotoBtn.addEventListener('click', async () => {
+  if (!currentEditRecord) return;
+
+  if (currentEditRecord.passportPhotoUrl) {
+    window.open(currentEditRecord.passportPhotoUrl, '_blank', 'noopener');
+    return;
+  }
+
+  const originalText = editViewPhotoBtn.textContent;
+  editViewPhotoBtn.disabled = true;
+  editViewPhotoBtn.textContent = 'Searching…';
+  editStatusBox.className = 'status';
+  editStatusBox.textContent = '';
+  try {
+    const res = await fetch(scriptUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({
+        action: 'findPassportPhoto',
+        rowNumber: currentEditRecord.rowNumber,
+        name: currentEditRecord.name,
+        number: currentEditRecord.number,
+        rentingDateFrom: toIsoDateForInput(currentEditRecord.rentingDateFrom)
+      })
+    });
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error || 'Unknown error');
+    currentEditRecord.passportPhotoUrl = data.url;
+    window.open(data.url, '_blank', 'noopener');
+  } catch (err) {
+    editStatusBox.textContent = 'Could not find a photo of the passport: ' + err.message;
+    editStatusBox.className = 'status err';
+  } finally {
+    editViewPhotoBtn.disabled = false;
+    editViewPhotoBtn.textContent = originalText;
+  }
+});
+
+// "Upload photo" on the edit modal -- action:'uploadPassportPhoto', with
+// rowNumber always known (this contract row already exists). The backend
+// now resolves the folder from this exact row's own stored Doc/PDF/photo
+// links rather than re-matching by name+phone, so it always lands in the
+// one folder this contract's Doc/PDF already live in -- never a new
+// folder, even if the phone number was typed with different spacing back
+// when the folder was first created. If this contract already has a
+// photo of passport on file, the backend refuses to save a second one
+// and reports back the existing link instead -- shown here as an
+// "already on file" message with a link to open it, rather than an
+// error. Uses this record's own name/number/rentingDateFrom, NOT
+// whatever's currently typed in the edit fields below, in case those
+// haven't been saved yet. ----
+const editPassportPhotoInput = document.getElementById('e_passportPhoto');
+const editPassportPhotoUploadBtn = document.getElementById('e_passportPhotoUploadBtn');
+const editPassportPhotoStatusBox = document.getElementById('e_passportPhotoStatusBox');
+editPassportPhotoUploadBtn.addEventListener('click', async () => {
+  if (!currentEditRecord) return;
+  const file = editPassportPhotoInput.files && editPassportPhotoInput.files[0];
+  if (!file) {
+    editPassportPhotoStatusBox.textContent = 'Choose a photo file first.';
+    editPassportPhotoStatusBox.className = 'status err';
+    return;
+  }
+
+  const originalText = editPassportPhotoUploadBtn.textContent;
+  editPassportPhotoUploadBtn.disabled = true;
+  editPassportPhotoUploadBtn.textContent = 'Uploading…';
+  editPassportPhotoStatusBox.className = 'status';
+  editPassportPhotoStatusBox.textContent = '';
+  try {
+    const base64 = await readFileAsBase64(file);
+    const res = await fetch(scriptUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({
+        action: 'uploadPassportPhoto',
+        rowNumber: currentEditRecord.rowNumber,
+        name: currentEditRecord.name,
+        number: currentEditRecord.number,
+        rentingDateFrom: toIsoDateForInput(currentEditRecord.rentingDateFrom),
+        passportPhotoBase64: base64,
+        passportPhotoMimeType: file.type || 'image/jpeg'
+      })
+    });
+    const data = await res.json();
+    if (!data.success && data.alreadyExists) {
+      currentEditRecord.passportPhotoUrl = data.url;
+      editPassportPhotoStatusBox.innerHTML = (data.error || 'A photo of passport is already on file for this contract.') +
+        ' <a href="' + data.url + '" target="_blank" rel="noopener" style="color:inherit; text-decoration:underline; font-weight:600;">Open it</a>';
+      editPassportPhotoStatusBox.className = 'status warn';
+      editPassportPhotoInput.value = '';
+      return;
+    }
+    if (!data.success) throw new Error(data.error || 'Unknown error');
+    currentEditRecord.passportPhotoUrl = data.url;
+    editPassportPhotoStatusBox.innerHTML = 'Photo uploaded. <a href="' + data.url +
+      '" target="_blank" rel="noopener" style="color:inherit; text-decoration:underline; font-weight:600;">Open it</a>';
+    editPassportPhotoStatusBox.className = 'status ok';
+    editPassportPhotoInput.value = '';
+  } catch (err) {
+    editPassportPhotoStatusBox.textContent = 'Could not upload the photo: ' + err.message;
+    editPassportPhotoStatusBox.className = 'status err';
+  } finally {
+    editPassportPhotoUploadBtn.disabled = false;
+    editPassportPhotoUploadBtn.textContent = originalText;
+  }
+});
+
+// "Fill from WhatsApp (AI)" on the edit modal -- same idea and same
+// backend action (readWhatsAppContactWithAI) as the Add new contract
+// screen's copy of this button. Reads whatever screenshot is currently
+// chosen in the file picker above, fills the Number and Chat name fields
+// below for staff to check, and never uploads/saves the screenshot
+// itself -- the picker is cleared right after each read.
+const editWhatsappContactPhotoInput = document.getElementById('e_whatsappContactPhoto');
+const editWhatsappAiFillBtn = document.getElementById('e_whatsappAiFillBtn');
+const editWhatsappAiStatusBox = document.getElementById('e_whatsappAiStatusBox');
+
+editWhatsappAiFillBtn.addEventListener('click', async () => {
+  const file = editWhatsappContactPhotoInput.files && editWhatsappContactPhotoInput.files[0];
+  if (!file) {
+    editWhatsappAiStatusBox.textContent = 'Choose a screenshot of the WhatsApp contact screen first.';
+    editWhatsappAiStatusBox.className = 'status warn';
+    return;
+  }
+
+  const originalText = editWhatsappAiFillBtn.textContent;
+  editWhatsappAiFillBtn.disabled = true;
+  editWhatsappAiFillBtn.textContent = 'Reading…';
+  editWhatsappAiStatusBox.className = 'status progress';
+  editWhatsappAiStatusBox.innerHTML = '<span class="status-spinner"></span><span>Reading screenshot…</span>';
+
+  try {
+    const base64 = await readFileAsBase64(file);
+    const res = await fetch(scriptUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({
+        action: 'readWhatsAppContactWithAI',
+        imageBase64: base64,
+        imageMimeType: file.type || 'image/jpeg'
+      })
+    });
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error || 'Unknown error');
+
+    const fields = data.fields || {};
+    const filled = [];
+    if (fields.number) { document.getElementById('e_number').value = fields.number; filled.push('phone number'); }
+    if (fields.chatName) { document.getElementById('e_chatName').value = fields.chatName; filled.push('chat name'); }
+
+    if (filled.length) {
+      editWhatsappAiStatusBox.textContent = 'Filled in ' + filled.join(' and ') + ' from the screenshot — double check them before saving.';
+      editWhatsappAiStatusBox.className = 'status ok';
+    } else {
+      editWhatsappAiStatusBox.textContent = 'Could not read any fields from that screenshot — enter them by hand.';
+      editWhatsappAiStatusBox.className = 'status warn';
+    }
+  } catch (err) {
+    editWhatsappAiStatusBox.textContent = 'Could not read the screenshot: ' + err.message;
+    editWhatsappAiStatusBox.className = 'status err';
+  } finally {
+    editWhatsappAiFillBtn.disabled = false;
+    editWhatsappAiFillBtn.textContent = originalText;
+    editWhatsappContactPhotoInput.value = ''; // never saved -- clear it so it's obvious nothing is held onto
+  }
+});
+
+/* ---------------- Edit Receipt ---------------- */
+// action:'generateReceipt' -- opened from the edit modal's "Edit
+// Receipt" button. A receipt is now generated automatically the moment
+// a contract is created (see the Add-form's submit handler / Code.gs's
+// addContractEntry), so this is always editing/regenerating the existing
+// one, never a first-time print. Every field is prefilled fresh from the
+// contract currently being edited (currentEditRecord) each time this
+// opens -- never from whatever was submitted last time -- so an
+// extension, for example, means manually bumping the dates/fee here.
+// Nothing touches the Contract sheet itself. Two views inside one modal
+// card: the form, then (after it's submitted) a synopsis with
+// Confirm/Back, so nothing is regenerated until the details are
+// confirmed -- confirming replaces the one existing receipt PDF for this
+// contract.
+const receiptBackdrop = document.getElementById('receiptBackdrop');
+const receiptCloseBtn = document.getElementById('receiptCloseBtn');
+const editReceiptBtn = document.getElementById('editReceiptBtn');
+const editViewReceiptBtn = document.getElementById('editViewReceiptBtn');
+const receiptForm = document.getElementById('receiptForm');
+const receiptSubmitBtn = document.getElementById('receiptSubmitBtn');
+const receiptFormStatusBox = document.getElementById('receiptFormStatusBox');
+const receiptFormView = document.getElementById('receiptFormView');
+const receiptConfirmView = document.getElementById('receiptConfirmView');
+const receiptSynopsisBox = document.getElementById('receiptSynopsisBox');
+const receiptConfirmBtn = document.getElementById('receiptConfirmBtn');
+const receiptBackBtn = document.getElementById('receiptBackBtn');
+const receiptConfirmStatusBox = document.getElementById('receiptConfirmStatusBox');
+const r_paymentMethod = document.getElementById('r_paymentMethod');
+const r_otherMethodText = document.getElementById('r_otherMethodText');
+
+function closeReceiptModal() {
+  receiptBackdrop.classList.remove('show');
+}
+let receiptMouseDownOnBackdrop = false;
+receiptBackdrop.addEventListener('mousedown', (e) => {
+  receiptMouseDownOnBackdrop = (e.target === receiptBackdrop);
+});
+receiptBackdrop.addEventListener('click', (e) => {
+  if (e.target === receiptBackdrop && receiptMouseDownOnBackdrop) closeReceiptModal();
+  receiptMouseDownOnBackdrop = false;
+});
+receiptCloseBtn.addEventListener('click', closeReceiptModal);
+
+r_paymentMethod.addEventListener('change', () => {
+  if (r_paymentMethod.value === 'other') {
+    r_otherMethodText.classList.remove('hidden');
+  } else {
+    r_otherMethodText.classList.add('hidden');
+    r_otherMethodText.value = '';
+  }
+});
+
+// Maps the contract's own "Paid by" field (cash/scan/wise/revolut, or
+// occasionally older free text) onto the receipt's payment-method
+// picker -- an unrecognized value becomes "Other" with the original text
+// carried into the "describe it" field, rather than silently discarded.
+function mapPaidByToMethod(paidBy) {
+  const known = ['cash', 'scan', 'wise', 'revolut'];
+  const lower = (paidBy || '').toString().trim().toLowerCase();
+  if (known.includes(lower)) return { method: lower, otherText: '' };
+  if (lower) return { method: 'other', otherText: paidBy };
+  return { method: 'cash', otherText: '' };
+}
+
+editViewReceiptBtn.addEventListener('click', () => {
+  if (!currentEditRecord) return;
+  if (currentEditRecord.receiptPdfUrl) {
+    window.open(currentEditRecord.receiptPdfUrl, '_blank', 'noopener');
+    return;
+  }
+  const proceed = confirm('No receipt exists for this contract yet. Would you like to generate one?');
+  if (!proceed) return;
+  openEditReceiptForm();
+});
+
+editReceiptBtn.addEventListener('click', () => {
+  if (!currentEditRecord) return;
+  if (!currentEditRecord.receiptPdfUrl) {
+    const proceed = confirm('No receipt exists for this contract yet. Would you like to generate one?');
+    if (!proceed) return;
+  }
+  openEditReceiptForm();
+});
+
+// Prefills and opens the Edit Receipt form -- always FRESH from the
+// contract's own current fields (never from anything previously typed
+// into a receipt), whether this is the first receipt for this contract or
+// a re-edit/regenerate of an existing one. Shared by both "Edit Receipt"
+// and "View Receipt" (when the latter finds nothing to open and the user
+// opts to generate one).
+function openEditReceiptForm() {
+  const r = currentEditRecord;
+  if (!r) return;
+
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  document.getElementById('r_receiptDate').value = now.getFullYear() + '-' + pad(now.getMonth() + 1) + '-' + pad(now.getDate());
+  document.getElementById('r_name').value = r.name || '';
+  document.getElementById('r_bikeModel').value = r.bikeModel || '';
+  document.getElementById('r_cc').value = '';
+  document.getElementById('r_periodFrom').value = toIsoDateForInput(r.rentingDateFrom);
+  document.getElementById('r_periodTo').value = toIsoDateForInput(r.returnDate);
+  // "Total price" on the contract is the FULL amount paid (rental +
+  // delivery combined), not the rental portion alone -- so Total Paid
+  // mirrors it as-is, and Rental Fee is back-calculated as total minus
+  // delivery, to avoid double-counting the delivery fee.
+  const totalPriceNum = Number(r.totalPrice) || 0;
+  const deliveryFeeNum = Number(r.deliveryFee) || 0;
+  const rentalFeeNum = totalPriceNum - deliveryFeeNum;
+
+  document.getElementById('r_rentalFee').value = rentalFeeNum || '';
+  document.getElementById('r_deliveryFee').value = r.deliveryFee || '';
+  document.getElementById('r_otherLabel').value = '';
+  document.getElementById('r_otherAmount').value = '';
+
+  document.getElementById('r_totalPaid').value = totalPriceNum || '';
+
+  const mapped = mapPaidByToMethod(r.paidBy);
+  r_paymentMethod.value = mapped.method;
+  r_otherMethodText.value = mapped.otherText;
+  if (mapped.method === 'other') {
+    r_otherMethodText.classList.remove('hidden');
+  } else {
+    r_otherMethodText.classList.add('hidden');
+  }
+
+  document.getElementById('r_receivedBy').value = 'Miss. Arparatchanee';
+
+  receiptFormStatusBox.className = 'status';
+  receiptFormStatusBox.textContent = '';
+  receiptFormView.style.display = '';
+  receiptConfirmView.style.display = 'none';
+  receiptConfirmStatusBox.className = 'status';
+  receiptConfirmStatusBox.textContent = '';
+  receiptBackdrop.classList.add('show');
+}
+
+function fmtMoneyForSynopsis(v) {
+  const n = Number(v);
+  return (v !== '' && v !== null && v !== undefined && !isNaN(n)) ? ('฿' + n.toLocaleString('en-US')) : '—';
+}
+const PAYMENT_METHOD_LABELS = { cash: 'Cash', scan: 'Thai QR Scan', wise: 'Wise', revolut: 'Revolut', other: 'Other' };
+
+receiptForm.addEventListener('submit', (e) => {
+  e.preventDefault();
+
+  const totalPaid = document.getElementById('r_totalPaid').value;
+  if (totalPaid === '' || isNaN(Number(totalPaid))) {
+    receiptFormStatusBox.textContent = 'Please enter the total amount paid.';
+    receiptFormStatusBox.className = 'status err';
+    return;
+  }
+  const method = r_paymentMethod.value;
+  if (method === 'other' && !r_otherMethodText.value.trim()) {
+    receiptFormStatusBox.textContent = 'Please describe the "Other" payment method, or choose a different one.';
+    receiptFormStatusBox.className = 'status err';
+    r_otherMethodText.focus();
+    return;
+  }
+  receiptFormStatusBox.className = 'status';
+  receiptFormStatusBox.textContent = '';
+
+  const periodFrom = document.getElementById('r_periodFrom').value;
+  const periodTo = document.getElementById('r_periodTo').value;
+  const periodText = [periodFrom, periodTo].filter(Boolean).map(formatDateDisplay).join(' to ') || '—';
+
+  const otherLabel = document.getElementById('r_otherLabel').value.trim();
+  const otherAmount = document.getElementById('r_otherAmount').value;
+  const ccVal = document.getElementById('r_cc').value.trim();
+
+  const methodLabel = method === 'other'
+    ? ('Other (' + r_otherMethodText.value.trim() + ')')
+    : PAYMENT_METHOD_LABELS[method];
+
+  receiptSynopsisBox.innerHTML =
+    '<div><b>Name:</b> ' + (document.getElementById('r_name').value.trim() || '—') + '</div>' +
+    '<div><b>Receipt No.:</b> auto-generated</div>' +
+    '<div><b>Date:</b> ' + formatDateDisplay(document.getElementById('r_receiptDate').value) + '</div>' +
+    '<div><b>Scooter:</b> ' + (document.getElementById('r_bikeModel').value.trim() || '—') + (ccVal ? ' (' + ccVal + ')' : '') + '</div>' +
+    '<div><b>Rental period:</b> ' + periodText + '</div>' +
+    '<div><b>Rental fee:</b> ' + fmtMoneyForSynopsis(document.getElementById('r_rentalFee').value) + '</div>' +
+    '<div><b>Delivery fee:</b> ' + fmtMoneyForSynopsis(document.getElementById('r_deliveryFee').value) + '</div>' +
+    (otherLabel || otherAmount ? '<div><b>Other (' + (otherLabel || '—') + '):</b> ' + fmtMoneyForSynopsis(otherAmount) + '</div>' : '') +
+    '<div><b>Total amount paid:</b> ' + fmtMoneyForSynopsis(totalPaid) + '</div>' +
+    '<div><b>Payment method:</b> ' + methodLabel + '</div>' +
+    '<div><b>Received by:</b> ' + (document.getElementById('r_receivedBy').value.trim() || '—') + '</div>';
+
+  receiptFormView.style.display = 'none';
+  receiptConfirmView.style.display = '';
+});
+
+receiptBackBtn.addEventListener('click', () => {
+  receiptConfirmView.style.display = 'none';
+  receiptFormView.style.display = '';
+});
+
+receiptConfirmBtn.addEventListener('click', async () => {
+  if (!currentEditRecord) return;
+  const originalText = receiptConfirmBtn.textContent;
+  receiptConfirmBtn.disabled = true;
+  receiptBackBtn.disabled = true;
+  receiptConfirmBtn.textContent = 'Generating…';
+  receiptConfirmStatusBox.className = 'status';
+  receiptConfirmStatusBox.textContent = '';
+
+  const method = r_paymentMethod.value;
+  const payload = {
+    action: 'generateReceipt',
+    rowNumber: currentEditRecord.rowNumber,
+    number: currentEditRecord.number,
+    // Only used as a last-resort fallback if this contract's row has no
+    // stored Doc/PDF/photo link yet to anchor the folder lookup on --
+    // see generateReceiptDocument's comment in Code.gs.
+    rentingDateFrom: toIsoDateForInput(currentEditRecord.rentingDateFrom),
+    // No receiptNo field on this form -- always left blank so the backend
+    // auto-assigns the next number in sequence.
+    receiptNo: '',
+    receiptDate: document.getElementById('r_receiptDate').value,
+    name: document.getElementById('r_name').value.trim(),
+    bikeModel: document.getElementById('r_bikeModel').value.trim(),
+    cc: document.getElementById('r_cc').value.trim(),
+    rentalPeriodFrom: document.getElementById('r_periodFrom').value,
+    rentalPeriodTo: document.getElementById('r_periodTo').value,
+    rentalFee: document.getElementById('r_rentalFee').value,
+    deliveryFee: document.getElementById('r_deliveryFee').value,
+    otherLabel: document.getElementById('r_otherLabel').value.trim(),
+    otherAmount: document.getElementById('r_otherAmount').value,
+    totalPaid: document.getElementById('r_totalPaid').value,
+    paymentMethod: method,
+    otherMethodText: method === 'other' ? r_otherMethodText.value.trim() : '',
+    receivedBy: document.getElementById('r_receivedBy').value.trim()
+  };
+
+  try {
+    const res = await fetch(scriptUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error || 'Unknown error');
+    currentEditRecord.receiptPdfUrl = data.pdfUrl;
+    receiptConfirmStatusBox.innerHTML = 'Receipt updated' + (data.receiptNo ? ' (No. ' + data.receiptNo + ')' : '') + '. ' +
+      '<a href="' + data.pdfUrl + '" target="_blank" rel="noopener" style="color:inherit; text-decoration:underline; font-weight:600;">Open PDF</a>';
+    receiptConfirmStatusBox.className = 'status ok';
+  } catch (err) {
+    receiptConfirmStatusBox.textContent = 'Could not generate the receipt: ' + err.message;
+    receiptConfirmStatusBox.className = 'status err';
+  } finally {
+    receiptConfirmBtn.disabled = false;
+    receiptBackBtn.disabled = false;
+    receiptConfirmBtn.textContent = originalText;
+  }
+});
+
+/* ---------------- Send Contract + Receipt ---------------- */
+// Converts a base64 string (as returned by the backend's
+// action:'getFilesForShare') into a real File object the Web Share API
+// can attach.
+function base64ToFile_(base64, filename, mimeType) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return new File([bytes], filename, { type: mimeType || 'application/pdf' });
+}
+
+// Old-style fallback -- just opens both Drive links in new tabs, same as
+// this button's very first version. Used when the browser/device can't do
+// file sharing at all (most desktop browsers), or if fetching/sharing the
+// actual files fails partway through for any reason, so staff always end
+// up with a working way to reach both documents rather than a dead end.
+function openDocsFallback_() {
+  if (currentEditRecord.contractPdfUrl) window.open(currentEditRecord.contractPdfUrl, '_blank', 'noopener');
+  if (currentEditRecord.receiptPdfUrl) window.open(currentEditRecord.receiptPdfUrl, '_blank', 'noopener');
+}
+
+// Click handler. Fetches both PDFs as real files through the backend and
+// hands them to the phone's native share sheet in one call, so staff pick
+// WhatsApp there with the documents actually attached -- see this
+// button's HTML comment above for why this replaced the old
+// Drive-link/wa.me version. Deliberately does NOT try to generate either
+// document on the fly if missing -- the contract could be regenerated
+// silently, but the receipt can't be (Edit Receipt needs amounts typed in
+// by hand), and having the same button silently do one but not the other
+// would be a confusing half-measure. So: if either is missing, say
+// exactly which one and stop.
+const editSendDocsBtn = document.getElementById('editSendDocsBtn');
+editSendDocsBtn.addEventListener('click', async () => {
+  if (!currentEditRecord) return;
+  editStatusBox.className = 'status';
+  editStatusBox.textContent = '';
+
+  const missing = [];
+  if (!currentEditRecord.contractPdfUrl) missing.push('the contract (use "View Contract" above to generate it)');
+  if (!currentEditRecord.receiptPdfUrl) missing.push('the receipt (use "Edit Receipt" above to generate it)');
+  if (missing.length) {
+    editStatusBox.textContent = 'Cannot send yet -- missing ' + missing.join(' and ') + '.';
+    editStatusBox.className = 'status err';
+    return;
+  }
+
+  // No file-sharing support at all (most desktop browsers) -- skip
+  // straight to the fallback rather than attempting a fetch that has
+  // nowhere useful to hand its result to.
+  if (!(navigator.share && navigator.canShare)) {
+    openDocsFallback_();
+    return;
+  }
+
+  const originalText = editSendDocsBtn.textContent;
+  editSendDocsBtn.disabled = true;
+  editSendDocsBtn.textContent = 'Preparing…';
+
+  try {
+    const res = await fetch(scriptUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({
+        action: 'getFilesForShare',
+        fileUrls: [currentEditRecord.contractPdfUrl, currentEditRecord.receiptPdfUrl]
+      })
+    });
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error || 'Unknown error');
+
+    const files = data.files.map((f) => base64ToFile_(f.base64, f.filename, f.mimeType));
+
+    if (!navigator.canShare({ files })) {
+      // Browser claims share() support but not for these files -- fall
+      // back rather than calling share() and having it throw.
+      openDocsFallback_();
+      return;
+    }
+
+    await navigator.share({
+      files,
+      title: 'Contract + Receipt',
+      text: 'Hi ' + (currentEditRecord.name || 'there').toString().trim().split(/\s+/)[0] + ', here is your contract and receipt from AA Scooters.'
+    });
+  } catch (err) {
+    // AbortError -- staff opened the share sheet and backed out of it
+    // (changed their mind, or picked no app) -- not a real failure, so
+    // stay quiet rather than showing a scary red error for a no-op.
+    if (err && err.name === 'AbortError') {
+      // no-op
+    } else {
+      editStatusBox.textContent = 'Could not prepare the files to send: ' + err.message + ' -- opening both PDFs instead.';
+      editStatusBox.className = 'status err';
+      openDocsFallback_();
+    }
+  } finally {
+    editSendDocsBtn.disabled = false;
+    editSendDocsBtn.textContent = originalText;
+  }
+});
+
+/* ---------------- View Checklist ---------------- */
+// Mirrors "View Contract" (viewContract above), not "View Receipt" -- a
+// checklist has no edit form, so this is just: open the cached PDF if
+// there is one; otherwise ask the backend to search Drive for this
+// customer's checklist (action:'findChecklistDocument'); if that comes up
+// empty too, offer to generate one on the spot (action:'generateChecklist')
+// using nothing but this record's own name -- there's nothing to type in,
+// unlike the receipt, since the checklist only ever needs the customer's
+// name and today's date.
+const editViewChecklistBtn = document.getElementById('editViewChecklistBtn');
+
+async function viewChecklist() {
+  if (!currentEditRecord) return;
+  if (currentEditRecord.checklistPdfUrl) {
+    window.open(currentEditRecord.checklistPdfUrl, '_blank', 'noopener');
+    return;
+  }
+
+  const originalText = editViewChecklistBtn.textContent;
+  editViewChecklistBtn.disabled = true;
+  editViewChecklistBtn.textContent = 'Searching…';
+  editStatusBox.className = 'status';
+  editStatusBox.textContent = '';
+  try {
+    const res = await fetch(scriptUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({
+        action: 'findChecklistDocument',
+        rowNumber: currentEditRecord.rowNumber,
+        name: currentEditRecord.name,
+        number: currentEditRecord.number,
+        rentingDateFrom: toIsoDateForInput(currentEditRecord.rentingDateFrom)
+      })
+    });
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error || 'Unknown error');
+    if (data.pdfUrl) currentEditRecord.checklistPdfUrl = data.pdfUrl;
+
+    if (currentEditRecord.checklistPdfUrl) {
+      if (data.warning) {
+        editStatusBox.textContent = data.warning;
+        editStatusBox.className = 'status warn';
+      }
+      window.open(currentEditRecord.checklistPdfUrl, '_blank', 'noopener');
+      editViewChecklistBtn.disabled = false;
+      editViewChecklistBtn.textContent = originalText;
+      return;
+    }
+  } catch (err) {
+    // Falls through to the "generate one?" offer below -- whether the
+    // search threw (no folder/file found at all) or simply came back
+    // empty, the end result for the user is the same: no PDF to open.
+  }
+  editViewChecklistBtn.disabled = false;
+  editViewChecklistBtn.textContent = originalText;
+
+  const proceed = confirm('No checklist found for this customer. Would you like to generate one now?');
+  if (!proceed) return;
+
+  editViewChecklistBtn.disabled = true;
+  editViewChecklistBtn.textContent = 'Generating…';
+  try {
+    const res = await fetch(scriptUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({
+        action: 'generateChecklist',
+        rowNumber: currentEditRecord.rowNumber,
+        name: currentEditRecord.name,
+        number: currentEditRecord.number,
+        rentingDateFrom: toIsoDateForInput(currentEditRecord.rentingDateFrom)
+      })
+    });
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error || 'Unknown error');
+    currentEditRecord.checklistPdfUrl = data.pdfUrl;
+    editStatusBox.textContent = 'Checklist generated.';
+    editStatusBox.className = 'status ok';
+  } catch (err) {
+    editStatusBox.textContent = 'Could not generate the checklist: ' + err.message;
+    editStatusBox.className = 'status err';
+  }
+  editViewChecklistBtn.disabled = false;
+  editViewChecklistBtn.textContent = originalText;
+  if (currentEditRecord.checklistPdfUrl) {
+    window.open(currentEditRecord.checklistPdfUrl, '_blank', 'noopener');
+  }
+}
+
+editViewChecklistBtn.addEventListener('click', viewChecklist);
+
+const e_contact = document.getElementById('e_contact');
+const e_contactOther = document.getElementById('e_contactOther');
+// ---- Same Messenger field toggle as the Add form -- see that copy's
+// comment. ----
+const e_messengerIdLabel = document.getElementById('e_messengerIdLabel');
+const e_messengerIdInput = document.getElementById('e_messengerId');
+function refreshEditMessengerIdVisibility() {
+  if (e_contact.value === 'Messenger') {
+    e_messengerIdLabel.classList.remove('hidden');
+    e_messengerIdInput.classList.remove('hidden');
+  } else {
+    e_messengerIdLabel.classList.add('hidden');
+    e_messengerIdInput.classList.add('hidden');
+    e_messengerIdInput.value = '';
+  }
+}
+e_contact.addEventListener('change', () => {
+  if (e_contact.value === 'other') {
+    e_contactOther.classList.remove('hidden');
+  } else {
+    e_contactOther.classList.add('hidden');
+    e_contactOther.value = '';
+  }
+  refreshEditMessengerIdVisibility();
+});
+
+const e_deposit = document.getElementById('e_deposit');
+const e_depositAmount = document.getElementById('e_depositAmount');
+function e_depositNeedsAmount() {
+  return e_deposit.value !== '' && e_deposit.value !== 'Passport';
+}
+const refreshEditDepositCurrencyVisibility = wireDepositCurrencyToggle(
+  'e_depositCurrencyToggle', 'e_depositCurrencyWrap', 'e_depositCurrency',
+  'e_depositCurrencyToggleLabel', e_depositNeedsAmount
+);
+function refreshEditDepositAmountVisibility() {
+  if (e_depositNeedsAmount()) {
+    e_depositAmount.classList.remove('hidden');
+  } else {
+    e_depositAmount.classList.add('hidden');
+    e_depositAmount.value = '';
+  }
+  refreshEditDepositCurrencyVisibility();
+}
+e_deposit.addEventListener('change', refreshEditDepositAmountVisibility);
+
+const e_deliveryFeeApplies = document.getElementById('e_deliveryFeeApplies');
+const e_deliveryFee = document.getElementById('e_deliveryFee');
+function refreshEditDeliveryFeeVisibility() {
+  if (e_deliveryFeeApplies.checked) {
+    e_deliveryFee.classList.remove('hidden');
+  } else {
+    e_deliveryFee.classList.add('hidden');
+    e_deliveryFee.value = '';
+  }
+}
+e_deliveryFeeApplies.addEventListener('change', refreshEditDeliveryFeeVisibility);
+
+// ---- Deliver to hotel -- same show/hide pattern as the Add form's
+// delivery link field above, so the same options are available on edit.
+// No delivery TIME field here either -- see the Add form's comment above
+// this same field for why (derived from Return time, never entered here). ----
+const e_deliverToHotel = document.getElementById('e_deliverToHotel');
+const e_deliveryLinkRow = document.getElementById('e_deliveryLinkRow');
+const e_deliveryLink = document.getElementById('e_deliveryLink');
+function refreshEditDeliveryLinkVisibility() {
+  if (e_deliverToHotel.value === 'Yes') {
+    e_deliveryLinkRow.classList.remove('hidden');
+  } else {
+    e_deliveryLinkRow.classList.add('hidden');
+    e_deliveryLink.value = '';
+  }
+}
+e_deliverToHotel.addEventListener('change', refreshEditDeliveryLinkVisibility);
+
+function openEditModal(r) {
+  currentEditRecord = r;
+  editStatusBox.className = 'status';
+  editStatusBox.textContent = '';
+
+  // Both buttons always show and stay enabled -- if this record has no
+  // stored PDF link, clicking "View Contract" triggers the
+  // findContractDocument fallback search (see viewContract) rather than
+  // pre-emptively disabling anything based on what's cached right now.
+  editViewDocsRow.style.display = 'flex';
+  editViewPdfBtn.disabled = false;
+  editUpdateContractBtn.disabled = false;
+  editNoDocsMsg.style.display = 'none';
+
+  document.getElementById('e_name').value = r.name || '';
+  document.getElementById('e_nationality').value = r.nationality || '';
+  document.getElementById('e_passport').value = r.passport || '';
+  editPassportPhotoInput.value = '';
+  editPassportPhotoStatusBox.className = 'status';
+  editPassportPhotoStatusBox.textContent = '';
+  document.getElementById('e_number').value = r.number || '';
+  document.getElementById('e_chatName').value = r.chatName || '';
+  editWhatsappContactPhotoInput.value = '';
+  editWhatsappAiStatusBox.className = 'status';
+  editWhatsappAiStatusBox.textContent = '';
+
+  const contactOptions = ['WhatsApp', 'Messenger', 'Phone', 'Line'];
+  if (contactOptions.includes(r.contact)) {
+    e_contact.value = r.contact;
+    e_contactOther.classList.add('hidden');
+    e_contactOther.value = '';
+  } else if (r.contact) {
+    e_contact.value = 'other';
+    e_contactOther.classList.remove('hidden');
+    e_contactOther.value = r.contact;
+  } else {
+    e_contact.value = '';
+    e_contactOther.classList.add('hidden');
+    e_contactOther.value = '';
+  }
+  document.getElementById('e_messengerId').value = r.messengerId || '';
+  refreshEditMessengerIdVisibility();
+
+  document.getElementById('e_bikeModel').value = r.bikeModel || '';
+  document.getElementById('e_rentingDateFrom').value = toIsoDateForInput(r.rentingDateFrom);
+  document.getElementById('e_returnDate').value = toIsoDateForInput(r.returnDate);
+  document.getElementById('e_returnTime').value = r.returnTime || '';
+  document.getElementById('e_deliverToHotel').value = r.deliverToHotel || '';
+  refreshEditDeliveryLinkVisibility();
+  if (e_deliverToHotel.value === 'Yes') {
+    e_deliveryLink.value = r.deliveryLink || '';
+  }
+  document.getElementById('e_totalPrice').value = r.totalPrice || '';
+
+  const paidByOptions = ['cash', 'scan', 'wise', 'revolut'];
+  const paidByLower = (r.paidBy || '').toString().toLowerCase();
+  document.getElementById('e_paidBy').value = paidByOptions.includes(paidByLower) ? paidByLower : '';
+  document.getElementById('e_dealCheckbox').checked = String(r.isDeal).toUpperCase() === 'TRUE';
+
+  const depositOptions = ['Scan', 'Cash', 'Wise', 'Passport'];
+  e_deposit.value = depositOptions.includes(r.deposit) ? r.deposit : '';
+  refreshEditDepositAmountVisibility(); // also resets the currency toggle off/blank
+  if (e_depositNeedsAmount()) {
+    e_depositAmount.value = r.depositAmount || '';
+    if (r.depositCurrency) {
+      document.getElementById('e_depositCurrencyToggle').checked = true;
+      refreshEditDepositCurrencyVisibility();
+      setCurrencyInputValue(document.getElementById('e_depositCurrency'), r.depositCurrency);
+    }
+  }
+
+  e_deliveryFeeApplies.checked = !!(r.deliveryFee && r.deliveryFee.toString().toLowerCase() !== 'no');
+  refreshEditDeliveryFeeVisibility();
+  if (e_deliveryFeeApplies.checked) e_deliveryFee.value = r.deliveryFee || '';
+
+  // Helmets -- rebuild generic lines from this row's stored counts (see
+  // helmetLinesFromTally's comment), and separately restore the "None"
+  // flag exactly as stored -- an all-zero row with helmetNone NOT set
+  // shows as an empty, unticked list ("not decided yet"), while an
+  // all-zero row WITH helmetNone set shows the box ticked instead.
+  editHelmetLines = helmetLinesFromTally(r);
+  editHelmetNoneCheckbox.checked = String(r.helmetNone).toUpperCase() === 'TRUE';
+  rerenderEditHelmetLines();
+
+  const statusOptions = ['Pending', 'Rented', 'Returned', 'Canceled'];
+  document.getElementById('e_status').value = statusOptions.includes(r.status) ? r.status : '';
+
+  editStatusBox.className = 'status';
+  editBackdrop.classList.add('show');
+}
+function closeEditModal() {
+  editBackdrop.classList.remove('show');
+  currentEditRecord = null;
+}
+
+editForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  if (!currentEditRecord) return;
+
+  editStatusBox.className = 'status';
+  editSubmitBtn.disabled = true;
+  editSubmitBtn.textContent = 'Saving…';
+
+  const baseContact = e_contact.value === 'other' ? e_contactOther.value.trim() : e_contact.value;
+
+  const payload = {
+    action: 'editContract',
+    rowNumber: currentEditRecord.rowNumber,
+    name: document.getElementById('e_name').value.trim(),
+    nationality: document.getElementById('e_nationality').value.trim(),
+    passport: document.getElementById('e_passport').value.trim(),
+    number: document.getElementById('e_number').value.trim(),
+    contact: baseContact,
+    chatName: document.getElementById('e_chatName').value.trim(),
+    messengerId: e_contact.value === 'Messenger' ? document.getElementById('e_messengerId').value.trim() : '',
+    bikeModel: document.getElementById('e_bikeModel').value.trim(),
+    rentingDateFrom: document.getElementById('e_rentingDateFrom').value,
+    returnDate: document.getElementById('e_returnDate').value,
+    returnTime: document.getElementById('e_returnTime').value,
+    deliverToHotel: document.getElementById('e_deliverToHotel').value,
+    // No deliveryTime sent -- the backend derives it from returnTime above
+    // (see editContractEntry's comment on this).
+    deliveryLink: e_deliverToHotel.value === 'Yes' ? e_deliveryLink.value.trim() : '',
+    totalPrice: document.getElementById('e_totalPrice').value,
+    paidBy: document.getElementById('e_paidBy').value,
+    isDeal: document.getElementById('e_dealCheckbox').checked,
+    deposit: e_deposit.value,
+    depositAmount: e_depositNeedsAmount() ? e_depositAmount.value : '',
+    depositCurrency: (e_depositNeedsAmount() && document.getElementById('e_depositCurrencyToggle').checked)
+      ? resolveCurrencyCode(document.getElementById('e_depositCurrency')) : '',
+    // Deposit method/amount as they were BEFORE this edit (straight from the
+    // pre-edit record the modal was opened with, untouched by anything typed
+    // above) -- lets the backend tell whether the security-deposit method
+    // actually changed, and if so, sync the Scan/Wise/Revolut ledger to match
+    // (see editContractEntry's comment on this).
+    originalDeposit: currentEditRecord.deposit || '',
+    originalDepositAmount: currentEditRecord.depositAmount || '',
+    deliveryFeeApplies: e_deliveryFeeApplies.checked,
+    deliveryFee: e_deliveryFeeApplies.checked ? e_deliveryFee.value : '',
+    status: document.getElementById('e_status').value,
+    // Helmets -- entirely optional, see the Edit modal's Helmets section
+    // comment above.
+    ...tallyHelmets(editHelmetLines),
+    helmetNone: editHelmetNoneCheckbox.checked
+  };
+
+  try {
+    const res = await fetch(scriptUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error || 'Unknown error');
+    editStatusBox.textContent = data.warning ? ('Saved, but: ' + data.warning) : 'Contract updated.';
+    editStatusBox.className = data.warning ? 'status warn' : 'status ok';
+    sheetRows = null;
+    rowsPromise = null;
+    await loadRows();
+    renderResults();
+    setTimeout(closeEditModal, 700);
+  } catch (err) {
+    editStatusBox.textContent = 'Could not save: ' + err.message;
+    editStatusBox.className = 'status err';
+  } finally {
+    editSubmitBtn.disabled = false;
+    editSubmitBtn.textContent = 'Save changes';
+  }
+});
+
+// ---- Reads a File object (e.g. from a <input type="file">) as raw
+// base64 -- Apps Script's Utilities.base64Decode expects just the base64
+// payload, so the "data:image/jpeg;base64," prefix FileReader's
+// readAsDataURL produces is stripped off before resolving. ----
+function readFileAsBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result || '';
+      const commaIdx = result.indexOf(',');
+      resolve(commaIdx !== -1 ? result.slice(commaIdx + 1) : result);
+    };
+    reader.onerror = () => reject(reader.error || new Error('Could not read the file.'));
+    reader.readAsDataURL(file);
+  });
+}
+
+const passportPhotoInput = document.getElementById('passportPhoto');
+
+// "Fill from Passport (AI)" -- reads whatever photo is currently chosen in
+// the file picker above and asks the backend (action:'readPassportWithAI')
+// to have Claude read the name, nationality, and passport number off it,
+// then drops those straight into the fields below for staff to check
+// against the actual passport before saving. This never uploads/saves the
+// photo itself -- it's read fresh from the file picker each click, and the
+// same file still gets bundled into the addContract submission as usual
+// when the form is actually submitted.
+//
+// Guards against calling out to the API (which costs money per call) when
+// there's nothing to read yet: with no photo chosen, this shows a plain
+// "choose a photo first" message and returns without touching the network
+// at all.
+const passportAiFillBtn = document.getElementById('passportAiFillBtn');
+const passportAiStatusBox = document.getElementById('passportAiStatusBox');
+
+passportAiFillBtn.addEventListener('click', async () => {
+  const file = passportPhotoInput.files && passportPhotoInput.files[0];
+  if (!file) {
+    passportAiStatusBox.textContent = 'Choose a photo of the passport first.';
+    passportAiStatusBox.className = 'status warn';
+    return;
+  }
+
+  const originalText = passportAiFillBtn.textContent;
+  passportAiFillBtn.disabled = true;
+  passportAiFillBtn.textContent = 'Reading…';
+  passportAiStatusBox.className = 'status progress';
+  passportAiStatusBox.innerHTML = '<span class="status-spinner"></span><span>Reading photo…</span>';
+
+  try {
+    const base64 = await readFileAsBase64(file);
+    const res = await fetch(scriptUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({
+        action: 'readPassportWithAI',
+        imageBase64: base64,
+        imageMimeType: file.type || 'image/jpeg'
+      })
+    });
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error || 'Unknown error');
+
+    const fields = data.fields || {};
+    const filled = [];
+    if (fields.name) { document.getElementById('name').value = fields.name; filled.push('name'); }
+    if (fields.nationality) { document.getElementById('nationality').value = fields.nationality; filled.push('nationality'); }
+    if (fields.passport) { document.getElementById('passport').value = fields.passport; filled.push('passport number'); }
+
+    if (filled.length) {
+      passportAiStatusBox.textContent = 'Filled in ' + filled.join(', ') + ' from the photo — double check them against the passport before saving.';
+      passportAiStatusBox.className = 'status ok';
+    } else {
+      passportAiStatusBox.textContent = 'Could not read any fields from that photo — enter them by hand.';
+      passportAiStatusBox.className = 'status warn';
+    }
+  } catch (err) {
+    passportAiStatusBox.textContent = 'Could not read the passport photo: ' + err.message;
+    passportAiStatusBox.className = 'status err';
+  } finally {
+    passportAiFillBtn.disabled = false;
+    passportAiFillBtn.textContent = originalText;
+  }
+});
+
+// "Fill from WhatsApp (AI)" -- reads a screenshot of WhatsApp's own "Edit
+// contact" screen (First name / Last name / Country / Phone) and asks the
+// backend (action:'readWhatsAppContactWithAI') to have Claude read the
+// contact's name and phone number off it, then drops those into the
+// Number and Chat name fields for staff to check before saving. Unlike
+// the passport photo above, this photo is NEVER bundled into the
+// addContract submission and is never uploaded/saved anywhere -- it's
+// read fresh from this file picker for this one lookup, and the picker is
+// cleared afterwards since there's nothing left to do with that file.
+const whatsappContactPhotoInput = document.getElementById('whatsappContactPhoto');
+const whatsappAiFillBtn = document.getElementById('whatsappAiFillBtn');
+const whatsappAiStatusBox = document.getElementById('whatsappAiStatusBox');
+
+whatsappAiFillBtn.addEventListener('click', async () => {
+  const file = whatsappContactPhotoInput.files && whatsappContactPhotoInput.files[0];
+  if (!file) {
+    whatsappAiStatusBox.textContent = 'Choose a screenshot of the WhatsApp contact screen first.';
+    whatsappAiStatusBox.className = 'status warn';
+    return;
+  }
+
+  const originalText = whatsappAiFillBtn.textContent;
+  whatsappAiFillBtn.disabled = true;
+  whatsappAiFillBtn.textContent = 'Reading…';
+  whatsappAiStatusBox.className = 'status progress';
+  whatsappAiStatusBox.innerHTML = '<span class="status-spinner"></span><span>Reading screenshot…</span>';
+
+  try {
+    const base64 = await readFileAsBase64(file);
+    const res = await fetch(scriptUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({
+        action: 'readWhatsAppContactWithAI',
+        imageBase64: base64,
+        imageMimeType: file.type || 'image/jpeg'
+      })
+    });
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error || 'Unknown error');
+
+    const fields = data.fields || {};
+    const filled = [];
+    if (fields.number) { document.getElementById('number').value = fields.number; filled.push('phone number'); }
+    if (fields.chatName) { document.getElementById('chatName').value = fields.chatName; filled.push('chat name'); }
+
+    if (filled.length) {
+      whatsappAiStatusBox.textContent = 'Filled in ' + filled.join(' and ') + ' from the screenshot — double check them before saving.';
+      whatsappAiStatusBox.className = 'status ok';
+    } else {
+      whatsappAiStatusBox.textContent = 'Could not read any fields from that screenshot — enter them by hand.';
+      whatsappAiStatusBox.className = 'status warn';
+    }
+  } catch (err) {
+    whatsappAiStatusBox.textContent = 'Could not read the screenshot: ' + err.message;
+    whatsappAiStatusBox.className = 'status err';
+  } finally {
+    whatsappAiFillBtn.disabled = false;
+    whatsappAiFillBtn.textContent = originalText;
+    whatsappContactPhotoInput.value = ''; // never saved -- clear it so it's obvious nothing is held onto
+  }
+});
+
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  statusBox.className = 'status';
+  setAllButtonsDisabled(true);
+  submitBtn.textContent = 'Saving…';
+
+  const totalPrice = document.getElementById('totalPrice').value;
+
+  if (totalPrice === '' || totalPrice === null || isNaN(Number(totalPrice))) {
+    statusBox.textContent = 'Please enter a total price before saving.';
+    statusBox.className = 'status err';
+    setAllButtonsDisabled(false);
+    submitBtn.textContent = 'Create contract';
+    document.getElementById('totalPrice').focus();
+    return;
+  }
+
+  if (depositNeedsAmount() && (depositAmount.value === '' || isNaN(Number(depositAmount.value)))) {
+    statusBox.textContent = 'Please enter a deposit amount, or switch the deposit to Passport.';
+    statusBox.className = 'status err';
+    setAllButtonsDisabled(false);
+    submitBtn.textContent = 'Create contract';
+    depositAmount.focus();
+    return;
+  }
+
+  if (deliveryFeeAppliesCheckbox.checked && (deliveryFeeInput.value === '' || isNaN(Number(deliveryFeeInput.value)))) {
+    statusBox.textContent = 'Please enter a delivery fee amount, or untick "Delivery fee applies".';
+    statusBox.className = 'status err';
+    setAllButtonsDisabled(false);
+    submitBtn.textContent = 'Create contract';
+    deliveryFeeInput.focus();
+    return;
+  }
+
+  const baseContact = contactSelect.value === 'other' ? contactOther.value.trim() : contactSelect.value;
+
+  const payload = {
+    action: 'addContract',
+    name: document.getElementById('name').value.trim(),
+    nationality: document.getElementById('nationality').value.trim(),
+    passport: document.getElementById('passport').value.trim(),
+    number: document.getElementById('number').value.trim(),
+    contact: baseContact,
+    chatName: document.getElementById('chatName').value.trim(),
+    messengerId: contactSelect.value === 'Messenger' ? document.getElementById('messengerId').value.trim() : '',
+    bikeModel: document.getElementById('bikeModel').value.trim(),
+    rentingDateFrom: document.getElementById('rentingDateFrom').value,
+    returnDate: document.getElementById('returnDate').value,
+    returnTime: document.getElementById('returnTime').value,
+    deliverToHotel: document.getElementById('deliverToHotel').value,
+    // No deliveryTime sent -- the backend derives it from returnTime above
+    // (see addContractEntry's comment on this).
+    deliveryLink: deliverToHotelSelect.value === 'Yes' ? deliveryLinkInput.value.trim() : '',
+    totalPrice: totalPrice,
+    paidBy: document.getElementById('paidBy').value,
+    isDeal: document.getElementById('dealCheckbox').checked,
+    deposit: depositSelect.value,
+    depositAmount: depositNeedsAmount() ? depositAmount.value : '',
+    depositCurrency: (depositNeedsAmount() && document.getElementById('depositCurrencyToggle').checked)
+      ? resolveCurrencyCode(document.getElementById('depositCurrency')) : '',
+    deliveryFeeApplies: deliveryFeeAppliesCheckbox.checked,
+    deliveryFee: deliveryFeeAppliesCheckbox.checked ? deliveryFeeInput.value : '',
+    // Helmets -- entirely optional, see the Helmets card's comment above.
+    ...tallyHelmets(helmetLines),
+    helmetNone: helmetNoneCheckbox.checked
+  };
+
+  // Bundle the chosen passport photo (if any) straight into the same
+  // addContract request. The customer's Drive folder is created/found
+  // exactly once, at this point, using this same submission's name/
+  // number/rentingDateFrom -- so the photo always lands in the same
+  // folder the contract Doc/PDF are saved into, with no separate/earlier
+  // upload step that could create a mismatched folder.
+  const passportPhotoFile = passportPhotoInput.files && passportPhotoInput.files[0];
+  if (passportPhotoFile) {
+    try {
+      payload.passportPhotoBase64 = await readFileAsBase64(passportPhotoFile);
+      payload.passportPhotoMimeType = passportPhotoFile.type || 'image/jpeg';
+    } catch (err) {
+      statusBox.textContent = 'Could not read the passport photo file: ' + err.message;
+      statusBox.className = 'status err';
+      setAllButtonsDisabled(false);
+      submitBtn.textContent = 'Create contract';
+      return;
+    }
+  }
+
+  startSaveProgress();
+  try {
+    const res = await fetch(scriptUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+    stopSaveProgress();
+    if (data.success) {
+      const docLinkHtml = data.contractPdfUrl
+        ? ' <a href="' + data.contractPdfUrl + '" target="_blank" rel="noopener" style="color:inherit; text-decoration:underline; font-weight:600;">Open contract PDF</a>'
+        : (data.contractDocWarning ? ' (' + data.contractDocWarning + ')' : '');
+      const photoLinkHtml = data.passportPhotoUrl
+        ? ' · <a href="' + data.passportPhotoUrl + '" target="_blank" rel="noopener" style="color:inherit; text-decoration:underline; font-weight:600;">Open photo of passport</a>'
+        : '';
+      const receiptLinkHtml = data.receiptPdfUrl
+        ? ' · <a href="' + data.receiptPdfUrl + '" target="_blank" rel="noopener" style="color:inherit; text-decoration:underline; font-weight:600;">Open receipt PDF</a>' +
+          (data.receiptNo ? ' (No. ' + data.receiptNo + ')' : '')
+        : '';
+      if (data.warning) {
+        statusBox.innerHTML = 'Added — "' + payload.name + '" saved, but: ' + data.warning + docLinkHtml + photoLinkHtml + receiptLinkHtml;
+        statusBox.className = 'status warn';
+      } else {
+        const checksNote = data.checksTotal
+          ? ' ✓ Verified: ' + data.checksPassed + '/' + data.checksTotal + ' write-back checks passed.'
+          : '';
+        statusBox.innerHTML = 'Added — "' + payload.name + '" saved to the Contract sheet.' + checksNote + docLinkHtml + photoLinkHtml + receiptLinkHtml;
+        statusBox.className = data.contractPdfUrl ? 'status ok' : (data.contractDocWarning ? 'status warn' : 'status ok');
+      }
+      sessionCount++;
+      document.getElementById('sessionCount').textContent = sessionCount;
+      form.reset();
+      contactOther.classList.add('hidden');
+      contactOther.required = false;
+      refreshDepositAmountVisibility();
+      refreshDeliveryFeeVisibility();
+      refreshDeliveryLinkVisibility();
+      helmetLines = [];
+      helmetNoneCheckbox.checked = false;
+      rerenderHelmetLines();
+      setDefaultsToNow();
+      sheetRows = null;
+      rowsPromise = null;
+    } else {
+      throw new Error(data.error || 'Unknown error');
+    }
+  } catch (err) {
+    stopSaveProgress();
+    statusBox.textContent = 'Could not save: ' + err.message;
+    statusBox.className = 'status err';
+  } finally {
+    setAllButtonsDisabled(false);
+    submitBtn.textContent = 'Create contract';
+  }
+});
+
+setDefaultsToNow();
+
+/* ---------------- Search / autocomplete ---------------- */
+
+const tabAdd = document.getElementById('tabAdd');
+const tabSearch = document.getElementById('tabSearch');
+const searchView = document.getElementById('searchView');
+
+let sheetRows = null;      // cached rows from the sheet
+let rowsPromise = null;    // in-flight fetch
+
+const searchKeys = ['name','nationality','passport','number','contact','bikeModel',
+                     'rentingDateFrom','returnDate','deliverToHotel','paidBy'];
+
+function setLoadStatus(msg) {
+  const el = document.getElementById('loadStatus');
+  if (!msg) { el.classList.remove('show'); return; }
+  el.textContent = msg;
+  el.classList.add('show');
+}
+
+function loadRows() {
+  if (rowsPromise) return rowsPromise;
+  setLoadStatus('Loading records…');
+  rowsPromise = fetch(scriptUrl + '?action=contracts')
+    .then(res => res.json())
+    .then(data => {
+      if (!data.success) throw new Error(data.error || 'Could not load data');
+      sheetRows = data.rows;
+      setLoadStatus(null);
+      return sheetRows;
+    })
+    .catch(err => {
+      setLoadStatus('Could not load records: ' + err.message + ' — tap Search again to retry.');
+      rowsPromise = null; // allow retry
+      return [];
+    });
+  return rowsPromise;
+}
+
+// Start fetching immediately on page load, so data is likely ready
+// by the time the person switches to the Search tab.
+loadRows();
+
+// ---- Canonical bike list (from the Parts & Oil sheet) for the main
+// "Bike model" field, so staff pick from the real list instead of
+// free-typing a name that might not match. ----
+let bikeNames = [];
+let soldBikeNameSet = new Set(); // bike names struck through in Parts & Oil (sold) -- see bikes.html/bikephotos.html for the same __struck convention
+let bikeNamesPromise = null;
+
+function setBikeModelLoadStatus(msg) {
+  const el = document.getElementById('bikeModelLoadStatus');
+  if (!msg) { el.classList.remove('show'); return; }
+  el.textContent = msg;
+  el.classList.add('show');
+}
+
+// ---- Page gate: the whole page (tabs + form) stays hidden behind a red
+// "Loading bikes…" card until the bikes list has actually arrived from
+// the spreadsheet. On failure the card shows the error and a "Try again"
+// button instead of leaving the page stuck. ----
+const pageGate = document.getElementById('pageGate');
+const pageGateMsg = document.getElementById('pageGateMsg');
+document.getElementById('pageGateRetry').addEventListener('click', () => {
+  pageGate.classList.remove('gate-error');
+  pageGateMsg.textContent = 'Loading bikes from the spreadsheet…';
+  loadBikeNames();
+});
+
+function loadBikeNames() {
+  if (bikeNamesPromise) return bikeNamesPromise;
+  setBikeModelLoadStatus('Loading bikes…');
+  bikeNamesPromise = fetch(scriptUrl + '?action=parts')
+    .then(res => res.json())
+    .then(data => {
+      if (!data.success) throw new Error(data.error || 'Could not load bike list');
+      const bikeHeader = data.headers[0];
+      bikeNames = data.rows
+        .map(r => (r[bikeHeader] || '').toString().trim())
+        .filter(Boolean)
+        .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+      soldBikeNameSet = new Set(
+        data.rows
+          .filter(r => r.__struck)
+          .map(r => (r[bikeHeader] || '').toString().trim())
+          .filter(Boolean)
+      );
+      setBikeModelLoadStatus(null);
+      renderResults();
+      // Bikes are in -- open the page up.
+      document.body.classList.add('bikes-ready');
+      return bikeNames;
+    })
+    .catch(err => {
+      setBikeModelLoadStatus('Could not load bike list: ' + err.message);
+      if (!document.body.classList.contains('bikes-ready')) {
+        pageGate.classList.add('gate-error');
+        pageGateMsg.textContent = 'Could not load the bikes list: ' + err.message;
+      }
+      bikeNamesPromise = null;
+      return [];
+    });
+  return bikeNamesPromise;
+}
+
+loadBikeNames();
+
+// ---- "Currently rented" now comes from ONE shared server call
+// (action=bikeRentalStatus) instead of this page re-fetching the customer
+// sheet and re-implementing its own bike-name-matching + rented-or-not
+// logic client-side. Every page that needs an available-bikes list
+// (Contract here, Available Bikes, Oil Change) calls the exact same
+// Code.gs function now -- see getBikeRentalStatus() there for why this
+// replaced the old "return date >= today" check (it disagreed with Bikes
+// Status on the same day a bike was actually returned). Never blocks the
+// page gate on its own: if this fails, rentedBikes just stays empty (same
+// graceful fallback as before), so a bad fetch here means the bike list
+// briefly over-offers rather than the Add form becoming unusable. ----
+let rentedBikes = {}; // bike name -> { name, contact, number, ... } for currently-rented bikes
+let rentedBikesPromise = null;
+function loadRentedBikes() {
+  if (rentedBikesPromise) return rentedBikesPromise;
+  rentedBikesPromise = fetch(scriptUrl + '?action=bikeRentalStatus')
+    .then(res => res.json())
+    .then(data => {
+      rentedBikes = (data && data.success && data.rented) ? data.rented : {};
+      return rentedBikes;
+    })
+    .catch(() => {
+      rentedBikes = {};
+      rentedBikesPromise = null;
+      return {};
+    });
+  return rentedBikesPromise;
+}
+loadRentedBikes();
+
+// ---- Fuzzy bike-name matching -- same rules as available-bikes.html /
+// bikes.html / bikephotos.html / Code.gs (bikeNamesMatchForTaxLookup),
+// duplicated here rather than shared because this is a single static
+// HTML file with no module system. Used below so the Search tab's
+// "Bike model" field can recognize that e.g. "Nmax black" and
+// "Nmax black 155" are the same physical bike (typed differently on
+// different contracts, usually because the bike's name on the master
+// list was cleaned up at some point -- a trailing cc figure dropped),
+// instead of treating them as two unrelated bikes that happen to share
+// a name. ----
+function normalizeBikeName(s) {
+  return (s || '').toString()
+    .toLowerCase()
+    .replace(/\([^)]*\)/g, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+// Words/numerals used to tell apart otherwise-identical bike names that are
+// actually different bikes — e.g. "Gran Filano" and "Gran Filano Two" are
+// two separate bikes, not a loose match of the same one.
+const DISTINGUISHING_SUFFIXES = new Set([
+  'one','two','three','four','five','six','seven','eight','nine','ten',
+  'i','ii','iii','iv','v','vi','vii','viii','ix','x',
+  '1','2','3','4','5','6','7','8','9','10'
+]);
+
+function bikeNamesMatch(a, b) {
+  const na = normalizeBikeName(a);
+  const nb = normalizeBikeName(b);
+  if (!na || !nb) return false;
+  if (na === nb) return true;
+
+  const ta = na.split(' ');
+  const tb = nb.split(' ');
+  const shorter = ta.length <= tb.length ? ta : tb;
+  const longer = ta.length <= tb.length ? tb : ta;
+
+  // Fuzzy match allowed when the shorter name is a clean word-for-word
+  // prefix of the longer one — UNLESS the extra trailing word(s) are a
+  // distinguishing number/ordinal, in which case it's a different bike.
+  const isPrefix = shorter.every((tok, i) => tok === longer[i]);
+  if (isPrefix) {
+    const extra = longer.slice(shorter.length);
+    if (extra.some(t => DISTINGUISHING_SUFFIXES.has(t))) return false;
+    return true;
+  }
+
+  return na.includes(nb) || nb.includes(na);
+}
+
+// ---- Bikes currently rented OR sold, per the shared rentedBikes map and
+// the Parts & Oil strikethrough (soldBikeNameSet) above. Recomputed each
+// call (not cached) so it stays accurate as those finish loading. Sold
+// bikes are excluded here (not from the base bikeNames list) so the
+// #e_bikeModel edit-autocomplete below -- which deliberately uses the
+// full, unfiltered bikeNames list -- still works normally for editing an
+// existing contract. ----
+function getAvailableBikeNames() {
+  return bikeNames.filter(name => !rentedBikes[name] && !soldBikeNameSet.has(name));
+}
+
+// ---- Bike model autocomplete: type-ahead dropdown with arrow-key
+// navigation and click-to-select. Originally hardcoded to the
+// new-contract form's #bikeModel field only (backed by
+// getAvailableBikeNames(), i.e. bikes not currently rented -- correct
+// there, since you're picking a bike to newly assign). Generalized to
+// take an input id + a namesProvider function so the same behavior can
+// be attached to the Edit-contract modal's #e_bikeModel field too (that
+// field previously had no autocomplete at all). The edit modal is passed
+// the full bikeNames list rather than getAvailableBikeNames(): the bike
+// already on the contract being edited is (correctly) shown as "rented"
+// elsewhere in the app, which would make getAvailableBikeNames() exclude
+// it here -- exactly the bike you'd most expect to see suggested while
+// editing. ----
+function attachBikeModelAutocomplete(inputId, namesProvider) {
+  const input = document.getElementById(inputId);
+  const list = document.querySelector('.ac-list[data-for="' + inputId + '"]');
+  let hiIndex = -1;
+
+  function close() {
+    list.classList.remove('show');
+    list.innerHTML = '';
+    hiIndex = -1;
+  }
+
+  function open(query) {
+    const options = namesProvider().filter(v => tokenMatch(v, query)).slice(0, 8);
+    if (!query || options.length === 0) { close(); return; }
+    list.innerHTML = options.map((v, i) =>
+      `<div class="ac-item" data-index="${i}">${highlight(v, query)}</div>`
+    ).join('');
+    list.classList.add('show');
+    hiIndex = -1;
+    Array.from(list.children).forEach((el, i) => {
+      el.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        input.value = options[i];
+        close();
+      });
+    });
+    list._options = options;
+  }
+
+  input.addEventListener('input', () => open(input.value.trim()));
+  input.addEventListener('focus', () => open(input.value.trim()));
+
+  input.addEventListener('keydown', (e) => {
+    const items = Array.from(list.children);
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      if (hiIndex >= 0 && list._options) {
+        input.value = list._options[hiIndex];
+      }
+      close();
+      return;
+    }
+    if (!items.length) return;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      hiIndex = Math.min(hiIndex + 1, items.length - 1);
+      items.forEach((el, i) => el.classList.toggle('hi', i === hiIndex));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      hiIndex = Math.max(hiIndex - 1, 0);
+      items.forEach((el, i) => el.classList.toggle('hi', i === hiIndex));
+    } else if (e.key === 'Escape') {
+      close();
+    }
+  });
+
+  document.addEventListener('click', (e) => {
+    if (!input.contains(e.target) && !list.contains(e.target)) close();
+  });
+}
+
+attachBikeModelAutocomplete('bikeModel', getAvailableBikeNames);
+attachBikeModelAutocomplete('e_bikeModel', () => bikeNames);
+
+/* ---------------- Nationality (country) dropdown ---------------- */
+
+const COUNTRIES = [
+  'Afghanistan','Albania','Algeria','American Samoa','Andorra','Angola','Anguilla',
+  'Antigua and Barbuda','Argentina','Armenia','Aruba','Australia','Austria',
+  'Azerbaijan','Bahamas','Bahrain','Bangladesh','Barbados','Belarus','Belgium',
+  'Belize','Benin','Bermuda','Bhutan','Bolivia','Bosnia and Herzegovina',
+  'Botswana','Brazil','British Virgin Islands','Brunei','Bulgaria','Burkina Faso',
+  'Burundi','Cambodia','Cameroon','Canada','Cape Verde','Cayman Islands',
+  'Central African Republic','Chad','Chile','China','Colombia','Comoros',
+  'Congo - Brazzaville','Congo - Kinshasa','Cook Islands','Costa Rica',
+  "Côte d'Ivoire",'Croatia','Cuba','Curaçao','Cyprus','Czechia','Denmark',
+  'Djibouti','Dominica','Dominican Republic','Ecuador','Egypt','El Salvador',
+  'Equatorial Guinea','Eritrea','Estonia','Eswatini','Ethiopia','Falkland Islands',
+  'Faroe Islands','Fiji','Finland','France','French Guiana','French Polynesia',
+  'Gabon','Gambia','Georgia','Germany','Ghana','Gibraltar','Greece','Greenland',
+  'Grenada','Guadeloupe','Guam','Guatemala','Guernsey','Guinea','Guinea-Bissau',
+  'Guyana','Haiti','Honduras','Hong Kong','Hungary','Iceland','India','Indonesia',
+  'Iran','Iraq','Ireland','Isle of Man','Israel','Italy','Jamaica','Japan',
+  'Jersey','Jordan','Kazakhstan','Kenya','Kiribati','Kosovo','Kuwait','Kyrgyzstan',
+  'Laos','Latvia','Lebanon','Lesotho','Liberia','Libya','Liechtenstein',
+  'Lithuania','Luxembourg','Macao','Madagascar','Malawi','Malaysia','Maldives',
+  'Mali','Malta','Marshall Islands','Martinique','Mauritania','Mauritius',
+  'Mayotte','Mexico','Micronesia','Moldova','Monaco','Mongolia','Montenegro',
+  'Montserrat','Morocco','Mozambique','Myanmar (Burma)','Namibia','Nauru',
+  'Nepal','Netherlands','New Caledonia','New Zealand','Nicaragua','Niger',
+  'Nigeria','Niue','North Korea','North Macedonia','Norway','Oman','Pakistan',
+  'Palau','Palestinian Territories','Panama','Papua New Guinea','Paraguay',
+  'Peru','Philippines','Pitcairn Islands','Poland','Portugal','Puerto Rico',
+  'Qatar','Réunion','Romania','Russia','Rwanda','Samoa','San Marino',
+  'São Tomé and Príncipe','Saudi Arabia','Senegal','Serbia','Seychelles',
+  'Sierra Leone','Singapore','Sint Maarten','Slovakia','Slovenia',
+  'Solomon Islands','Somalia','South Africa','South Korea','South Sudan',
+  'Spain','Sri Lanka','St. Kitts and Nevis','St. Lucia','St. Vincent and the Grenadines',
+  'Sudan','Suriname','Sweden','Switzerland','Syria','Taiwan','Tajikistan',
+  'Tanzania','Thailand','Timor-Leste','Togo','Tonga','Trinidad and Tobago',
+  'Tunisia','Turkey','Turkmenistan','Turks and Caicos Islands','Tuvalu',
+  'Uganda','Ukraine','United Arab Emirates','United Kingdom','United States',
+  'Uruguay','Uzbekistan','Vanuatu','Vatican City','Venezuela','Vietnam',
+  'Wallis and Futuna','Western Sahara','Yemen','Zambia','Zimbabwe'
+];
+
+function attachCountryAutocomplete(inputId) {
+  const input = document.getElementById(inputId);
+  const list = document.querySelector('.ac-list[data-for="' + inputId + '"]');
+  if (!input || !list) return;
+  let hiIndex = -1;
+
+  function close() {
+    list.classList.remove('show');
+    list.innerHTML = '';
+    hiIndex = -1;
+  }
+
+  function open(query) {
+    const options = (query ? COUNTRIES.filter(v => tokenMatch(v, query)) : COUNTRIES).slice(0, 60);
+    if (!options.length) { close(); return; }
+    list.innerHTML = options.map((v, i) =>
+      `<div class="ac-item" data-index="${i}">${highlight(v, query || '')}</div>`
+    ).join('');
+    list.classList.add('show');
+    hiIndex = -1;
+    Array.from(list.children).forEach((el, i) => {
+      el.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        input.value = options[i];
+        close();
+      });
+    });
+    list._options = options;
+  }
+
+  input.addEventListener('input', () => open(input.value.trim()));
+  input.addEventListener('focus', () => open(input.value.trim()));
+
+  input.addEventListener('keydown', (e) => {
+    const items = Array.from(list.children);
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      if (hiIndex >= 0 && list._options) {
+        input.value = list._options[hiIndex];
+      }
+      close();
+      return;
+    }
+    if (!items.length) return;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      hiIndex = Math.min(hiIndex + 1, items.length - 1);
+      items.forEach((el, i) => el.classList.toggle('hi', i === hiIndex));
+      items[hiIndex] && items[hiIndex].scrollIntoView({ block: 'nearest' });
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      hiIndex = Math.max(hiIndex - 1, 0);
+      items.forEach((el, i) => el.classList.toggle('hi', i === hiIndex));
+      items[hiIndex] && items[hiIndex].scrollIntoView({ block: 'nearest' });
+    } else if (e.key === 'Escape') {
+      close();
+    }
+  });
+
+  document.addEventListener('click', (e) => {
+    if (!input.contains(e.target) && !list.contains(e.target)) close();
+  });
+}
+
+attachCountryAutocomplete('nationality');
+
+/* ---------------- Deposit currency dropdown ---------------- */
+
+// One row per country (not one per unique currency), so typing either a
+// country name ("United States") or a currency code ("USD") both surface
+// the right row -- matches how the person asked for this to work. Several
+// countries share the same currency (e.g. every Eurozone country shows
+// "EUR"), so the same code appears more than once on purpose. China is
+// deliberately "RMB" rather than the ISO code "CNY" -- that's the specific
+// abbreviation asked for, not a mistake.
+const CURRENCIES = [
+  { country: 'Afghanistan', code: 'AFN', name: 'Afghan Afghani' },
+  { country: 'Albania', code: 'ALL', name: 'Albanian Lek' },
+  { country: 'Algeria', code: 'DZD', name: 'Algerian Dinar' },
+  { country: 'Andorra', code: 'EUR', name: 'Euro' },
+  { country: 'Angola', code: 'AOA', name: 'Angolan Kwanza' },
+  { country: 'Anguilla', code: 'XCD', name: 'East Caribbean Dollar' },
+  { country: 'Antigua and Barbuda', code: 'XCD', name: 'East Caribbean Dollar' },
+  { country: 'Argentina', code: 'ARS', name: 'Argentine Peso' },
+  { country: 'Armenia', code: 'AMD', name: 'Armenian Dram' },
+  { country: 'Aruba', code: 'AWG', name: 'Aruban Florin' },
+  { country: 'Australia', code: 'AUD', name: 'Australian Dollar' },
+  { country: 'Austria', code: 'EUR', name: 'Euro' },
+  { country: 'Azerbaijan', code: 'AZN', name: 'Azerbaijani Manat' },
+  { country: 'Bahamas', code: 'BSD', name: 'Bahamian Dollar' },
+  { country: 'Bahrain', code: 'BHD', name: 'Bahraini Dinar' },
+  { country: 'Bangladesh', code: 'BDT', name: 'Bangladeshi Taka' },
+  { country: 'Barbados', code: 'BBD', name: 'Barbadian Dollar' },
+  { country: 'Belarus', code: 'BYN', name: 'Belarusian Ruble' },
+  { country: 'Belgium', code: 'EUR', name: 'Euro' },
+  { country: 'Belize', code: 'BZD', name: 'Belize Dollar' },
+  { country: 'Benin', code: 'XOF', name: 'West African CFA Franc' },
+  { country: 'Bermuda', code: 'BMD', name: 'Bermudian Dollar' },
+  { country: 'Bhutan', code: 'BTN', name: 'Bhutanese Ngultrum' },
+  { country: 'Bolivia', code: 'BOB', name: 'Bolivian Boliviano' },
+  { country: 'Bosnia and Herzegovina', code: 'BAM', name: 'Bosnia-Herzegovina Convertible Mark' },
+  { country: 'Botswana', code: 'BWP', name: 'Botswanan Pula' },
+  { country: 'Brazil', code: 'BRL', name: 'Brazilian Real' },
+  { country: 'Brunei', code: 'BND', name: 'Brunei Dollar' },
+  { country: 'Bulgaria', code: 'BGN', name: 'Bulgarian Lev' },
+  { country: 'Burkina Faso', code: 'XOF', name: 'West African CFA Franc' },
+  { country: 'Burundi', code: 'BIF', name: 'Burundian Franc' },
+  { country: 'Cambodia', code: 'KHR', name: 'Cambodian Riel' },
+  { country: 'Cameroon', code: 'XAF', name: 'Central African CFA Franc' },
+  { country: 'Canada', code: 'CAD', name: 'Canadian Dollar' },
+  { country: 'Cape Verde', code: 'CVE', name: 'Cape Verdean Escudo' },
+  { country: 'Cayman Islands', code: 'KYD', name: 'Cayman Islands Dollar' },
+  { country: 'Central African Republic', code: 'XAF', name: 'Central African CFA Franc' },
+  { country: 'Chad', code: 'XAF', name: 'Central African CFA Franc' },
+  { country: 'Chile', code: 'CLP', name: 'Chilean Peso' },
+  { country: 'China', code: 'RMB', name: 'Chinese Yuan (Renminbi)' },
+  { country: 'Colombia', code: 'COP', name: 'Colombian Peso' },
+  { country: 'Comoros', code: 'KMF', name: 'Comorian Franc' },
+  { country: 'Congo - Brazzaville', code: 'XAF', name: 'Central African CFA Franc' },
+  { country: 'Congo - Kinshasa', code: 'CDF', name: 'Congolese Franc' },
+  { country: 'Cook Islands', code: 'NZD', name: 'New Zealand Dollar' },
+  { country: 'Costa Rica', code: 'CRC', name: 'Costa Rican Colón' },
+  { country: "Côte d'Ivoire", code: 'XOF', name: 'West African CFA Franc' },
+  { country: 'Croatia', code: 'EUR', name: 'Euro' },
+  { country: 'Cuba', code: 'CUP', name: 'Cuban Peso' },
+  { country: 'Curaçao', code: 'ANG', name: 'Netherlands Antillean Guilder' },
+  { country: 'Cyprus', code: 'EUR', name: 'Euro' },
+  { country: 'Czechia', code: 'CZK', name: 'Czech Koruna' },
+  { country: 'Denmark', code: 'DKK', name: 'Danish Krone' },
+  { country: 'Djibouti', code: 'DJF', name: 'Djiboutian Franc' },
+  { country: 'Dominica', code: 'XCD', name: 'East Caribbean Dollar' },
+  { country: 'Dominican Republic', code: 'DOP', name: 'Dominican Peso' },
+  { country: 'Egypt', code: 'EGP', name: 'Egyptian Pound' },
+  { country: 'Equatorial Guinea', code: 'XAF', name: 'Central African CFA Franc' },
+  { country: 'Eritrea', code: 'ERN', name: 'Eritrean Nakfa' },
+  { country: 'Estonia', code: 'EUR', name: 'Euro' },
+  { country: 'Eswatini', code: 'SZL', name: 'Swazi Lilangeni' },
+  { country: 'Ethiopia', code: 'ETB', name: 'Ethiopian Birr' },
+  { country: 'Falkland Islands', code: 'FKP', name: 'Falkland Islands Pound' },
+  { country: 'Faroe Islands', code: 'DKK', name: 'Danish Krone' },
+  { country: 'Fiji', code: 'FJD', name: 'Fijian Dollar' },
+  { country: 'Finland', code: 'EUR', name: 'Euro' },
+  { country: 'France', code: 'EUR', name: 'Euro' },
+  { country: 'French Guiana', code: 'EUR', name: 'Euro' },
+  { country: 'French Polynesia', code: 'XPF', name: 'CFP Franc' },
+  { country: 'Gabon', code: 'XAF', name: 'Central African CFA Franc' },
+  { country: 'Gambia', code: 'GMD', name: 'Gambian Dalasi' },
+  { country: 'Georgia', code: 'GEL', name: 'Georgian Lari' },
+  { country: 'Germany', code: 'EUR', name: 'Euro' },
+  { country: 'Ghana', code: 'GHS', name: 'Ghanaian Cedi' },
+  { country: 'Gibraltar', code: 'GIP', name: 'Gibraltar Pound' },
+  { country: 'Greece', code: 'EUR', name: 'Euro' },
+  { country: 'Greenland', code: 'DKK', name: 'Danish Krone' },
+  { country: 'Grenada', code: 'XCD', name: 'East Caribbean Dollar' },
+  { country: 'Guadeloupe', code: 'EUR', name: 'Euro' },
+  { country: 'Guatemala', code: 'GTQ', name: 'Guatemalan Quetzal' },
+  { country: 'Guernsey', code: 'GBP', name: 'British Pound' },
+  { country: 'Guinea', code: 'GNF', name: 'Guinean Franc' },
+  { country: 'Guinea-Bissau', code: 'XOF', name: 'West African CFA Franc' },
+  { country: 'Guyana', code: 'GYD', name: 'Guyanese Dollar' },
+  { country: 'Haiti', code: 'HTG', name: 'Haitian Gourde' },
+  { country: 'Honduras', code: 'HNL', name: 'Honduran Lempira' },
+  { country: 'Hong Kong', code: 'HKD', name: 'Hong Kong Dollar' },
+  { country: 'Hungary', code: 'HUF', name: 'Hungarian Forint' },
+  { country: 'Iceland', code: 'ISK', name: 'Icelandic Króna' },
+  { country: 'India', code: 'INR', name: 'Indian Rupee' },
+  { country: 'Indonesia', code: 'IDR', name: 'Indonesian Rupiah' },
+  { country: 'Iran', code: 'IRR', name: 'Iranian Rial' },
+  { country: 'Iraq', code: 'IQD', name: 'Iraqi Dinar' },
+  { country: 'Ireland', code: 'EUR', name: 'Euro' },
+  { country: 'Isle of Man', code: 'GBP', name: 'British Pound' },
+  { country: 'Israel', code: 'ILS', name: 'Israeli Shekel' },
+  { country: 'Italy', code: 'EUR', name: 'Euro' },
+  { country: 'Jamaica', code: 'JMD', name: 'Jamaican Dollar' },
+  { country: 'Japan', code: 'JPY', name: 'Japanese Yen' },
+  { country: 'Jersey', code: 'GBP', name: 'British Pound' },
+  { country: 'Jordan', code: 'JOD', name: 'Jordanian Dinar' },
+  { country: 'Kazakhstan', code: 'KZT', name: 'Kazakhstani Tenge' },
+  { country: 'Kenya', code: 'KES', name: 'Kenyan Shilling' },
+  { country: 'Kiribati', code: 'AUD', name: 'Australian Dollar' },
+  { country: 'Kosovo', code: 'EUR', name: 'Euro' },
+  { country: 'Kuwait', code: 'KWD', name: 'Kuwaiti Dinar' },
+  { country: 'Kyrgyzstan', code: 'KGS', name: 'Kyrgystani Som' },
+  { country: 'Laos', code: 'LAK', name: 'Laotian Kip' },
+  { country: 'Latvia', code: 'EUR', name: 'Euro' },
+  { country: 'Lebanon', code: 'LBP', name: 'Lebanese Pound' },
+  { country: 'Lesotho', code: 'LSL', name: 'Lesotho Loti' },
+  { country: 'Liberia', code: 'LRD', name: 'Liberian Dollar' },
+  { country: 'Libya', code: 'LYD', name: 'Libyan Dinar' },
+  { country: 'Liechtenstein', code: 'CHF', name: 'Swiss Franc' },
+  { country: 'Lithuania', code: 'EUR', name: 'Euro' },
+  { country: 'Luxembourg', code: 'EUR', name: 'Euro' },
+  { country: 'Macao', code: 'MOP', name: 'Macanese Pataca' },
+  { country: 'Madagascar', code: 'MGA', name: 'Malagasy Ariary' },
+  { country: 'Malawi', code: 'MWK', name: 'Malawian Kwacha' },
+  { country: 'Malaysia', code: 'MYR', name: 'Malaysian Ringgit' },
+  { country: 'Maldives', code: 'MVR', name: 'Maldivian Rufiyaa' },
+  { country: 'Mali', code: 'XOF', name: 'West African CFA Franc' },
+  { country: 'Malta', code: 'EUR', name: 'Euro' },
+  { country: 'Martinique', code: 'EUR', name: 'Euro' },
+  { country: 'Mauritania', code: 'MRU', name: 'Mauritanian Ouguiya' },
+  { country: 'Mauritius', code: 'MUR', name: 'Mauritian Rupee' },
+  { country: 'Mayotte', code: 'EUR', name: 'Euro' },
+  { country: 'Mexico', code: 'MXN', name: 'Mexican Peso' },
+  { country: 'Moldova', code: 'MDL', name: 'Moldovan Leu' },
+  { country: 'Monaco', code: 'EUR', name: 'Euro' },
+  { country: 'Mongolia', code: 'MNT', name: 'Mongolian Tugrik' },
+  { country: 'Montenegro', code: 'EUR', name: 'Euro' },
+  { country: 'Montserrat', code: 'XCD', name: 'East Caribbean Dollar' },
+  { country: 'Morocco', code: 'MAD', name: 'Moroccan Dirham' },
+  { country: 'Mozambique', code: 'MZN', name: 'Mozambican Metical' },
+  { country: 'Myanmar (Burma)', code: 'MMK', name: 'Myanmar Kyat' },
+  { country: 'Namibia', code: 'NAD', name: 'Namibian Dollar' },
+  { country: 'Nauru', code: 'AUD', name: 'Australian Dollar' },
+  { country: 'Nepal', code: 'NPR', name: 'Nepalese Rupee' },
+  { country: 'Netherlands', code: 'EUR', name: 'Euro' },
+  { country: 'New Caledonia', code: 'XPF', name: 'CFP Franc' },
+  { country: 'New Zealand', code: 'NZD', name: 'New Zealand Dollar' },
+  { country: 'Nicaragua', code: 'NIO', name: 'Nicaraguan Córdoba' },
+  { country: 'Niger', code: 'XOF', name: 'West African CFA Franc' },
+  { country: 'Nigeria', code: 'NGN', name: 'Nigerian Naira' },
+  { country: 'Niue', code: 'NZD', name: 'New Zealand Dollar' },
+  { country: 'North Korea', code: 'KPW', name: 'North Korean Won' },
+  { country: 'North Macedonia', code: 'MKD', name: 'Macedonian Denar' },
+  { country: 'Norway', code: 'NOK', name: 'Norwegian Krone' },
+  { country: 'Oman', code: 'OMR', name: 'Omani Rial' },
+  { country: 'Pakistan', code: 'PKR', name: 'Pakistani Rupee' },
+  { country: 'Palestinian Territories', code: 'ILS', name: 'Israeli Shekel' },
+  { country: 'Panama', code: 'PAB', name: 'Panamanian Balboa' },
+  { country: 'Papua New Guinea', code: 'PGK', name: 'Papua New Guinean Kina' },
+  { country: 'Paraguay', code: 'PYG', name: 'Paraguayan Guarani' },
+  { country: 'Peru', code: 'PEN', name: 'Peruvian Sol' },
+  { country: 'Philippines', code: 'PHP', name: 'Philippine Peso' },
+  { country: 'Pitcairn Islands', code: 'NZD', name: 'New Zealand Dollar' },
+  { country: 'Poland', code: 'PLN', name: 'Polish Zloty' },
+  { country: 'Portugal', code: 'EUR', name: 'Euro' },
+  { country: 'Qatar', code: 'QAR', name: 'Qatari Riyal' },
+  { country: 'Réunion', code: 'EUR', name: 'Euro' },
+  { country: 'Romania', code: 'RON', name: 'Romanian Leu' },
+  { country: 'Russia', code: 'RUB', name: 'Russian Ruble' },
+  { country: 'Rwanda', code: 'RWF', name: 'Rwandan Franc' },
+  { country: 'Samoa', code: 'WST', name: 'Samoan Tala' },
+  { country: 'San Marino', code: 'EUR', name: 'Euro' },
+  { country: 'São Tomé and Príncipe', code: 'STN', name: 'São Tomé & Príncipe Dobra' },
+  { country: 'Saudi Arabia', code: 'SAR', name: 'Saudi Riyal' },
+  { country: 'Senegal', code: 'XOF', name: 'West African CFA Franc' },
+  { country: 'Serbia', code: 'RSD', name: 'Serbian Dinar' },
+  { country: 'Seychelles', code: 'SCR', name: 'Seychellois Rupee' },
+  { country: 'Sierra Leone', code: 'SLE', name: 'Sierra Leonean Leone' },
+  { country: 'Singapore', code: 'SGD', name: 'Singapore Dollar' },
+  { country: 'Sint Maarten', code: 'ANG', name: 'Netherlands Antillean Guilder' },
+  { country: 'Slovakia', code: 'EUR', name: 'Euro' },
+  { country: 'Slovenia', code: 'EUR', name: 'Euro' },
+  { country: 'Solomon Islands', code: 'SBD', name: 'Solomon Islands Dollar' },
+  { country: 'Somalia', code: 'SOS', name: 'Somali Shilling' },
+  { country: 'South Africa', code: 'ZAR', name: 'South African Rand' },
+  { country: 'South Korea', code: 'KRW', name: 'South Korean Won' },
+  { country: 'South Sudan', code: 'SSP', name: 'South Sudanese Pound' },
+  { country: 'Spain', code: 'EUR', name: 'Euro' },
+  { country: 'Sri Lanka', code: 'LKR', name: 'Sri Lankan Rupee' },
+  { country: 'St. Kitts and Nevis', code: 'XCD', name: 'East Caribbean Dollar' },
+  { country: 'St. Lucia', code: 'XCD', name: 'East Caribbean Dollar' },
+  { country: 'St. Vincent and the Grenadines', code: 'XCD', name: 'East Caribbean Dollar' },
+  { country: 'Sudan', code: 'SDG', name: 'Sudanese Pound' },
+  { country: 'Suriname', code: 'SRD', name: 'Surinamese Dollar' },
+  { country: 'Sweden', code: 'SEK', name: 'Swedish Krona' },
+  { country: 'Switzerland', code: 'CHF', name: 'Swiss Franc' },
+  { country: 'Syria', code: 'SYP', name: 'Syrian Pound' },
+  { country: 'Taiwan', code: 'TWD', name: 'New Taiwan Dollar' },
+  { country: 'Tajikistan', code: 'TJS', name: 'Tajikistani Somoni' },
+  { country: 'Tanzania', code: 'TZS', name: 'Tanzanian Shilling' },
+  { country: 'Thailand', code: 'THB', name: 'Thai Baht' },
+  { country: 'Togo', code: 'XOF', name: 'West African CFA Franc' },
+  { country: 'Tonga', code: 'TOP', name: 'Tongan Paʻanga' },
+  { country: 'Trinidad and Tobago', code: 'TTD', name: 'Trinidad & Tobago Dollar' },
+  { country: 'Tunisia', code: 'TND', name: 'Tunisian Dinar' },
+  { country: 'Turkey', code: 'TRY', name: 'Turkish Lira' },
+  { country: 'Turkmenistan', code: 'TMT', name: 'Turkmenistani Manat' },
+  { country: 'Tuvalu', code: 'AUD', name: 'Australian Dollar' },
+  { country: 'Uganda', code: 'UGX', name: 'Ugandan Shilling' },
+  { country: 'Ukraine', code: 'UAH', name: 'Ukrainian Hryvnia' },
+  { country: 'United Arab Emirates', code: 'AED', name: 'UAE Dirham' },
+  { country: 'United Kingdom', code: 'GBP', name: 'British Pound' },
+  { country: 'United States', code: 'USD', name: 'US Dollar' },
+  { country: 'Uruguay', code: 'UYU', name: 'Uruguayan Peso' },
+  { country: 'Uzbekistan', code: 'UZS', name: 'Uzbekistani Som' },
+  { country: 'Vanuatu', code: 'VUV', name: 'Vanuatu Vatu' },
+  { country: 'Vatican City', code: 'EUR', name: 'Euro' },
+  { country: 'Venezuela', code: 'VES', name: 'Venezuelan Bolívar' },
+  { country: 'Vietnam', code: 'VND', name: 'Vietnamese Dong' },
+  { country: 'Wallis and Futuna', code: 'XPF', name: 'CFP Franc' },
+  { country: 'Western Sahara', code: 'MAD', name: 'Moroccan Dirham' },
+  { country: 'Yemen', code: 'YER', name: 'Yemeni Rial' },
+  { country: 'Zambia', code: 'ZMW', name: 'Zambian Kwacha' },
+  { country: 'Zimbabwe', code: 'ZWL', name: 'Zimbabwean Dollar' }
+];
+
+// ---- Deposit currency autocomplete: same list-based type-ahead pattern as
+// attachBikeModelAutocomplete/attachCountryAutocomplete, but searching
+// CURRENCIES on country name, currency code, AND currency name all at
+// once (so "United States", "USD", or "US Dollar" all find the same row),
+// and -- unlike the other two, which drop the raw typed/matched string
+// straight into the input -- storing just the currency CODE as the
+// input's final value once a row is picked, since the code is exactly
+// what needs to end up on the printed contract. The input still shows a
+// human-readable "CODE — Country" label while closed, via
+// formatCurrencyInputValue below. ----
+function tokenMatchCurrency(entry, query) {
+  const q = (query || '').trim().toLowerCase();
+  if (!q) return true;
+  return tokenMatch(entry.country, q) || tokenMatch(entry.code, q) || tokenMatch(entry.name, q);
+}
+
+function formatCurrencyInputValue(entry) {
+  return entry.code + ' — ' + entry.country;
+}
+
+function attachCurrencyAutocomplete(inputId) {
+  const input = document.getElementById(inputId);
+  const list = document.querySelector('.ac-list[data-for="' + inputId + '"]');
+  if (!input || !list) return;
+  let hiIndex = -1;
+
+  function close() {
+    list.classList.remove('show');
+    list.innerHTML = '';
+    hiIndex = -1;
+  }
+
+  function open(query) {
+    const options = CURRENCIES.filter(e => tokenMatchCurrency(e, query)).slice(0, 30);
+    if (!options.length) { close(); return; }
+    list.innerHTML = options.map((e, i) =>
+      `<div class="ac-item" data-index="${i}">${highlight(e.code + ' — ' + e.country + ' (' + e.name + ')', query || '')}</div>`
+    ).join('');
+    list.classList.add('show');
+    hiIndex = -1;
+    Array.from(list.children).forEach((el, i) => {
+      el.addEventListener('mousedown', (e2) => {
+        e2.preventDefault();
+        input.value = formatCurrencyInputValue(options[i]);
+        input.dataset.code = options[i].code;
+        close();
+      });
+    });
+    list._options = options;
+  }
+
+  input.addEventListener('input', () => {
+    delete input.dataset.code; // typing again invalidates any previously picked code
+    open(input.value.trim());
+  });
+  input.addEventListener('focus', () => open(input.value.trim()));
+
+  input.addEventListener('keydown', (e) => {
+    const items = Array.from(list.children);
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      if (hiIndex >= 0 && list._options) {
+        input.value = formatCurrencyInputValue(list._options[hiIndex]);
+        input.dataset.code = list._options[hiIndex].code;
+      }
+      close();
+      return;
+    }
+    if (!items.length) return;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      hiIndex = Math.min(hiIndex + 1, items.length - 1);
+      items.forEach((el, i) => el.classList.toggle('hi', i === hiIndex));
+      items[hiIndex] && items[hiIndex].scrollIntoView({ block: 'nearest' });
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      hiIndex = Math.max(hiIndex - 1, 0);
+      items.forEach((el, i) => el.classList.toggle('hi', i === hiIndex));
+      items[hiIndex] && items[hiIndex].scrollIntoView({ block: 'nearest' });
+    } else if (e.key === 'Escape') {
+      close();
+    }
+  });
+
+  document.addEventListener('click', (e) => {
+    if (!input.contains(e.target) && !list.contains(e.target)) close();
+  });
+}
+
+// ---- Reads the currency CODE currently selected in a currency-picker
+// input: prefers the code stashed on selection (input.dataset.code), and
+// falls back to matching the visible text against CURRENCIES (covers a
+// record loaded from the sheet, where the field is set programmatically
+// via setCurrencyInputValue rather than picked from the list). Returns ''
+// if nothing resolves, which the caller treats as "leave it as THB". ----
+function resolveCurrencyCode(input) {
+  if (input.dataset.code) return input.dataset.code;
+  const val = (input.value || '').trim();
+  if (!val) return '';
+  const codeMatch = val.match(/^([A-Za-z]{2,5})\b/);
+  if (codeMatch) {
+    const byCode = CURRENCIES.find(e => e.code.toLowerCase() === codeMatch[1].toLowerCase());
+    if (byCode) return byCode.code;
+  }
+  return '';
+}
+
+// ---- Sets a currency-picker input to whatever currency code was loaded
+// from the sheet (e.g. opening the Edit modal on a record that already
+// has one) -- looks up a matching CURRENCIES row just to get a nice
+// "CODE — Country" display; falls back to showing the bare code if it
+// isn't one of the codes in the list (a currency picked before the list
+// was last updated, or entered some other way). ----
+function setCurrencyInputValue(input, code) {
+  const c = (code || '').trim();
+  if (!c) { input.value = ''; delete input.dataset.code; return; }
+  const match = CURRENCIES.find(e => e.code.toLowerCase() === c.toLowerCase());
+  input.value = match ? formatCurrencyInputValue(match) : c;
+  input.dataset.code = c;
+}
+
+attachCurrencyAutocomplete('depositCurrency');
+attachCurrencyAutocomplete('e_depositCurrency');
+
+// ---- Wires a "Change currency" checkbox + its currency-picker field to a
+// deposit-amount field's own existing needsAmount() check, so the
+// currency option only ever shows up when there's actually an amount for
+// it to apply to (never for Passport, never when no deposit method is
+// picked at all). Unticking the checkbox, or the amount field itself
+// disappearing (method switched to Passport/blank), clears the picked
+// currency -- so a stale foreign currency can never silently linger
+// under an amount that's no longer showing a currency toggle at all. ----
+function wireDepositCurrencyToggle(toggleId, wrapId, inputId, labelId, needsAmountFn) {
+  const toggle = document.getElementById(toggleId);
+  const wrap = document.getElementById(wrapId);
+  const input = document.getElementById(inputId);
+  const label = document.getElementById(labelId);
+
+  function refresh() {
+    const amountShown = needsAmountFn();
+    label.classList.toggle('hidden', !amountShown);
+    if (!amountShown) toggle.checked = false;
+    const currencyShown = amountShown && toggle.checked;
+    wrap.classList.toggle('hidden', !currencyShown);
+    if (!currencyShown) { input.value = ''; delete input.dataset.code; }
+  }
+
+  toggle.addEventListener('change', refresh);
+  return refresh;
+}
+
+tabAdd.addEventListener('click', () => {
+  tabAdd.classList.add('active');
+  tabSearch.classList.remove('active');
+  form.classList.remove('hidden');
+  searchView.classList.add('hidden');
+});
+
+tabSearch.addEventListener('click', () => {
+  tabSearch.classList.add('active');
+  tabAdd.classList.remove('active');
+  form.classList.add('hidden');
+  searchView.classList.remove('hidden');
+  loadRows().then(() => renderResults());
+});
+
+// Case-insensitive, multi-word "contains all tokens" matcher
+function tokenMatch(value, query) {
+  if (!query) return true;
+  const v = (value || '').toString().toLowerCase();
+  const tokens = query.toLowerCase().trim().split(/\s+/).filter(Boolean);
+  return tokens.every(t => v.includes(t));
+}
+
+// Search-tab "Bike model" matching: plain tokenMatch (substring on every
+// typed word) PLUS a fuzzy bikeNamesMatch fallback, so searching either
+// spelling of a renamed bike (e.g. "Nmax black" or "Nmax black 155")
+// finds every contract for that bike regardless of which exact spelling
+// is stored on each individual row -- a contract typed before the bike
+// was renamed on the master list wouldn't otherwise contain the newer
+// (or older) cc-suffix token tokenMatch alone requires. Falls back to
+// tokenMatch's plain substring behavior first since it's cheap and
+// already correct for ordinary partial searches (e.g. "gt" matching
+// every GT bike) -- bikeNamesMatch only needs to run for the cases
+// tokenMatch alone would miss.
+function bikeModelFieldMatches(value, query) {
+  if (!query) return true;
+  return tokenMatch(value, query) || bikeNamesMatch(value, query);
+}
+
+function highlight(value, query) {
+  const str = String(value || '');
+  const tokens = (query || '').toLowerCase().trim().split(/\s+/).filter(Boolean);
+  if (!tokens.length) return str;
+
+  // Collect match ranges against the ORIGINAL string only -- never against
+  // a string a previous token has already spliced <mark> tags into. The
+  // old version ran each token's replace() on the growing output, so a
+  // later short token (e.g. a single-letter middle initial like "A")
+  // could match inside the literal text "mark" of a tag an earlier token
+  // had just inserted, corrupting the HTML (visible on the page as stray
+  // "ark>" text). Ranges are merged before building the output in one
+  // pass, so overlapping/adjacent matches from different tokens can't
+  // nest or double-wrap either.
+  const ranges = [];
+  tokens.forEach(t => {
+    const escaped = t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp(escaped, 'ig');
+    let m;
+    while ((m = re.exec(str))) {
+      ranges.push([m.index, m.index + m[0].length]);
+      if (m[0].length === 0) re.lastIndex++;
+    }
+  });
+  if (!ranges.length) return str;
+
+  ranges.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const merged = [ranges[0].slice()];
+  for (let i = 1; i < ranges.length; i++) {
+    const [s, e] = ranges[i];
+    const last = merged[merged.length - 1];
+    if (s <= last[1]) last[1] = Math.max(last[1], e);
+    else merged.push([s, e]);
+  }
+
+  let out = '';
+  let cursor = 0;
+  merged.forEach(([s, e]) => {
+    out += str.slice(cursor, s) + '<mark>' + str.slice(s, e) + '</mark>';
+    cursor = e;
+  });
+  out += str.slice(cursor);
+  return out;
+}
+
+// Bike-model suggestions for the Search tab's autocomplete: distinct bike
+// names as they actually appear across historical contract rows, fuzzy-
+// deduped via bikeNamesMatch so a bike renamed at some point (e.g.
+// "Nmax black 155" -> "Nmax black") shows up as ONE suggestion instead of
+// two. Whichever variant matches a name currently on the master bike list
+// (bikeNames) is preferred; if none of a group's variants are still on
+// that list (the bike's since been sold/removed), the first-seen historical
+// spelling is used instead -- either way there's exactly one suggestion
+// per physical bike, never zero.
+function uniqueBikeModelValues() {
+  const raw = [];
+  const seenExact = new Set();
+  sheetRows.forEach(r => {
+    const v = (r.bikeModel || '').toString().trim();
+    if (v && !seenExact.has(v.toLowerCase())) {
+      seenExact.add(v.toLowerCase());
+      raw.push(v);
+    }
+  });
+
+  const groups = []; // [{ variants: [v, ...] }]
+  raw.forEach(v => {
+    const group = groups.find(g => bikeNamesMatch(g.variants[0], v));
+    if (group) group.variants.push(v);
+    else groups.push({ variants: [v] });
+  });
+
+  return groups.map(g => {
+    const canonical = g.variants.find(v => bikeNames.some(n => n.toLowerCase() === v.toLowerCase()));
+    return canonical || g.variants[0];
+  });
+}
+
+function uniqueValuesFor(key) {
+  if (!sheetRows) return [];
+  if (key === 'bikeModel') return uniqueBikeModelValues();
+  const seen = new Set();
+  const out = [];
+  sheetRows.forEach(r => {
+    const v = (r[key] || '').toString().trim();
+    if (v && !seen.has(v.toLowerCase())) {
+      seen.add(v.toLowerCase());
+      out.push(v);
+    }
+  });
+  return out;
+}
+
+function getSearchValues() {
+  const vals = {};
+  searchKeys.forEach(k => {
+    vals[k] = document.getElementById('s_' + k).value.trim();
+  });
+  return vals;
+}
+
+function parseFlexibleDate(str) {
+  str = String(str).trim();
+  var slashMatch = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (slashMatch) {
+    var d = parseInt(slashMatch[1], 10), m = parseInt(slashMatch[2], 10) - 1, y = parseInt(slashMatch[3], 10);
+    var dt = new Date(y, m, d);
+    if (!isNaN(dt.getTime())) return dt;
+  }
+  var dt2 = new Date(str);
+  if (!isNaN(dt2.getTime())) return dt2;
+  return null;
+}
+
+function formatDateDisplay(str) {
+  if (!str) return '—';
+  var date = parseFlexibleDate(str);
+  if (!date) return str;
+  return date.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+}
+
+function formatTimeDisplay(str) {
+  if (!str) return '—';
+  str = String(str).trim();
+  var hmMatch = str.match(/^(\d{1,2}):(\d{2})$/);
+  var h, min;
+  if (hmMatch) {
+    h = parseInt(hmMatch[1], 10);
+    min = hmMatch[2];
+  } else {
+    var dt = new Date(str);
+    if (isNaN(dt.getTime())) return str;
+    h = dt.getHours();
+    min = String(dt.getMinutes()).padStart(2, '0');
+  }
+  var period = h >= 12 ? 'PM' : 'AM';
+  var h12 = h % 12;
+  if (h12 === 0) h12 = 12;
+  return h12 + ':' + min + ' ' + period;
+}
+
+// ---- Sort order for the Search results: Pending contracts first, then
+// Rented, then Returned, then anything else (Canceled, blank) last.
+// Anything not matching one of the three known statuses just falls into
+// the last group rather than breaking the sort. ----
+function statusSortPriority(status) {
+  const s = (status || '').toString().trim().toLowerCase();
+  if (s === 'pending') return 0;
+  if (s === 'rented') return 1;
+  if (s === 'returned') return 2;
+  return 3;
+}
+function sortByStatus(rows) {
+  // Array.prototype.sort is a stable sort in every browser this app
+  // targets, so rows sharing the same status keep their original
+  // (sheet) order relative to each other.
+  return rows.slice().sort((a, b) => statusSortPriority(a.status) - statusSortPriority(b.status));
+}
+
+function renderResults() {
+  const box = document.getElementById('resultsBox');
+  const countEl = document.getElementById('resultsCount');
+  const vals = getSearchValues();
+  const activeKeys = searchKeys.filter(k => vals[k]);
+
+  if (!sheetRows) {
+    box.innerHTML = '<div class="results-empty">Loading records…</div>';
+    countEl.textContent = '';
+    return;
+  }
+
+  // With nothing typed into any field, show every Contract-tab record
+  // (not a "type to search" placeholder) so the Pending/Rented/Returned
+  // ordering below is useful on its own, without requiring a search first.
+  const baseRows = activeKeys.length === 0
+    ? sheetRows
+    : sheetRows.filter(row => activeKeys.every(k =>
+        k === 'bikeModel' ? bikeModelFieldMatches(row[k], vals[k]) : tokenMatch(row[k], vals[k])
+      ));
+
+  const matches = sortByStatus(baseRows);
+
+  countEl.textContent = activeKeys.length === 0
+    ? (matches.length + (matches.length === 1 ? ' contract' : ' contracts'))
+    : (matches.length + (matches.length === 1 ? ' match' : ' matches'));
+
+  if (matches.length === 0) {
+    box.innerHTML = '<div class="results-empty">No matching records.</div>';
+    return;
+  }
+
+  const pageMatches = matches.slice(0, 60);
+
+  box.innerHTML = pageMatches.map(r => `
+    <div class="result-card clickable">
+      <div class="rc-title">${highlight(r.name, vals.name)} — ${highlight(r.bikeModel, vals.bikeModel)}</div>
+      <div class="rc-row"><b>Status:</b> ${r.status || '—'}</div>
+      <div class="rc-row"><b>Nationality:</b> ${highlight(r.nationality, vals.nationality) || '—'} &nbsp; <b>Passport:</b> ${highlight(r.passport, vals.passport) || '—'}</div>
+      <div class="rc-row"><b>Number:</b> ${highlight(r.number, vals.number) || '—'} &nbsp; <b>Contact:</b> ${highlight(r.contact, vals.contact) || '—'}</div>
+      <div class="rc-row"><b>Rented:</b> ${formatDateDisplay(r.rentingDateFrom)}</div>
+      <div class="rc-row"><b>Return:</b> ${formatDateDisplay(r.returnDate)}</div>
+      <div class="rc-row"><b>Return time:</b> ${formatTimeDisplay(r.returnTime)}</div>
+      <div class="rc-row"><b>Deliver to hotel:</b> ${highlight(r.deliverToHotel, vals.deliverToHotel) || '—'} &nbsp; <b>Paid:</b> ${r.totalPrice ? '฿' + r.totalPrice : '—'} via ${highlight(r.paidBy, vals.paidBy) || '—'}</div>
+      <div class="rc-row"><b>Deposit:</b> ${r.deposit || '—'}${(r.deposit && r.deposit.toLowerCase() !== 'passport' && r.depositAmount) ? ' (' + (r.depositCurrency ? r.depositAmount + ' ' + r.depositCurrency : '฿' + r.depositAmount) + ')' : ''}</div>
+      <div class="rc-row"><b>Delivery fee:</b> ${r.deliveryFee ? '฿' + r.deliveryFee : '—'}</div>
+    </div>
+  `).join('');
+
+  // Click any result to edit it -- covers every Contract-sheet field,
+  // including status. See openEditModal / the editForm submit handler.
+  Array.from(box.querySelectorAll('.result-card')).forEach((el, i) => {
+    el.addEventListener('click', () => openEditModal(pageMatches[i]));
+  });
+}
+
+function attachAutocomplete(key) {
+  const input = document.getElementById('s_' + key);
+  const list = document.querySelector('.ac-list[data-for="s_' + key + '"]');
+  let hiIndex = -1;
+
+  function close() {
+    list.classList.remove('show');
+    list.innerHTML = '';
+    hiIndex = -1;
+  }
+
+  function open(query) {
+    const options = uniqueValuesFor(key)
+      .filter(v => tokenMatch(v, query))
+      .slice(0, 8);
+    if (options.length === 0) { close(); return; }
+    list.innerHTML = options.map((v, i) =>
+      `<div class="ac-item" data-index="${i}">${highlight(v, query)}</div>`
+    ).join('');
+    list.classList.add('show');
+    hiIndex = -1;
+    Array.from(list.children).forEach((el, i) => {
+      el.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        input.value = options[i];
+        close();
+        renderResults();
+      });
+    });
+    list._options = options;
+  }
+
+  input.addEventListener('input', () => {
+    if (!sheetRows) return;
+    open(input.value.trim());
+    renderResults();
+  });
+
+  input.addEventListener('focus', () => {
+    if (sheetRows) open(input.value.trim());
+  });
+
+  input.addEventListener('keydown', (e) => {
+    const items = Array.from(list.children);
+    if (!items.length) return;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      hiIndex = Math.min(hiIndex + 1, items.length - 1);
+      items.forEach((el, i) => el.classList.toggle('hi', i === hiIndex));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      hiIndex = Math.max(hiIndex - 1, 0);
+      items.forEach((el, i) => el.classList.toggle('hi', i === hiIndex));
+    } else if (e.key === 'Enter' && hiIndex >= 0) {
+      e.preventDefault();
+      input.value = list._options[hiIndex];
+      close();
+      renderResults();
+    } else if (e.key === 'Escape') {
+      close();
+    }
+  });
+
+  document.addEventListener('click', (e) => {
+    if (!input.contains(e.target) && !list.contains(e.target)) close();
+  });
+}
+
+searchKeys.forEach(attachAutocomplete);
+
+document.getElementById('clearSearch').addEventListener('click', () => {
+  searchKeys.forEach(k => document.getElementById('s_' + k).value = '');
+  renderResults();
+});
+</script>
+
+
+<script>
+/* ---- Date-in-words labels (shared across all pages) ----
+   Every <input type="date"> gets a small red label right after it that
+   writes the selected date out in words -- e.g. "8 July 2026" -- so a
+   date like 08/07 can never be misread as August 7 (American style).
+   You still pick the date in the box exactly as before; this only
+   changes what's DISPLAYED, never what's saved to the sheet. */
+(function () {
+  var MONTHS = ['January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December'];
+
+  function dateWords(iso) {
+    var m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(iso || '');
+    if (!m) return '';
+    var monthIdx = parseInt(m[2], 10) - 1;
+    if (monthIdx < 0 || monthIdx > 11) return '';
+    return parseInt(m[3], 10) + ' ' + MONTHS[monthIdx] + ' ' + parseInt(m[1], 10);
+  }
+
+  function ensureLabel(inp) {
+    var el = inp.__dateWordsEl;
+    if (el && el.parentNode) return el;
+    el = document.createElement('span');
+    el.className = 'date-words-label';
+    el.style.cssText = 'display:inline-block;font-size:12.5px;font-weight:700;' +
+      'color:#C62828;margin-top:3px;margin-left:2px;line-height:1.25;white-space:nowrap;';
+    if (inp.nextSibling) {
+      inp.parentNode.insertBefore(el, inp.nextSibling);
+    } else {
+      inp.parentNode.appendChild(el);
+    }
+    inp.__dateWordsEl = el;
+    return el;
+  }
+
+  function refreshDateWordLabels() {
+    var inputs = document.querySelectorAll('input[type="date"]');
+    for (var i = 0; i < inputs.length; i++) {
+      var inp = inputs[i];
+      if (!inp.parentNode) continue;
+      var el = ensureLabel(inp);
+      var text = dateWords(inp.value);
+      if (el.textContent !== text) el.textContent = text;
+    }
+  }
+
+  document.addEventListener('change', function (e) {
+    if (e.target && e.target.type === 'date') refreshDateWordLabels();
+  }, true);
+  document.addEventListener('input', function (e) {
+    if (e.target && e.target.type === 'date') refreshDateWordLabels();
+  }, true);
+
+  if (window.MutationObserver) {
+    new MutationObserver(refreshDateWordLabels)
+      .observe(document.documentElement, { childList: true, subtree: true });
+  }
+
+  setInterval(refreshDateWordLabels, 500);
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', refreshDateWordLabels);
+  } else {
+    refreshDateWordLabels();
+  }
+})();
+</script>
+
+</body>
+</html>

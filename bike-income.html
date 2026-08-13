@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bikes — AA Scooters</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="nav.js" defer></script>
+<style>
+  :root{
+    --sand:#F5EFE6;
+    --ink:#1A2421;
+    --petrol:#0F3D3E;
+    --petrol-light:#175A5B;
+    --cone:#FF6B35;
+    --card:#FFFFFF;
+    --line:#DED4C2;
+    --muted:#5A6663;
+    --ok:#2F855A;
+    --bad:#C53030;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; background:var(--sand); color:var(--ink);
+    font-family:'Inter',sans-serif; min-height:100vh;
+  }
+
+  .page-head{ max-width:720px; margin:0 auto; padding:22px 16px 4px; }
+  .page-head h1{
+    font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:26px;
+    color:var(--petrol); margin:0;
+  }
+  .page-head .sub{ color:var(--muted); font-size:13px; margin-top:6px; line-height:1.5; }
+
+  main{ max-width:720px; margin:0 auto; padding:16px 16px 60px; }
+
+  .load-status{
+    font-size:12px; color:#B36A2E; background:#FFF3E6; border:1px solid #F3D9B8;
+    border-radius:7px; padding:7px 10px; margin-bottom:12px; display:none;
+  }
+  .load-status.show{ display:block; }
+
+  .search-wrap{ margin-bottom:14px; }
+  .search-wrap input{
+    width:100%; padding:11px 12px; border:1px solid var(--line); border-radius:9px;
+    font-size:14.5px; font-family:'Inter',sans-serif; background:var(--card); color:var(--ink);
+  }
+  .search-wrap input:focus{ outline:none; border-color:var(--petrol-light); }
+
+  .toolbar{ margin-bottom:14px; }
+  #toggleMonthsBtn{
+    padding:9px 16px; border:1px solid var(--petrol); border-radius:8px;
+    background:var(--card); color:var(--petrol); font-family:'Barlow Condensed',sans-serif;
+    font-weight:700; font-size:12.5px; letter-spacing:.03em; text-transform:uppercase;
+    cursor:pointer;
+  }
+  #toggleMonthsBtn:active{ transform:scale(.97); }
+  #toggleMonthsBtn.active{ background:var(--petrol); color:#fff; }
+
+  .bike-count{ font-size:12px; color:var(--muted); margin-bottom:10px; }
+
+  .table-wrap{
+    background:var(--card); border:1px solid var(--line); border-radius:10px;
+    overflow-x:auto;
+  }
+  table{ width:100%; border-collapse:collapse; font-size:12.5px; }
+  .month-col{ display:none; }
+  table.show-months .month-col{ display:table-cell; }
+  table.show-months{ min-width:900px; }
+  thead th{
+    background:var(--petrol); color:#fff; text-align:right; padding:9px 8px;
+    font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:11.5px;
+    letter-spacing:.03em; text-transform:uppercase; white-space:nowrap;
+  }
+  thead th:first-child{ text-align:left; }
+  tbody td{
+    padding:8px 8px; border-bottom:1px solid #F0EBE0; text-align:right; white-space:nowrap;
+  }
+  tbody td:first-child{ text-align:left; white-space:normal; }
+  tbody tr:last-child td{ border-bottom:none; }
+  tbody tr:nth-child(even){ background:#F3EEE3; }
+  tbody tr.sold{ opacity:.55; }
+  tbody tr.sold td:first-child{ text-decoration:line-through; }
+  .sold-tag{
+    display:inline-block; font-size:9.5px; font-weight:700; letter-spacing:.03em;
+    text-transform:uppercase; color:var(--bad); background:#FCEBEB; border-radius:5px;
+    padding:1px 5px; margin-left:6px; text-decoration:none; vertical-align:middle;
+  }
+  td.cost{ color:var(--muted); }
+  td.expenses{ color:var(--bad); }
+  /* Same bold Barlow Condensed treatment as .profit/.netProfit below --
+     previously this was regular-weight Inter, which made the (correct,
+     already dark) green read as washed-out/light next to the bold net
+     profit figure in the same color. Bold weight reads as "darker" even
+     at the same hex value, and this keeps income visually matched to
+     net profit's green as requested. */
+  td.income{ color:var(--ok); font-family:'Barlow Condensed',sans-serif; font-weight:700; }
+  td.profit, td.netProfit{ font-family:'Barlow Condensed',sans-serif; font-weight:700; }
+  td.netProfit.neg{ color:var(--bad); }
+  td.netProfit.pos{ color:var(--ok); }
+
+  tfoot td{
+    padding:11px 8px; font-family:'Barlow Condensed',sans-serif; font-weight:700;
+    background:var(--petrol); color:#fff; text-align:right;
+  }
+  tfoot td:first-child{ text-align:left; }
+
+  .empty-hint{ font-size:13px; color:#8A948F; padding:14px 12px; }
+
+  @media (min-width: 1000px){
+    .page-head{ max-width:1400px; }
+    main{ max-width:1400px; }
+  }
+
+  /* Shrink the base (non-month) columns on phones so all six columns --
+     Bike, Cost, Income, Expenses, Profit, Net profit -- fit the screen
+     width without side-scrolling. The "Show months" toggle already keeps
+     the 12 month columns out of the way by default, so those never count
+     against this. Cost used to be dropped below this width instead of
+     shrunk; per explicit request it now always stays visible, so instead
+     everything is packed tighter here: smaller font/padding, and the bike
+     name column capped harder so a long name can't push the row wider
+     than the screen. */
+  @media (max-width:600px){
+    .page-head{ padding:18px 12px 4px; }
+    main{ padding:12px 12px 50px; }
+    table{ font-size:11.5px; }
+    thead th{ padding:6px 4px; font-size:10px; }
+    tbody td{ padding:6px 4px; }
+    tbody td:first-child{
+      max-width:64px; overflow:hidden; text-overflow:ellipsis;
+    }
+  }
+</style>
+</head>
+<body>
+
+<div id="topbar-mount"></div>
+
+<div class="page-head">
+  <h1>Bikes</h1>
+  <div class="sub">Income, expenses, profit, and net profit per bike — pulled live from the "bikes" sheet.</div>
+</div>
+
+<main>
+  <div class="load-status" id="loadStatus"></div>
+
+  <div class="search-wrap">
+    <input type="text" id="searchInput" placeholder="Search bikes…">
+  </div>
+
+  <div class="toolbar">
+    <button type="button" id="toggleMonthsBtn">Show months</button>
+  </div>
+
+  <div class="bike-count" id="bikeCount"></div>
+
+  <div class="table-wrap">
+    <table id="bikesTable">
+      <thead>
+        <tr>
+          <th>Bike</th>
+          <th>Cost</th>
+          <th class="month-col">Jan</th>
+          <th class="month-col">Feb</th>
+          <th class="month-col">Mar</th>
+          <th class="month-col">Apr</th>
+          <th class="month-col">May</th>
+          <th class="month-col">Jun</th>
+          <th class="month-col">Jul</th>
+          <th class="month-col">Aug</th>
+          <th class="month-col">Sep</th>
+          <th class="month-col">Oct</th>
+          <th class="month-col">Nov</th>
+          <th class="month-col">Dec</th>
+          <th>Income</th>
+          <th>Expenses</th>
+          <th>Profit</th>
+          <th>Net profit</th>
+        </tr>
+      </thead>
+      <tbody id="tbody"></tbody>
+      <tfoot id="tfoot" style="display:none;">
+        <tr>
+          <td>Total</td>
+          <td id="fCost"></td>
+          <td class="month-col" id="fMonth0"></td>
+          <td class="month-col" id="fMonth1"></td>
+          <td class="month-col" id="fMonth2"></td>
+          <td class="month-col" id="fMonth3"></td>
+          <td class="month-col" id="fMonth4"></td>
+          <td class="month-col" id="fMonth5"></td>
+          <td class="month-col" id="fMonth6"></td>
+          <td class="month-col" id="fMonth7"></td>
+          <td class="month-col" id="fMonth8"></td>
+          <td class="month-col" id="fMonth9"></td>
+          <td class="month-col" id="fMonth10"></td>
+          <td class="month-col" id="fMonth11"></td>
+          <td id="fIncome"></td>
+          <td id="fExpenses"></td>
+          <td id="fProfit"></td>
+          <td id="fNetProfit"></td>
+        </tr>
+      </tfoot>
+    </table>
+  </div>
+</main>
+
+<script>
+const scriptUrl = ''; // DISCONNECTED: this Vercel copy is intentionally not wired to the live backend (dev/testing only, see project CLAUDE.md)
+
+let allBikes = [];
+
+function setLoadStatus(msg) {
+  const el = document.getElementById('loadStatus');
+  if (!msg) { el.classList.remove('show'); el.textContent = ''; return; }
+  el.textContent = msg;
+  el.classList.add('show');
+}
+
+function fmt(num) {
+  const n = Number(num) || 0;
+  const sign = n < 0 ? '-' : '';
+  // Whole baht only -- no cents in how this business tracks money, and
+  // dropping ".00" off every figure frees up real width in this six-
+  // column table (see the mobile font sizes below, bumped back up now
+  // that the numbers themselves take less room).
+  return sign + '฿' + Math.round(Math.abs(n)).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+}
+
+function render() {
+  const q = document.getElementById('searchInput').value.trim().toLowerCase();
+  const filtered = q ? allBikes.filter(b => b.name.toLowerCase().includes(q)) : allBikes;
+
+  const tbody = document.getElementById('tbody');
+  const tfoot = document.getElementById('tfoot');
+  const countEl = document.getElementById('bikeCount');
+
+  countEl.textContent = filtered.length + ' bike' + (filtered.length === 1 ? '' : 's') +
+    (q ? ' matching "' + q + '"' : '');
+
+  if (!filtered.length) {
+    tbody.innerHTML = '<tr><td colspan="18" class="empty-hint">' +
+      (allBikes.length ? 'No bikes match that search.' : 'No bikes found.') + '</td></tr>';
+    tfoot.style.display = 'none';
+    return;
+  }
+
+  tbody.innerHTML = filtered.map(b => {
+    const netCls = b.netProfit < 0 ? 'neg' : (b.netProfit > 0 ? 'pos' : '');
+    const months = b.months && b.months.length === 12 ? b.months : new Array(12).fill({ amount: 0 });
+    const monthCells = months.map(m => `<td class="month-col">${fmt(m.amount)}</td>`).join('');
+    return `<tr class="${b.sold ? 'sold' : ''}">
+      <td>${b.name}${b.sold ? '<span class="sold-tag">Sold</span>' : ''}</td>
+      <td class="cost">${fmt(b.cost)}</td>
+      ${monthCells}
+      <td class="income">${fmt(b.income)}</td>
+      <td class="expenses">${fmt(b.expenses)}</td>
+      <td class="profit">${fmt(b.profit)}</td>
+      <td class="netProfit ${netCls}">${fmt(b.netProfit)}</td>
+    </tr>`;
+  }).join('');
+
+  const sum = (key) => filtered.reduce((s, b) => s + (Number(b[key]) || 0), 0);
+  document.getElementById('fCost').textContent = fmt(sum('cost'));
+  for (let mi = 0; mi < 12; mi++) {
+    const monthSum = filtered.reduce((s, b) => s + ((b.months && b.months[mi]) ? Number(b.months[mi].amount) || 0 : 0), 0);
+    document.getElementById('fMonth' + mi).textContent = fmt(monthSum);
+  }
+  document.getElementById('fIncome').textContent = fmt(sum('income'));
+  document.getElementById('fExpenses').textContent = fmt(sum('expenses'));
+  document.getElementById('fProfit').textContent = fmt(sum('profit'));
+  document.getElementById('fNetProfit').textContent = fmt(sum('netProfit'));
+  tfoot.style.display = '';
+}
+
+async function loadBikes() {
+  setLoadStatus('Loading bikes…');
+  try {
+    const res = await fetch(scriptUrl + '?action=bikeIncomeSummary').then(r => r.json());
+    if (!res.success) throw new Error(res.error || 'Could not load bike income data.');
+    // Sold bikes (A-Z), then unsold bikes (A-Z), then "Extras" and
+    // "Deposit" pinned to the very bottom in that fixed order -- those two
+    // are sentinel rows on the sheet, not real bikes, so they never belong
+    // mixed into an alphabetical group (see isSentinel on the backend).
+    const sentinelOrder = ['extras', 'deposit'];
+    allBikes = (res.bikes || []).slice().sort((a, b) => {
+      const aSent = a.isSentinel ? sentinelOrder.indexOf(a.name.toLowerCase()) : -1;
+      const bSent = b.isSentinel ? sentinelOrder.indexOf(b.name.toLowerCase()) : -1;
+      if (!!a.isSentinel !== !!b.isSentinel) return a.isSentinel ? 1 : -1;
+      if (a.isSentinel && b.isSentinel) return aSent - bSent;
+      if (!!a.sold !== !!b.sold) return a.sold ? -1 : 1;
+      return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+    });
+    setLoadStatus(null);
+    render();
+  } catch (err) {
+    setLoadStatus('Failed to load: ' + err.message);
+    document.getElementById('tbody').innerHTML =
+      '<tr><td colspan="18" class="empty-hint">Could not load bikes.</td></tr>';
+  }
+}
+
+document.getElementById('searchInput').addEventListener('input', render);
+
+document.getElementById('toggleMonthsBtn').addEventListener('click', () => {
+  const table = document.getElementById('bikesTable');
+  const btn = document.getElementById('toggleMonthsBtn');
+  const showing = table.classList.toggle('show-months');
+  btn.classList.toggle('active', showing);
+  btn.textContent = showing ? 'Hide months' : 'Show months';
+});
+
+loadBikes();
+</script>
+
+</body>
+</html>

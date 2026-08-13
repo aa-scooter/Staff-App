@@ -1,0 +1,734 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Reply Assistant — AA Scooters</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="nav.js" defer></script>
+<style>
+  :root{
+    --sand:#F5EFE6;
+    --ink:#1A2421;
+    --petrol:#0F3D3E;
+    --petrol-light:#175A5B;
+    --cone:#FF6B35;
+    --card:#FFFFFF;
+    --line:#DED4C2;
+    --muted:#5A6663;
+    --ok:#2F855A;
+    --err:#C53030;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; background:var(--sand); color:var(--ink);
+    font-family:'Inter',sans-serif; min-height:100vh;
+  }
+  .page-head{ max-width:960px; margin:0 auto; padding:22px 16px 4px; }
+  .page-head h1{
+    font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:26px;
+    color:var(--petrol); margin:0;
+  }
+  .page-head .sub{ color:var(--muted); font-size:13px; margin-top:6px; }
+
+  main{ max-width:960px; margin:0 auto; padding:16px 16px 60px; }
+
+  .grid2{ display:grid; grid-template-columns:1fr; gap:16px; }
+  @media(min-width:760px){ .grid2{ grid-template-columns:1fr 1fr; } }
+
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:14px;
+    padding:18px; margin-bottom:16px;
+  }
+  .card h2{
+    font-family:'Barlow Condensed',sans-serif; font-size:14px; font-weight:600;
+    letter-spacing:.08em; text-transform:uppercase; color:var(--petrol);
+    margin:0 0 14px; display:flex; align-items:center; gap:8px;
+  }
+  .card h2::before{
+    content:""; width:7px; height:7px; border-radius:50%;
+    background:var(--cone); display:inline-block; flex-shrink:0;
+  }
+
+  label.f{ display:block; font-size:12.5px; font-weight:500; color:var(--muted); margin:0 0 6px; }
+  input[type="text"], input[type="date"], input[type="number"], textarea{
+    width:100%; padding:11px 12px; border:1px solid var(--line); border-radius:9px;
+    font-size:14.5px; font-family:'Inter',sans-serif; background:#FBFAF7; color:var(--ink);
+  }
+  input:focus, textarea:focus{ outline:none; border-color:var(--petrol-light); background:#fff; }
+  textarea{ resize:vertical; min-height:90px; }
+
+  .load-status{
+    font-size:12px; color:#B36A2E; background:#FFF3E6; border:1px solid #F3D9B8;
+    border-radius:7px; padding:7px 10px; margin-bottom:10px; display:none;
+  }
+  .load-status.show{ display:block; }
+
+  .cust-list, .bike-list{
+    display:flex; flex-direction:column; gap:6px; max-height:280px; overflow-y:auto;
+    margin-top:8px;
+  }
+  .cust-row{
+    display:flex; align-items:center; gap:10px; padding:9px 10px;
+    border:1px solid var(--line); border-radius:9px; cursor:pointer; background:#FBFAF7;
+  }
+  .cust-row:hover{ border-color:var(--petrol-light); }
+  .cust-row.selected{ border-color:var(--cone); background:#FFF3EC; }
+  .cust-avatar{
+    width:30px; height:30px; border-radius:50%; background:#EEF5F2; flex-shrink:0;
+    display:flex; align-items:center; justify-content:center; font-size:11.5px; font-weight:600;
+    color:var(--petrol);
+  }
+  .cust-name{ font-size:14px; font-weight:600; color:var(--ink); }
+  .cust-sub{ font-size:11.5px; color:var(--muted); margin-top:1px; }
+  .cust-sub.renting{ color:var(--ok); font-weight:600; }
+  .empty-hint{ font-size:13px; color:#8A948F; padding:10px 2px; }
+
+  .bike-row{
+    display:flex; align-items:center; gap:10px; padding:8px 10px;
+    border:1px solid var(--line); border-radius:9px;
+  }
+  .bike-row input[type="checkbox"]{ flex-shrink:0; }
+  .bike-row .bn{ flex:1; font-size:14px; font-weight:600; color:var(--ink); }
+  .bike-row .bp{ font-size:12px; color:var(--muted); }
+
+  .instr-row{ display:flex; align-items:center; gap:12px; }
+  .mic-btn{
+    width:46px; height:46px; border-radius:50%; border:none;
+    background:var(--cone); color:#fff; font-size:18px; cursor:pointer;
+    display:flex; align-items:center; justify-content:center; flex-shrink:0;
+  }
+  .mic-btn.listening{ background:#C53030; }
+  .mic-btn:disabled{ background:#C9B9A8; cursor:not-allowed; }
+
+  button.btn{
+    padding:12px 18px; border:none; border-radius:10px; background:var(--cone);
+    color:#fff; font-family:'Barlow Condensed',sans-serif; font-weight:700;
+    font-size:14px; letter-spacing:.04em; text-transform:uppercase; cursor:pointer;
+  }
+  button.btn:disabled{ background:#C9B9A8; cursor:not-allowed; }
+  button.btn.secondary{ background:#fff; color:var(--petrol); border:1px solid var(--line); }
+  button.btn.wa{ background:#1D9E75; }
+
+  .btn-row{ display:flex; gap:10px; margin-top:12px; flex-wrap:wrap; }
+  .status{ font-size:12.5px; margin-top:10px; }
+  .status.err{ color:var(--err); }
+  .status.ok{ color:var(--ok); }
+
+  .modal-backdrop{
+    position:fixed; inset:0; background:rgba(26,36,33,.55);
+    display:none; align-items:center; justify-content:center; z-index:100; padding:20px;
+  }
+  .modal-backdrop.show{ display:flex; }
+  .modal-card{
+    background:#fff; border-radius:14px; max-width:420px; width:100%; padding:18px;
+  }
+  .modal-head{ display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; }
+  .modal-head h2{ margin:0; }
+  .modal-close{ background:none; border:none; font-size:20px; cursor:pointer; color:var(--muted); }
+</style>
+</head>
+<body>
+
+<div id="topbar-mount"></div>
+
+<div class="page-head">
+  <h1>Reply Assistant</h1>
+  <div class="sub">Pick a customer and bikes, tell the AI what to say, send it straight to WhatsApp</div>
+</div>
+
+<main>
+  <div class="grid2">
+    <div class="card">
+      <h2>Customer</h2>
+      <div class="load-status" id="custLoadStatus"></div>
+      <input type="text" id="custSearch" placeholder="Search name or number…" autocomplete="off">
+      <div class="cust-list" id="custList"></div>
+      <div class="btn-row">
+        <button type="button" class="btn secondary" id="addContactBtn">+ Add customer from screenshot</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Available bikes</h2>
+      <div class="load-status" id="bikeLoadStatus"></div>
+      <div class="bike-list" id="bikeList"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Tell the AI what to say</h2>
+    <div class="instr-row">
+      <button type="button" class="mic-btn" id="micBtn" title="Speak instruction">🎤</button>
+      <input type="text" id="instructionInput" placeholder="e.g. Quote her the NMAX for 10 days and mention the deposit">
+    </div>
+    <div class="status" id="micStatus"></div>
+    <div class="btn-row">
+      <button type="button" class="btn" id="generateBtn">Generate reply</button>
+    </div>
+  </div>
+
+  <div class="card" id="draftCard" style="display:none;">
+    <h2>Draft reply</h2>
+    <textarea id="draftText" rows="5"></textarea>
+    <div class="btn-row">
+      <button type="button" class="btn secondary" id="copyDraftBtn">Copy</button>
+      <button type="button" class="btn wa" id="sendWaBtn">Open WhatsApp, pre-filled</button>
+    </div>
+    <div class="status" id="genStatus"></div>
+  </div>
+</main>
+
+<div class="modal-backdrop" id="addContactBackdrop">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h2 class="card-title-inline">Add customer from screenshot</h2>
+      <button type="button" class="modal-close" id="addContactCloseBtn">&times;</button>
+    </div>
+    <label class="f" for="contactPhotoInput">WhatsApp "Edit contact" screenshot</label>
+    <input type="file" id="contactPhotoInput" accept="image/*">
+    <div class="status" id="contactPhotoStatus"></div>
+    <div style="margin-top:14px;">
+      <label class="f" for="contactNameInput">Name</label>
+      <input type="text" id="contactNameInput">
+      <label class="f" for="contactNumberInput" style="margin-top:10px;">Number</label>
+      <input type="text" id="contactNumberInput">
+    </div>
+    <div class="btn-row">
+      <button type="button" class="btn" id="saveContactBtn">Save contact</button>
+    </div>
+    <div class="status" id="saveContactStatus"></div>
+  </div>
+</div>
+
+<script>
+const scriptUrl = ''; // DISCONNECTED: this Vercel copy is intentionally not wired to the live backend (dev/testing only, see project CLAUDE.md)
+
+// ---------- rate table (mirrors Available Bikes / Price Calculator) ----------
+const CATEGORY_DEFS = [
+  { key: "125cc",                      label: "125CC" },
+  { key: "150-155cc standard key",     label: "155CC Standard Key" },
+  { key: "150-155cc keyless",          label: "155CC Keyless" },
+  { key: "nmax 155cc keyless",         label: "Nmax 155CC" },
+  { key: "forza 300cc",                label: "Forza 300CC" },
+  { key: "xmax 300 keyless",           label: "XMAX 300" },
+];
+// Anton, 08/08/2026: this used to be the ONLY copy of the rate table --
+// hand-copied from the "rates per day" sheet tab and never updated again,
+// which quietly drifted out of sync with the real prices on the sheet (27
+// of the 30 day-rows had gone stale by the time this was caught). Now it's
+// kept only as an offline/failure fallback: RATES starts out pointing at
+// this, then loadBikes() overwrites it with whatever the server just read
+// live off the sheet (see readRatesPerDayTable_ in Code.gs). If that live
+// read ever fails, Claude's reply-draft quote still needs SOME numbers to
+// work from (imperfect and possibly stale beats nothing), so RATES quietly
+// stays on this last-known table and ratesStale gets set so buildFleetContext
+// can flag it to Claude in the prompt itself, rather than quietly handing
+// over stale numbers as if they were current.
+const RATES_FALLBACK = {
+  1:[300,400,450,500,600,800],2:[600,800,900,1000,1200,1600],
+  3:[900,1200,1300,1400,1800,2400],4:[1000,1300,1500,1600,2300,3100],
+  5:[1100,1500,1800,1900,2800,3800],6:[1200,1700,1900,2000,3300,4500],
+  7:[1300,1800,2000,2100,3800,5100],8:[1400,1900,2100,2200,4200,5700],
+  9:[1500,2000,2200,2300,4600,6300],10:[1600,2200,2300,2400,5000,6800],
+  11:[1700,2300,2400,2500,5400,7300],12:[1800,2400,2500,2600,5800,7800],
+  13:[1900,2500,2600,2700,6200,8300],14:[2000,2600,2700,2800,6500,8700],
+  15:[2100,2700,2800,2900,6900,9100],16:[2200,2800,2900,3000,7100,9500],
+  17:[2300,2900,3000,3100,7500,9800],18:[2400,3000,3100,3200,7900,10100],
+  19:[2500,3100,3300,3400,8300,10300],20:[2500,3200,3500,3600,8700,10500],
+  21:[2600,3300,3600,3700,9000,10700],22:[2600,3400,3700,3800,8100,10800],
+  23:[2700,3500,3800,3900,8400,11000],24:[2700,3600,3900,4200,8700,11200],
+  25:[2800,3700,4000,4500,9000,11400],26:[2800,3800,4100,4600,9200,11600],
+  27:[2900,3900,4200,4700,9400,11800],28:[2900,3900,4300,4800,9600,11900],
+  29:[3000,4000,4400,4900,9800,12000],30:[3000,4000,4500,5000,10000,12000],
+};
+let RATES = RATES_FALLBACK;
+let ratesStale = false; // true once loadBikes() has actually tried and failed to get a live table
+
+// Shape-checks whatever action=parts sent back as `rates` before trusting
+// it -- every one of days 1-30 has to be present as an array of exactly 6
+// real numbers, or this is treated the same as a failed read (fall back
+// rather than quote off a partly-broken table).
+function isValidRatesTable(r) {
+  if (!r || typeof r !== 'object') return false;
+  for (let d = 1; d <= 30; d++) {
+    const row = r[d];
+    if (!Array.isArray(row) || row.length !== 6) return false;
+    if (row.some(v => typeof v !== 'number' || isNaN(v))) return false;
+  }
+  return true;
+}
+function normalizeCategory(s){ return (s||'').toString().trim().toLowerCase().replace(/\s+/g,' '); }
+function findCategoryIndex(catText){
+  const norm = normalizeCategory(catText);
+  if (!norm) return -1;
+  return CATEGORY_DEFS.findIndex(c => c.key === norm);
+}
+function fmt(n){ return '฿' + n.toLocaleString('en-US'); }
+
+// ---------- bike name matching (same fuzzy rule used across the app) ----------
+function normalizeBikeName(s){
+  return (s||'').toString().toLowerCase().replace(/\([^)]*\)/g,' ').replace(/[^a-z0-9]+/g,' ').trim().replace(/\s+/g,' ');
+}
+const DISTINGUISHING_SUFFIXES = new Set(['one','two','three','four','five','six','seven','eight','nine','ten',
+  'i','ii','iii','iv','v','vi','vii','viii','ix','x','1','2','3','4','5','6','7','8','9','10']);
+function bikeNamesMatch(a,b){
+  const na = normalizeBikeName(a), nb = normalizeBikeName(b);
+  if (!na || !nb) return false;
+  if (na === nb) return true;
+  const ta = na.split(' '), tb = nb.split(' ');
+  const shorter = ta.length <= tb.length ? ta : tb;
+  const longer = ta.length <= tb.length ? tb : ta;
+  const isPrefix = shorter.every((tok,i) => tok === longer[i]);
+  if (isPrefix){
+    const extra = longer.slice(shorter.length);
+    if (extra.some(t => DISTINGUISHING_SUFFIXES.has(t))) return false;
+    return true;
+  }
+  return na.includes(nb) || nb.includes(na);
+}
+const ACRONYM_EXCEPTIONS = new Set(['gt','pcx']);
+function capitalizeModelWord(word){
+  if (!word) return word;
+  const lw = word.toLowerCase();
+  if (ACRONYM_EXCEPTIONS.has(lw)) return lw.toUpperCase();
+  return word.charAt(0).toUpperCase() + word.slice(1);
+}
+
+// Turns a stored phone number into a WhatsApp click-to-chat link -- same
+// helper duplicated in bikes.html/oilchange.html; kept as its own copy
+// here since this is a separate page with its own script scope.
+function buildWhatsAppLink(rawNumber){
+  const trimmed = (rawNumber||'').toString().trim();
+  if (!trimmed) return null;
+  let digits;
+  if (trimmed.indexOf('+') === 0){
+    digits = trimmed.replace(/[^0-9]/g,'');
+  } else {
+    const local = trimmed.replace(/[^0-9]/g,'').replace(/^0/,'');
+    digits = local ? ('66'+local) : '';
+  }
+  if (digits.length < 8) return null;
+  return 'https://wa.me/' + digits;
+}
+
+function escapeHtml(s){
+  return (s||'').toString().replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function initialsOf(name){
+  const parts = (name||'').toString().trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return '?';
+  return (parts[0][0] + (parts[1] ? parts[1][0] : '')).toUpperCase();
+}
+
+// ---------- state ----------
+let customers = [];          // merged Contract renters + manual Contacts, deduped
+let categoryRows = [];       // Bike Tax rows (bike/category/model...)
+let bikeNames = [];          // all bike names from Parts and Oil change
+let struckBikes = new Set(); // sold bikes (struck through in Parts and Oil)
+let rentedBikes = {};        // bike name -> renter info, from bikeRentalStatus
+let selectedCustomer = null; // { name, number }
+let selectedBikes = new Set();
+
+// ---------- load customers (Contract renters, dedup + currently-renting first) ----------
+function loadCustomers(){
+  const el = document.getElementById('custLoadStatus');
+  el.textContent = 'Loading customers…'; el.classList.add('show');
+  return Promise.all([
+    fetch(scriptUrl + '?action=contracts').then(r => r.json()).catch(err => ({ success:false, error: err.message })),
+    fetch(scriptUrl + '?action=contactsList').then(r => r.json()).catch(() => ({ success:false, contacts: [] }))
+  ]).then(([contractsRes, contactsRes]) => {
+    if (!contractsRes || !contractsRes.success) throw new Error((contractsRes && contractsRes.error) || 'Could not load customers');
+
+    const byKey = new Map(); // "name|number" -> record
+    (contractsRes.rows || []).forEach(r => {
+      const name = (r.name || '').toString().trim();
+      if (!name) return;
+      const number = (r.number || '').toString().trim();
+      const key = name.toLowerCase() + '|' + number.toLowerCase();
+      const status = (r.status || '').toString().trim().toLowerCase();
+      const existing = byKey.get(key);
+      const rec = {
+        name, number,
+        chatName: (r.chatName || '').toString().trim(),
+        bikeModel: (r.bikeModel || '').toString().trim(),
+        renting: status === 'rented',
+        dateKey: (r.date || '').toString(),
+        isLead: false
+      };
+      // Keep whichever record is currently renting if any duplicate is;
+      // otherwise keep the most recently seen row for this person.
+      if (!existing || rec.renting || !existing.renting) {
+        byKey.set(key, rec);
+      }
+    });
+
+    (contactsRes && contactsRes.contacts ? contactsRes.contacts : []).forEach(c => {
+      const name = (c.name || '').toString().trim();
+      if (!name) return;
+      const number = (c.number || '').toString().trim();
+      const key = name.toLowerCase() + '|' + number.toLowerCase();
+      if (byKey.has(key)) return; // already a real renter -- don't shadow it with a lead entry
+      byKey.set(key, { name, number, chatName:'', bikeModel:'', renting:false, dateKey:'', isLead:true });
+    });
+
+    customers = Array.from(byKey.values()).sort((a,b) => {
+      if (a.renting !== b.renting) return a.renting ? -1 : 1;
+      return b.dateKey.localeCompare(a.dateKey);
+    });
+
+    el.classList.remove('show');
+    renderCustomerList();
+  }).catch(err => {
+    el.textContent = 'Could not load customers: ' + err.message;
+    el.classList.add('show');
+  });
+}
+
+function renderCustomerList(){
+  const box = document.getElementById('custList');
+  const query = document.getElementById('custSearch').value.trim().toLowerCase();
+  const filtered = customers.filter(c => {
+    if (!query) return true;
+    return c.name.toLowerCase().includes(query) || c.number.toLowerCase().includes(query);
+  });
+
+  if (!filtered.length){
+    box.innerHTML = '<div class="empty-hint">No customers match.</div>';
+    return;
+  }
+
+  box.innerHTML = filtered.map((c, i) => {
+    const isSel = selectedCustomer && selectedCustomer.name === c.name && selectedCustomer.number === c.number;
+    const sub = c.renting
+      ? 'Renting now' + (c.bikeModel ? ' · ' + escapeHtml(c.bikeModel) : '')
+      : (c.isLead ? 'Lead (not yet rented)' : 'Past customer');
+    const subClass = c.renting ? 'cust-sub renting' : 'cust-sub';
+    return `
+      <div class="cust-row${isSel ? ' selected' : ''}" data-idx="${i}">
+        <div class="cust-avatar">${escapeHtml(initialsOf(c.name))}</div>
+        <div>
+          <div class="cust-name">${escapeHtml(c.name)}</div>
+          <div class="${subClass}">${sub}</div>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  box.querySelectorAll('.cust-row').forEach((row, i) => {
+    row.addEventListener('click', () => {
+      selectedCustomer = filtered[i];
+      renderCustomerList();
+    });
+  });
+}
+document.getElementById('custSearch').addEventListener('input', renderCustomerList);
+
+// ---------- load bikes (available only -- not sold, not currently rented) ----------
+function loadBikes(){
+  const el = document.getElementById('bikeLoadStatus');
+  el.textContent = 'Loading bikes…'; el.classList.add('show');
+  return Promise.all([
+    fetch(scriptUrl + '?action=parts').then(r => r.json()),
+    fetch(scriptUrl + '?action=bikeRentalStatus').then(r => r.json()).catch(err => ({ success:false, error: err.message }))
+  ]).then(([partsRes, rentalRes]) => {
+    if (!partsRes.success) throw new Error(partsRes.error || 'Could not load bikes');
+    const bikeHeader = partsRes.headers[0];
+
+    bikeNames = [];
+    struckBikes = new Set();
+    (partsRes.rows || []).forEach(r => {
+      const name = (r[bikeHeader] || '').toString().trim();
+      if (!name) return;
+      bikeNames.push(name);
+      if (r.__struck) struckBikes.add(name);
+    });
+    bikeNames.sort((a,b) => a.localeCompare(b, undefined, { sensitivity:'base' }));
+    categoryRows = partsRes.categoryRows || [];
+
+    // Pricing now comes live off the "rates per day" sheet tab every load
+    // (see readRatesPerDayTable_ in Code.gs) instead of the hand-copied
+    // table this page used to carry -- RATES only falls back to
+    // RATES_FALLBACK's last-known numbers if this particular read failed.
+    if (isValidRatesTable(partsRes.rates)) {
+      RATES = partsRes.rates;
+      ratesStale = false;
+    } else {
+      RATES = RATES_FALLBACK;
+      ratesStale = true;
+    }
+
+    rentedBikes = (rentalRes && rentalRes.success) ? (rentalRes.rented || {}) : {};
+
+    el.classList.remove('show');
+    renderBikeList();
+  }).catch(err => {
+    el.textContent = 'Could not load bikes: ' + err.message;
+    el.classList.add('show');
+  });
+}
+
+function renderBikeList(){
+  const box = document.getElementById('bikeList');
+  const available = bikeNames.filter(n => !struckBikes.has(n) && !rentedBikes[n]);
+
+  if (!available.length){
+    box.innerHTML = '<div class="empty-hint">No available bikes right now.</div>';
+    return;
+  }
+
+  box.innerHTML = available.map(name => {
+    const match = categoryRows.find(cr => bikeNamesMatch(cr.bike, name));
+    const catIndex = match ? findCategoryIndex(match.category) : -1;
+    const rate = catIndex >= 0 ? fmt(RATES[30][catIndex] / 30) + '/day' : 'custom rate';
+    const isChecked = selectedBikes.has(name);
+    return `
+      <label class="bike-row">
+        <input type="checkbox" data-bike="${escapeHtml(name)}" ${isChecked ? 'checked' : ''}>
+        <span class="bn">${escapeHtml(name)}</span>
+        <span class="bp">${rate}</span>
+      </label>
+    `;
+  }).join('');
+
+  box.querySelectorAll('input[type=checkbox]').forEach(cb => {
+    cb.addEventListener('change', () => {
+      const name = cb.getAttribute('data-bike');
+      if (cb.checked) selectedBikes.add(name); else selectedBikes.delete(name);
+    });
+  });
+}
+
+// ---------- voice input (Chrome/Android only -- falls back to typing) ----------
+const micBtn = document.getElementById('micBtn');
+const instructionInput = document.getElementById('instructionInput');
+const micStatus = document.getElementById('micStatus');
+const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+let recognition = null, listening = false;
+if (SpeechRecognition){
+  recognition = new SpeechRecognition();
+  recognition.continuous = false;
+  recognition.interimResults = true;
+  recognition.lang = 'en-US';
+  recognition.onstart = () => { listening = true; micBtn.classList.add('listening'); micStatus.textContent = 'Listening…'; micStatus.className = 'status'; };
+  recognition.onresult = (event) => {
+    let transcript = '';
+    for (let i=0;i<event.results.length;i++) transcript += event.results[i][0].transcript;
+    instructionInput.value = transcript;
+  };
+  recognition.onerror = (event) => { micStatus.textContent = 'Mic error: ' + event.error; micStatus.className = 'status err'; };
+  recognition.onend = () => { listening = false; micBtn.classList.remove('listening'); };
+} else {
+  micStatus.textContent = 'Voice input isn\'t supported in this browser — type instead.';
+  micStatus.className = 'status err';
+  micBtn.disabled = true;
+}
+micBtn.addEventListener('click', () => {
+  if (!recognition) return;
+  if (listening) recognition.stop(); else recognition.start();
+});
+
+// ---------- generate reply ----------
+// Builds a plain-text fleet context sent on every Generate call, whether
+// or not any bikes are ticked -- every available bike, grouped by
+// category, with a full price-by-number-of-days table (1-30 days) per
+// category. This is what lets a free-form instruction like "what 155cc
+// bikes are available and how much for 10 days" get answered correctly:
+// Claude looks the day count up in this table instead of doing the
+// arithmetic itself, so the numbers are guaranteed right regardless of
+// what the model does with math. Prices come straight out of the same
+// RATES table used everywhere else (Price Calculator/Available Bikes) --
+// no separate duration picker needed any more, staff just type the
+// number of days into the instruction itself.
+function buildFleetContext(){
+  const available = bikeNames.filter(n => !struckBikes.has(n) && !rentedBikes[n]);
+  const byCat = new Map(); // catIndex (-1 = uncategorized/custom rate) -> { label, bikes: [] }
+
+  available.forEach(name => {
+    const match = categoryRows.find(cr => bikeNamesMatch(cr.bike, name));
+    const catIndex = match ? findCategoryIndex(match.category) : -1;
+    const modelLabel = (match && match.model)
+      ? match.model.split(/\s+/).map(capitalizeModelWord).join(' ')
+      : name;
+    if (!byCat.has(catIndex)) {
+      byCat.set(catIndex, { label: catIndex >= 0 ? CATEGORY_DEFS[catIndex].label : 'Custom / uncategorized', bikes: [] });
+    }
+    byCat.get(catIndex).bikes.push(modelLabel);
+  });
+
+  if (!byCat.size) return '(no bikes currently available)';
+
+  const lines = [];
+  if (ratesStale) {
+    // Couldn't refresh from the sheet this load -- tell Claude straight out
+    // rather than silently handing over what might be stale numbers as if
+    // they were current, since generateReplyDraftEntry's own system prompt
+    // tells it to trust this table completely.
+    lines.push('NOTE: pricing below could not be refreshed from the sheet this load and may be out of date -- mention to staff that the quoted price should be double-checked if precision matters.');
+    lines.push('');
+  }
+  byCat.forEach((group, catIndex) => {
+    lines.push(group.label + ' -- available: ' + group.bikes.join(', '));
+    if (catIndex >= 0) {
+      const priceLine = [];
+      for (let d = 1; d <= 30; d++) priceLine.push(d + 'd=' + fmt(RATES[d][catIndex]));
+      lines.push('Price by number of days: ' + priceLine.join(', '));
+    } else {
+      lines.push('No standard rate for this group -- ask staff for a custom price.');
+    }
+    lines.push('');
+  });
+  return lines.join('\n').trim();
+}
+
+document.getElementById('generateBtn').addEventListener('click', async () => {
+  const instruction = instructionInput.value.trim();
+  const genStatus = document.getElementById('genStatus');
+  const draftCard = document.getElementById('draftCard');
+  const draftText = document.getElementById('draftText');
+  if (!instruction){
+    micStatus.textContent = 'Type or speak an instruction first.';
+    micStatus.className = 'status err';
+    return;
+  }
+  micStatus.textContent = '';
+  const btn = document.getElementById('generateBtn');
+  btn.disabled = true; btn.textContent = 'Generating…';
+  draftCard.style.display = 'block';
+  draftText.value = 'Generating…';
+  genStatus.textContent = ''; genStatus.className = 'status';
+
+  const payload = {
+    action: 'generateReplyDraft',
+    customerName: selectedCustomer ? selectedCustomer.name : '',
+    instruction,
+    fleetContext: buildFleetContext(),
+    selectedBikes: Array.from(selectedBikes)
+  };
+
+  try {
+    const res = await fetch(scriptUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(payload)
+    }).then(r => r.json());
+    if (!res.success) throw new Error(res.error || 'Unknown error');
+    draftText.value = res.draft;
+    genStatus.textContent = 'Draft ready. Edit if needed, then send.';
+    genStatus.className = 'status ok';
+  } catch (err) {
+    draftText.value = '';
+    genStatus.textContent = 'Could not generate a reply: ' + err.message;
+    genStatus.className = 'status err';
+  } finally {
+    btn.disabled = false; btn.textContent = 'Generate reply';
+  }
+});
+
+document.getElementById('copyDraftBtn').addEventListener('click', () => {
+  const textarea = document.getElementById('draftText');
+  const genStatus = document.getElementById('genStatus');
+  textarea.select();
+  navigator.clipboard && navigator.clipboard.writeText ? navigator.clipboard.writeText(textarea.value) : document.execCommand('copy');
+  genStatus.textContent = 'Copied.';
+  genStatus.className = 'status ok';
+});
+
+document.getElementById('sendWaBtn').addEventListener('click', () => {
+  const genStatus = document.getElementById('genStatus');
+  if (!selectedCustomer){
+    genStatus.textContent = 'Pick a customer first.';
+    genStatus.className = 'status err';
+    return;
+  }
+  const waLink = buildWhatsAppLink(selectedCustomer.number);
+  if (!waLink){
+    genStatus.textContent = 'No usable WhatsApp number on file for this customer.';
+    genStatus.className = 'status err';
+    return;
+  }
+  const text = document.getElementById('draftText').value;
+  window.open(waLink + '?text=' + encodeURIComponent(text), '_blank', 'noopener');
+});
+
+// ---------- add customer from screenshot ----------
+const addContactBackdrop = document.getElementById('addContactBackdrop');
+document.getElementById('addContactBtn').addEventListener('click', () => {
+  document.getElementById('contactPhotoInput').value = '';
+  document.getElementById('contactNameInput').value = '';
+  document.getElementById('contactNumberInput').value = '';
+  document.getElementById('contactPhotoStatus').textContent = '';
+  document.getElementById('saveContactStatus').textContent = '';
+  addContactBackdrop.classList.add('show');
+});
+document.getElementById('addContactCloseBtn').addEventListener('click', () => addContactBackdrop.classList.remove('show'));
+let addContactMouseDownOnBackdrop = false;
+addContactBackdrop.addEventListener('mousedown', (e) => { addContactMouseDownOnBackdrop = (e.target === addContactBackdrop); });
+addContactBackdrop.addEventListener('click', (e) => {
+  if (e.target === addContactBackdrop && addContactMouseDownOnBackdrop) addContactBackdrop.classList.remove('show');
+  addContactMouseDownOnBackdrop = false;
+});
+
+document.getElementById('contactPhotoInput').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  const statusEl = document.getElementById('contactPhotoStatus');
+  if (!file) return;
+  statusEl.textContent = 'Reading screenshot…';
+  statusEl.className = 'status';
+  try {
+    const base64 = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result.split(',')[1]);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+    const res = await fetch(scriptUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ action: 'readWhatsAppContactWithAI', imageBase64: base64, imageMimeType: file.type || 'image/jpeg' })
+    }).then(r => r.json());
+    if (!res.success) throw new Error(res.error || 'Could not read the screenshot');
+    document.getElementById('contactNameInput').value = res.fields.chatName || '';
+    document.getElementById('contactNumberInput').value = res.fields.number || '';
+    statusEl.textContent = 'Read successfully -- review before saving.';
+    statusEl.className = 'status ok';
+  } catch (err) {
+    statusEl.textContent = 'Could not read the screenshot: ' + err.message;
+    statusEl.className = 'status err';
+  }
+});
+
+document.getElementById('saveContactBtn').addEventListener('click', async () => {
+  const name = document.getElementById('contactNameInput').value.trim();
+  const number = document.getElementById('contactNumberInput').value.trim();
+  const statusEl = document.getElementById('saveContactStatus');
+  if (!name){
+    statusEl.textContent = 'Enter a name.';
+    statusEl.className = 'status err';
+    return;
+  }
+  statusEl.textContent = 'Saving…'; statusEl.className = 'status';
+  try {
+    const res = await fetch(scriptUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ action: 'addContact', name, number })
+    }).then(r => r.json());
+    if (!res.success) throw new Error(res.error || 'Could not save');
+    statusEl.textContent = 'Saved.';
+    statusEl.className = 'status ok';
+    await loadCustomers();
+    setTimeout(() => addContactBackdrop.classList.remove('show'), 700);
+  } catch (err) {
+    statusEl.textContent = 'Could not save: ' + err.message;
+    statusEl.className = 'status err';
+  }
+});
+
+loadCustomers();
+loadBikes();
+</script>
+
+</body>
+</html>

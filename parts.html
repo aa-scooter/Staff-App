@@ -1,0 +1,1547 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Parts &amp; Oil — Bike Record</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="nav.js" defer></script>
+<style>
+  :root{
+    --sand:#F5EFE6;
+    --ink:#1A2421;
+    --petrol:#0F3D3E;
+    --petrol-light:#175A5B;
+    --cone:#FF6B35;
+    --card:#FFFFFF;
+    --line:#DED4C2;
+    --ok:#2F855A;
+    --err:#C53030;
+    --muted:#5A6663;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;
+    background:var(--sand);
+    color:var(--ink);
+    font-family:'Inter',sans-serif;
+    min-height:100vh;
+  }
+  .page-head{
+    max-width:520px; margin:0 auto; padding:22px 16px 4px;
+  }
+  .page-head h1{
+    font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:26px;
+    color:var(--petrol); margin:0;
+  }
+  .page-head .sub{ color:var(--muted); font-size:13px; margin-top:6px; }
+  main{ max-width:520px; margin:0 auto; padding:20px 16px 60px; }
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:14px;
+    padding:20px; margin-bottom:16px;
+  }
+  .card h2{
+    font-family:'Barlow Condensed',sans-serif; font-size:15px; font-weight:600;
+    letter-spacing:.08em; text-transform:uppercase; color:var(--petrol);
+    margin:0 0 14px; display:flex; align-items:center; gap:8px;
+  }
+  .card h2::before{
+    content:""; width:7px; height:7px; border-radius:50%;
+    background:var(--cone); display:inline-block;
+  }
+  label{ display:block; font-size:12.5px; font-weight:500; color:#5A6663; margin:14px 0 5px; }
+  label:first-of-type{ margin-top:0; }
+  input, select, textarea{
+    width:100%; padding:11px 12px; border:1px solid var(--line); border-radius:9px;
+    font-size:15px; font-family:'Inter',sans-serif; background:#FBFAF7; color:var(--ink);
+    transition:border-color .15s;
+  }
+  textarea{ min-height:110px; resize:vertical; line-height:1.5; }
+  input:focus, select:focus, textarea:focus{ outline:none; border-color:var(--petrol-light); background:#fff; }
+  button{
+    width:100%; padding:15px; border:none; border-radius:10px; background:var(--cone);
+    color:#fff; font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:17px;
+    letter-spacing:.04em; text-transform:uppercase; cursor:pointer; margin-top:20px;
+    transition:transform .1s, background .15s;
+  }
+  button:active{ transform:scale(.98); }
+  button:disabled{ background:#C9B9A8; cursor:not-allowed; }
+  .status{
+    margin-top:12px; font-size:13.5px; padding:10px 12px; border-radius:8px; display:none;
+  }
+  .status.ok{ display:block; background:#E8F5EE; color:var(--ok); border:1px solid #BEE3CE; }
+  .status.err{ display:block; background:#FCEBEB; color:var(--err); border:1px solid #F3C6C6; }
+  .status.progress{ display:flex; align-items:center; gap:9px; background:#EAF2FB; color:#2A5A8C; border:1px solid #BBD6F0; }
+  .status-spinner{
+    width:14px; height:14px; border:2px solid #BBD6F0; border-top-color:#2A5A8C;
+    border-radius:50%; flex-shrink:0; animation: status-spin 0.7s linear infinite;
+  }
+  @keyframes status-spin{ to{ transform:rotate(360deg); } }
+  .field{ position:relative; }
+  .ac-list{
+    position:absolute; left:0; right:0; top:100%;
+    background:#fff; border:1px solid var(--line); border-top:none;
+    border-radius:0 0 9px 9px; max-height:260px; overflow-y:auto;
+    z-index:20; display:none; box-shadow:0 8px 18px rgba(15,61,62,.1);
+  }
+  .ac-list.show{ display:block; }
+  .ac-item{ padding:10px 12px; font-size:14px; cursor:pointer; border-bottom:1px solid #F0EBE0; }
+  .ac-item:last-child{ border-bottom:none; }
+  .ac-item:hover, .ac-item.hi{ background:#F5EFE6; }
+  .ac-item mark{ background:#FFE3D2; color:var(--ink); border-radius:2px; }
+  .load-status{
+    font-size:12px; color:#B36A2E; background:#FFF3E6; border:1px solid #F3D9B8;
+    border-radius:7px; padding:7px 10px; margin:-4px 0 12px; display:none;
+  }
+  .load-status.show{ display:block; }
+  .selected-bike{
+    display:flex; align-items:center; justify-content:space-between; gap:10px;
+    background:var(--petrol); color:#fff; border-radius:12px; padding:14px 16px;
+    margin-bottom:16px;
+  }
+  .selected-bike .name{
+    font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:18px;
+  }
+  .selected-bike button.change-btn{
+    width:auto; margin:0; padding:8px 12px; background:rgba(255,255,255,.15);
+    font-size:12px; letter-spacing:.04em;
+  }
+  .hidden{ display:none; }
+  .empty-hint{ font-size:13px; color:#8A948F; padding:14px 2px; text-align:center; }
+  .save-bar{
+    position:sticky; bottom:0; margin-top:4px;
+  }
+
+  .show-more-btn{
+    background:#fff; color:var(--petrol); border:1px solid var(--line);
+    font-size:14.5px; letter-spacing:.06em; padding:13px;
+    margin:0 0 16px;
+  }
+  .show-more-btn:active{ transform:scale(.99); }
+
+  .field-with-action{ display:flex; align-items:center; gap:8px; }
+  .field-with-action input{ flex:1; }
+  /* "Next oil change" field, shrunk to half width, plus the "Change Oil"
+     button next to it -- more specific than ".field-with-action input"
+     above so this wins without needing !important. */
+  .field-with-action .next-oil-input{ flex:0 0 50%; }
+  .change-oil-btn{
+    flex:1; width:auto; margin-top:0; padding:11px 10px;
+    font-size:13px; letter-spacing:.03em; white-space:nowrap;
+  }
+  .change-oil-btn:active{ transform:scale(.98); }
+  .oil-type-option{
+    display:flex; align-items:center; gap:10px; font-size:14.5px; font-weight:500;
+    color:var(--ink); border:1px solid var(--line); border-radius:9px;
+    padding:11px 12px; cursor:pointer;
+  }
+  .oil-type-option input[type="radio"]{ width:auto; flex:0 0 auto; }
+  .camera-btn{
+    flex-shrink:0; width:44px; height:44px; border-radius:9px;
+    border:1px solid var(--line); background:#FBFAF7; cursor:pointer;
+    font-size:19px; display:flex; align-items:center; justify-content:center;
+    padding:0; margin-top:0;
+  }
+  .camera-btn:active{ transform:scale(.96); }
+
+  .modal-overlay{
+    position:fixed; inset:0; background:rgba(15,36,33,.55); z-index:1000;
+    display:none; align-items:flex-end; justify-content:center;
+  }
+  .modal-overlay.show{ display:flex; }
+  .modal-card{
+    background:var(--card); width:100%; max-width:520px; border-radius:18px 18px 0 0;
+    padding:20px; max-height:92vh; overflow-y:auto;
+  }
+  @media (min-width:560px){
+    .modal-overlay{ align-items:center; }
+    .modal-card{ border-radius:18px; }
+  }
+  .modal-card h3{
+    font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:19px;
+    color:var(--petrol); margin:0 0 12px;
+  }
+  .modal-preview{
+    width:100%; max-height:240px; object-fit:contain; border-radius:10px;
+    border:1px solid var(--line); background:#000; margin-bottom:14px; display:block;
+  }
+  .ocr-status{
+    font-size:12.5px; color:var(--muted); margin:-6px 0 14px; display:flex; align-items:center; gap:6px;
+  }
+  .spinner{
+    width:13px; height:13px; border:2px solid var(--line); border-top-color:var(--cone);
+    border-radius:50%; animation:spin .7s linear infinite; flex-shrink:0;
+  }
+  @keyframes spin{ to{ transform:rotate(360deg); } }
+  .modal-actions{ display:flex; gap:10px; margin-top:18px; }
+  .modal-actions button{ margin-top:0; }
+  .modal-actions .cancel-btn{ background:#EFEAE0; color:var(--ink); }
+
+  .crop-hint{ font-size:12px; color:var(--muted); margin:-6px 0 12px; line-height:1.4; }
+  .crop-stage{
+    position:relative; width:100%; height:340px; background:#000;
+    border-radius:10px; border:1px solid var(--line); overflow:hidden;
+    display:flex; align-items:center; justify-content:center;
+  }
+  .crop-stage img{
+    max-width:100%; max-height:100%; display:block;
+    pointer-events:none; user-select:none; -webkit-user-drag:none;
+  }
+  .crop-box{
+    position:absolute; border:2px solid var(--cone);
+    box-shadow:0 0 0 2000px rgba(0,0,0,.5);
+    touch-action:none; cursor:move;
+  }
+  .crop-handle{
+    position:absolute; right:-12px; bottom:-12px; width:24px; height:24px;
+    border-radius:50%; background:var(--cone); border:2px solid #fff;
+    touch-action:none; box-shadow:0 1px 4px rgba(0,0,0,.3);
+  }
+</style>
+</head>
+<body>
+
+<div id="topbar-mount"></div>
+
+<div class="page-head">
+  <h1>Parts &amp; Oil</h1>
+  <div class="sub">Search a bike, then edit its record straight from the "Parts and Oil change" tab</div>
+</div>
+
+<main>
+
+  <div id="searchCard" class="card">
+    <h2>Find a bike</h2>
+    <div class="load-status" id="loadStatus">Loading bikes…</div>
+    <label for="bikeSearch">Bike</label>
+    <div class="field">
+      <input id="bikeSearch" autocomplete="off" placeholder="Start typing a bike name…">
+      <div class="ac-list" id="acList"></div>
+    </div>
+  </div>
+
+  <div id="editSection" class="hidden">
+    <div class="selected-bike">
+      <div class="name" id="selectedBikeName"></div>
+      <button type="button" class="change-btn" id="changeBikeBtn">Change bike</button>
+    </div>
+
+    <div class="card" id="kmCard">
+      <h2>Kilometers check</h2>
+      <div id="kmFieldsBox"></div>
+      <button type="button" id="kmSaveBtn">Update kilometers</button>
+      <div class="status" id="kmStatusBox"></div>
+    </div>
+
+    <button type="button" class="show-more-btn" id="showMoreBtn">Show more ▾</button>
+
+    <div id="moreSection" class="hidden">
+      <div class="card">
+        <h2>Record</h2>
+        <div id="fieldsBox"></div>
+        <div class="save-bar">
+          <button type="button" id="saveBtn">Save changes</button>
+          <div class="status" id="statusBox"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</main>
+
+<input type="file" id="cameraInput" accept="image/*" capture="environment" style="display:none">
+<input type="file" id="libraryInput" accept="image/*" style="display:none">
+
+<div class="modal-overlay" id="sourceModal">
+  <div class="modal-card">
+    <h3>Speedometer reading</h3>
+    <div class="modal-actions" style="flex-direction:column;">
+      <button type="button" id="chooseCameraBtn">📷 Take a photo</button>
+      <button type="button" id="chooseLibraryBtn">🖼️ Upload a photo</button>
+      <button type="button" class="cancel-btn" id="chooseCancelBtn">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="cropModal">
+  <div class="modal-card">
+    <h3>Crop to the number</h3>
+    <div class="crop-hint">Drag the box over just the odometer digits, then confirm. Tight, straight-on, glare-free crops read best — drag the orange corner to resize.</div>
+    <div class="crop-stage" id="cropStage">
+      <img id="cropImage" alt="Photo to crop">
+      <div class="crop-box" id="cropBox">
+        <div class="crop-handle" id="cropHandle"></div>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button type="button" class="cancel-btn" id="cropSkipBtn">Use full photo</button>
+      <button type="button" id="cropConfirmBtn">Use this crop</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="odoModal">
+  <div class="modal-card">
+    <h3>Speedometer reading</h3>
+    <img id="odoPreview" class="modal-preview" alt="Speedometer photo">
+    <div class="ocr-status" id="ocrStatus"><div class="spinner"></div> Reading number from photo…</div>
+    <label for="odoKmInput">Last kilometers check</label>
+    <input id="odoKmInput" inputmode="numeric" placeholder="e.g. 24350">
+    <label for="odoDateInput">Date checked</label>
+    <input type="date" id="odoDateInput">
+    <div class="modal-actions">
+      <button type="button" class="cancel-btn" id="odoCancelBtn">Cancel</button>
+      <button type="button" id="odoConfirmBtn">Confirm &amp; save</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="kmWarningModal">
+  <div class="modal-card">
+    <h3>Double-check this reading</h3>
+    <div id="kmWarningMsg" style="font-size:14px; color:var(--ink); line-height:1.6; margin-bottom:4px;"></div>
+    <div class="modal-actions">
+      <button type="button" class="cancel-btn" id="kmWarningCancelBtn">Cancel</button>
+      <button type="button" id="kmWarningConfirmBtn">Yes, this is correct</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="changeOilConfirmModal">
+  <div class="modal-card">
+    <h3>Before you continue</h3>
+    <div style="font-size:14px; color:var(--ink); line-height:1.6; margin-bottom:4px;">
+      Please confirm you have updated the <b>Last kilometers check</b> to the current kilometers of the bike.
+    </div>
+    <div class="modal-actions">
+      <button type="button" class="cancel-btn" id="changeOilConfirmNoBtn">No</button>
+      <button type="button" id="changeOilConfirmYesBtn">Yes</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="changeOilTypeModal">
+  <div class="modal-card">
+    <h3>Oil type used</h3>
+    <div class="crop-hint">Pick the oil type used for this change — this decides how many extra kilometers get added on top of the last kilometers check to work out the next oil change.</div>
+    <div id="oilTypeOptions" style="display:flex; flex-direction:column; gap:10px; margin-bottom:4px;"></div>
+    <div class="modal-actions">
+      <button type="button" class="cancel-btn" id="changeOilTypeCancelBtn">Cancel</button>
+      <button type="button" id="changeOilTypeConfirmBtn">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// Same Apps Script web app as the Customer Record page — it now also
+// serves/updates the "Parts and Oil change" tab via the `action` field.
+const scriptUrl = ''; // DISCONNECTED: this Vercel copy is intentionally not wired to the live backend (dev/testing only, see project CLAUDE.md)
+
+let partsData = null;     // { headers: [...], rows: [...] }
+let keyHeader = null;     // the header used as the unique bike identifier (first column)
+let rowsPromise = null;
+let currentRow = null;    // the row object currently loaded into the edit form
+let kmHeaderName = null;  // actual sheet header for the km-reading field, for the current bike
+let dateHeaderName = null;// actual sheet header for the plain "Date" field, for the current bike
+let nextOilHeaderName = null; // actual sheet header for "Next oil change", for the current bike
+let oilChangeHeaderName = null; // actual sheet header for the "Oil change" date field, for the current bike
+
+function setLoadStatus(msg) {
+  const el = document.getElementById('loadStatus');
+  if (!msg) { el.classList.remove('show'); return; }
+  el.textContent = msg;
+  el.classList.add('show');
+}
+
+function loadParts() {
+  if (rowsPromise) return rowsPromise;
+  setLoadStatus('Loading bikes…');
+  rowsPromise = fetch(scriptUrl + '?action=parts')
+    .then(res => res.json())
+    .then(data => {
+      if (!data.success) throw new Error(data.error || 'Could not load data');
+      partsData = data;
+      keyHeader = data.headers[0];
+      setLoadStatus(null);
+      return partsData;
+    })
+    .catch(err => {
+      setLoadStatus('Could not load bikes: ' + err.message + ' — tap the field again to retry.');
+      rowsPromise = null;
+      return null;
+    });
+  return rowsPromise;
+}
+
+loadParts();
+
+// If we arrived from the Oil Change list with ?bike=NAME, jump straight
+// into that bike's edit form once the data is ready.
+const urlBike = new URLSearchParams(window.location.search).get('bike');
+if (urlBike) {
+  loadParts().then(() => {
+    if (partsData) selectBike(urlBike);
+  });
+}
+
+// ---------------- Autocomplete on bike name ----------------
+
+function tokenMatch(value, query) {
+  if (!query) return true;
+  const v = (value || '').toString().toLowerCase();
+  const tokens = query.toLowerCase().trim().split(/\s+/).filter(Boolean);
+  return tokens.every(t => v.includes(t));
+}
+
+function highlight(value, query) {
+  let out = String(value || '');
+  const tokens = query.toLowerCase().trim().split(/\s+/).filter(Boolean);
+  tokens.forEach(t => {
+    if (!t) return;
+    const re = new RegExp('(' + t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'ig');
+    out = out.replace(re, '<mark>$1</mark>');
+  });
+  return out;
+}
+
+const bikeInput = document.getElementById('bikeSearch');
+const acList = document.getElementById('acList');
+let hiIndex = -1;
+
+function closeList() {
+  acList.classList.remove('show');
+  acList.innerHTML = '';
+  hiIndex = -1;
+}
+
+function openList(query) {
+  if (!partsData) return;
+  const options = partsData.rows
+    .map(r => r[keyHeader])
+    .filter(v => tokenMatch(v, query))
+    .slice(0, 10);
+  if (options.length === 0) { closeList(); return; }
+  acList.innerHTML = options.map((v, i) =>
+    `<div class="ac-item" data-index="${i}">${highlight(v, query)}</div>`
+  ).join('');
+  acList.classList.add('show');
+  hiIndex = -1;
+  Array.from(acList.children).forEach((el, i) => {
+    el.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      selectBike(options[i]);
+    });
+  });
+  acList._options = options;
+}
+
+bikeInput.addEventListener('input', () => {
+  loadParts().then(() => openList(bikeInput.value.trim()));
+});
+bikeInput.addEventListener('focus', () => {
+  if (partsData) openList(bikeInput.value.trim());
+});
+bikeInput.addEventListener('keydown', (e) => {
+  const items = Array.from(acList.children);
+  if (!items.length) return;
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    hiIndex = Math.min(hiIndex + 1, items.length - 1);
+    items.forEach((el, i) => el.classList.toggle('hi', i === hiIndex));
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    hiIndex = Math.max(hiIndex - 1, 0);
+    items.forEach((el, i) => el.classList.toggle('hi', i === hiIndex));
+  } else if (e.key === 'Enter' && hiIndex >= 0) {
+    e.preventDefault();
+    selectBike(acList._options[hiIndex]);
+  } else if (e.key === 'Escape') {
+    closeList();
+  }
+});
+document.addEventListener('click', (e) => {
+  if (!bikeInput.contains(e.target) && !acList.contains(e.target)) closeList();
+});
+
+// ---------------- Selecting a bike / rendering the edit form ----------------
+
+function fieldIdFor(header, i) {
+  return 'f_' + i + '_' + header.replace(/[^a-z0-9]/gi, '_');
+}
+
+// The sheet stores dates as dd/mm/yyyy text. Native <input type="date">
+// needs yyyy-mm-dd, so convert both ways for the "date" column.
+function ddmmyyyyToInputValue(str) {
+  if (!str) return '';
+  const parts = str.toString().trim().split('/');
+  if (parts.length !== 3) return '';
+  let [d, m, y] = parts;
+  d = d.padStart(2, '0');
+  m = m.padStart(2, '0');
+  if (y.length === 2) y = '20' + y;
+  if (!/^\d{4}$/.test(y) || !/^\d{2}$/.test(m) || !/^\d{2}$/.test(d)) return '';
+  return y + '-' + m + '-' + d;
+}
+function inputValueToDdMmYyyy(val) {
+  if (!val) return '';
+  const parts = val.split('-'); // yyyy-mm-dd
+  if (parts.length !== 3) return '';
+  return parts[2] + '/' + parts[1] + '/' + parts[0];
+}
+
+// Converts the sheet's "dd/mm/yyyy" text into the yyyy-mm-dd format
+// <input type="date"> requires. Returns '' if it can't be parsed
+// (the picker just opens empty rather than losing the original text).
+function ddmmyyyyToInputValue(str) {
+  if (!str) return '';
+  const parts = str.trim().split('/');
+  if (parts.length !== 3) return '';
+  let [d, m, y] = parts;
+  d = d.padStart(2, '0');
+  m = m.padStart(2, '0');
+  if (y.length === 2) y = '20' + y;
+  if (!/^\d{2}$/.test(d) || !/^\d{2}$/.test(m) || !/^\d{4}$/.test(y)) return '';
+  return `${y}-${m}-${d}`;
+}
+
+// Converts back from yyyy-mm-dd (what the date input gives us) to the
+// sheet's usual dd/mm/yyyy text.
+function inputValueToDdMmYyyy(val) {
+  if (!val) return '';
+  const parts = val.split('-');
+  if (parts.length !== 3) return '';
+  const [y, m, d] = parts;
+  return `${d}/${m}/${y}`;
+}
+
+// Everything after the "horn switch" column gets collapsed into a single
+// "Notes" box instead of one field per column. Returns the header-array
+// index of "horn switch" itself, or -1 if that column isn't present.
+function findNotesGroupStart(headers) {
+  return headers.findIndex(h => h.trim().toLowerCase() === 'horn switch');
+}
+
+// Matches whichever name the "km reading" column currently has in the
+// sheet — old name or the renamed one — so this keeps working whether or
+// not the header cell has been renamed yet.
+function normalizeHeaderText(h) {
+  return (h || '').toString().trim().toLowerCase().replace(/\s+/g, ' ');
+}
+const KM_CHECK_HEADER_NAMES = ['last kilometers check', 'last km check', 'last oil check'];
+function findKmCheckHeader(headers) {
+  for (const name of KM_CHECK_HEADER_NAMES) {
+    const match = headers.find(h => normalizeHeaderText(h) === name);
+    if (match) return match;
+  }
+  return null;
+}
+function findExactDateHeader(headers) {
+  return headers.find(h => normalizeHeaderText(h) === 'date') || null;
+}
+function findNextOilHeader(headers) {
+  return headers.find(h => normalizeHeaderText(h) === 'next oil change') || null;
+}
+function findOilChangeHeader(headers) {
+  return headers.find(h => normalizeHeaderText(h) === 'oil change') || null;
+}
+// The old manually-typed "Days since last oil change" column -- being
+// replaced by an auto-calculated, read-only line under "Oil change" (see
+// refreshDaysSinceOilLine), so this column is hidden from the form
+// entirely rather than rendered as an editable box.
+function findDaysSinceOilHeader(headers) {
+  const exactNames = ['days since last oil change', 'days since oil change', 'days since last oil check'];
+  for (const name of exactNames) {
+    const match = headers.find(h => normalizeHeaderText(h) === name);
+    if (match) return match;
+  }
+  // Loose fallback for slightly different wording in the sheet header --
+  // any header mentioning both "days" and "oil".
+  return headers.find(h => {
+    const n = normalizeHeaderText(h);
+    return n.indexOf('days') !== -1 && n.indexOf('oil') !== -1;
+  }) || null;
+}
+
+// The new "Last mechanic check" column sits right before "Notes" (after
+// "horn switch"), so without this it would just get swept into the
+// combined Notes textarea as plain text. Give it its own date-picker
+// field instead, like the other date columns.
+function findMechanicCheckHeader(headers) {
+  const exactNames = ['last mechanic check', 'last mechanics check', 'mechanic check', 'mechanics check'];
+  for (const name of exactNames) {
+    const match = headers.find(h => normalizeHeaderText(h) === name);
+    if (match) return match;
+  }
+  // Loose fallback so small typos/rewording in the sheet header (wrong
+  // case, "mechanics" vs "mechanic", extra/missing words) still match --
+  // any header containing both "mechanic(s)" and "check".
+  return headers.find(h => {
+    const n = normalizeHeaderText(h);
+    return n.indexOf('mechanic') !== -1 && n.indexOf('check') !== -1;
+  }) || null;
+}
+
+// Strips stray characters (commas, "km", etc.) before parsing a field's
+// text as a number. Same helper as oilchange.html's parseNum.
+function parseNum(v) {
+  if (v === undefined || v === null) return NaN;
+  const cleaned = v.toString().replace(/[^0-9.\-]/g, '');
+  if (cleaned === '' || cleaned === '-') return NaN;
+  return parseFloat(cleaned);
+}
+
+// Days between a native <input type="date"> value (yyyy-mm-dd) and today.
+// Returns NaN if the value is empty/unparseable.
+function daysSinceIso(iso) {
+  if (!iso) return NaN;
+  const parts = iso.split('-');
+  if (parts.length !== 3) return NaN;
+  const d = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10));
+  if (isNaN(d.getTime())) return NaN;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  d.setHours(0, 0, 0, 0);
+  return Math.round((today - d) / (1000 * 60 * 60 * 24));
+}
+
+// Read-only "X days since last oil change" line under the "Oil change"
+// date field -- recomputed live, never typed in directly.
+function refreshDaysSinceOilLine() {
+  const el = document.getElementById('daysSinceOilLine');
+  if (!el) return;
+  const oilInput = oilChangeHeaderName
+    ? document.querySelector('#editSection [data-header="' + CSS.escape(oilChangeHeaderName) + '"]')
+    : null;
+  const days = oilInput ? daysSinceIso(oilInput.value) : NaN;
+  el.textContent = isNaN(days) ? '' : (days.toLocaleString('en-US') + (days === 1 ? ' day' : ' days') + ' since last oil change');
+}
+
+// Read-only "Next oil change in X km" line under "Next oil change" --
+// Next Oil Change minus Last Kilometers Check, recomputed live.
+function refreshKmRemainingLine() {
+  const el = document.getElementById('kmRemainingLine');
+  if (!el) return;
+  const kmInput = kmHeaderName
+    ? document.querySelector('#editSection [data-header="' + CSS.escape(kmHeaderName) + '"]')
+    : null;
+  const nextOilInput = nextOilHeaderName
+    ? document.querySelector('#editSection [data-header="' + CSS.escape(nextOilHeaderName) + '"]')
+    : null;
+  const kmVal = kmInput ? parseNum(kmInput.value) : NaN;
+  const nextOilVal = nextOilInput ? parseNum(nextOilInput.value) : NaN;
+  if (isNaN(kmVal) || isNaN(nextOilVal)) { el.textContent = ''; return; }
+  const remaining = nextOilVal - kmVal;
+  el.textContent = 'Next oil change in ' + remaining.toLocaleString('en-US') + ' km';
+}
+
+function selectBike(bikeName) {
+  const row = partsData.rows.find(r => r[keyHeader] === bikeName);
+  if (!row) return;
+  currentRow = row;
+  closeList();
+  bikeInput.value = '';
+
+  document.getElementById('selectedBikeName').textContent = bikeName;
+  document.getElementById('searchCard').classList.add('hidden');
+  document.getElementById('editSection').classList.remove('hidden');
+
+  const box = document.getElementById('fieldsBox');
+  box.innerHTML = '';
+  const kmBox = document.getElementById('kmFieldsBox');
+  kmBox.innerHTML = '';
+
+  const headers = partsData.headers;
+  const notesStart = findNotesGroupStart(headers); // index of "horn switch", or -1
+  // Fields up through and including "horn switch" render individually;
+  // anything after that is folded into one combined Notes box.
+  const individualEnd = notesStart === -1 ? headers.length : notesStart + 1;
+
+  const kmHeaderActual = findKmCheckHeader(headers);
+  const dateHeaderActual = findExactDateHeader(headers);
+  const mechanicHeaderActual = findMechanicCheckHeader(headers);
+  const nextOilHeaderActual = findNextOilHeader(headers);
+  const oilChangeHeaderActual = findOilChangeHeader(headers);
+  const daysSinceOilHeaderActual = findDaysSinceOilHeader(headers);
+  kmHeaderName = kmHeaderActual;
+  dateHeaderName = dateHeaderActual;
+  nextOilHeaderName = nextOilHeaderActual;
+  oilChangeHeaderName = oilChangeHeaderActual;
+
+  headers.forEach((header, i) => {
+    if (i === 0) return; // skip the bike-name column itself — that's the key, shown above
+    // "Status" is legacy here -- the Operation tab is the accurate source
+    // for it now (see oilchange.html's findOperationStatus) -- and "Days
+    // since last oil change" used to be a manually-typed number; it's now
+    // the auto-calculated read-only line under "Oil change" instead. Both
+    // are hidden from this form rather than rendered as editable fields.
+    if (header.trim().toLowerCase() === 'status') return;
+    if (daysSinceOilHeaderActual && header === daysSinceOilHeaderActual) return;
+    // Redundant leftover column (an empty, unlabeled field showing up as
+    // "Column I" / "Column L") -- no longer needed, so it's hidden here too.
+    if (['column i', 'column l'].includes(header.trim().toLowerCase())) return;
+    const isMechanicField = mechanicHeaderActual && header === mechanicHeaderActual;
+    if (i >= individualEnd && !isMechanicField) return; // handled by the Notes box below
+    const value = row[header] || '';
+    const id = fieldIdFor(header, i);
+    // The km reading and its check date get their own quick-update card at
+    // the top — that's the pair updated most often, day to day.
+    const isQuickField = (header === kmHeaderActual) || (header === dateHeaderActual);
+    const wrap = document.createElement('div');
+
+    const label = document.createElement('label');
+    label.setAttribute('for', id);
+    // The sheet column itself can stay named "Last oil check" — the GUI
+    // always shows the clearer "Last kilometers check" for this field.
+    if (header === kmHeaderActual) label.textContent = 'Last kilometers check';
+    else if (header === dateHeaderActual) label.textContent = 'Date checked';
+    else if (isMechanicField) label.textContent = 'Last mechanic check';
+    else label.textContent = header;
+    wrap.appendChild(label);
+
+    if (isMechanicField) {
+      const input = document.createElement('input');
+      input.type = 'date';
+      input.id = id;
+      input.dataset.header = header;
+      input.dataset.isDate = 'true';
+      input.value = ddmmyyyyToInputValue(value);
+      wrap.appendChild(input);
+    } else if (['date', 'oil change'].includes(header.trim().toLowerCase())) {
+      const input = document.createElement('input');
+      input.type = 'date';
+      input.id = id;
+      input.dataset.header = header;
+      input.dataset.isDate = 'true';
+      input.value = ddmmyyyyToInputValue(value);
+      wrap.appendChild(input);
+
+      if (header.trim().toLowerCase() === 'oil change') {
+        // Read-only, auto-calculated lines grouped right under this date --
+        // "X days since last oil change" and "Next oil change in X km".
+        // Neither is ever typed in directly; both replace what used to be
+        // a manually-entered "Days since last oil change" box. Styled like
+        // the shared red date-in-words label so they read as one group
+        // with the date above them, with extra space below before the
+        // Next Oil Change field that follows.
+        const daysSinceLine = document.createElement('div');
+        daysSinceLine.id = 'daysSinceOilLine';
+        daysSinceLine.style.cssText = 'font-size:12.5px; font-weight:700; color:#C62828; margin-top:3px; line-height:1.4;';
+        wrap.appendChild(daysSinceLine);
+        input.addEventListener('input', refreshDaysSinceOilLine);
+        input.addEventListener('change', refreshDaysSinceOilLine);
+
+        const kmRemainingLine = document.createElement('div');
+        kmRemainingLine.id = 'kmRemainingLine';
+        kmRemainingLine.style.cssText = 'font-size:12.5px; font-weight:700; color:#C62828; margin-top:1px; margin-bottom:18px; line-height:1.4;';
+        wrap.appendChild(kmRemainingLine);
+      }
+    } else {
+      const input = document.createElement('input');
+      input.id = id;
+      input.dataset.header = header;
+      input.value = value;
+      input.autocomplete = 'off';
+
+      if (header === kmHeaderActual) {
+        // Camera-read button disabled for now -- the AI-assisted odometer
+        // reading (readOdometerWithAI in Code.gs / proceedToOdoModal
+        // below) wasn't reading reliably enough yet. Code kept in place,
+        // just not wired into the page, in case this gets revisited.
+        // To bring the button back, uncomment this block and swap the
+        // wrap.appendChild(input) two lines down for wrap.appendChild(fieldRow).
+        //
+        // const fieldRow = document.createElement('div');
+        // fieldRow.className = 'field-with-action';
+        // fieldRow.appendChild(input);
+        //
+        // const camBtn = document.createElement('button');
+        // camBtn.type = 'button';
+        // camBtn.className = 'camera-btn';
+        // camBtn.title = 'Take a photo of the speedometer';
+        // camBtn.textContent = '📷';
+        // camBtn.addEventListener('click', () => openCameraFor(id));
+        // fieldRow.appendChild(camBtn);
+        //
+        wrap.appendChild(input);
+
+        // Editing the km reading by hand means a fresh check just happened
+        // -- auto-set the "Date checked" field (right below this one) to
+        // today so staff don't also have to update that field themselves.
+        // Only wired up if this sheet actually has a date column.
+        if (dateHeaderActual) {
+          input.addEventListener('input', () => {
+            const dateInput = document.querySelector('#editSection [data-header="' + CSS.escape(dateHeaderActual) + '"]');
+            if (dateInput) {
+              dateInput.value = todayInputValue();
+              // Let the shared date-in-words label (and anything else
+              // listening) know the value changed programmatically.
+              dateInput.dispatchEvent(new Event('input', { bubbles: true }));
+              dateInput.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+          });
+        }
+        // The "Next oil change in X km" line depends on this value too.
+        input.addEventListener('input', refreshKmRemainingLine);
+      } else if (header === nextOilHeaderActual) {
+        // Shrunk to half width, with a "Change Oil" button next to it that
+        // walks through the confirm -> oil type -> auto-calculated km flow
+        // (see openChangeOilFlow below). Stays manually typable too, in
+        // case a number ever needs correcting by hand.
+        input.classList.add('next-oil-input');
+
+        const fieldRow = document.createElement('div');
+        fieldRow.className = 'field-with-action';
+        fieldRow.appendChild(input);
+
+        const changeOilBtn = document.createElement('button');
+        changeOilBtn.type = 'button';
+        changeOilBtn.className = 'change-oil-btn';
+        changeOilBtn.textContent = 'Change Oil';
+        changeOilBtn.addEventListener('click', () => openChangeOilFlow(input, changeOilBtn));
+        fieldRow.appendChild(changeOilBtn);
+
+        wrap.appendChild(fieldRow);
+
+        // The "Next oil change in X km" read-out lives up under the Oil
+        // change date field now (grouped with "days since"), but it still
+        // depends on this value -- keep recalculating it live when this
+        // field is edited by hand.
+        input.addEventListener('input', refreshKmRemainingLine);
+      } else {
+        wrap.appendChild(input);
+      }
+    }
+
+    (isQuickField ? kmBox : box).appendChild(wrap);
+  });
+
+  // If the sheet is missing the km/date columns, fall back to the full form.
+  const kmCard = document.getElementById('kmCard');
+  const showMoreBtn = document.getElementById('showMoreBtn');
+  const moreSection = document.getElementById('moreSection');
+  if (kmBox.children.length) {
+    kmCard.classList.remove('hidden');
+    showMoreBtn.classList.remove('hidden');
+    moreSection.classList.add('hidden'); // collapsed by default on every load
+    showMoreBtn.textContent = 'Show more ▾';
+  } else {
+    kmCard.classList.add('hidden');
+    showMoreBtn.classList.add('hidden');
+    moreSection.classList.remove('hidden');
+  }
+
+  // Combined Notes box for every column after "horn switch" — except
+  // "Last mechanic check", which gets its own date field above instead.
+  if (notesStart !== -1 && individualEnd < headers.length) {
+    const extraHeaders = headers.slice(individualEnd)
+      .filter(h => !(mechanicHeaderActual && h === mechanicHeaderActual));
+    const combinedValue = extraHeaders
+      .map(h => (row[h] || '').toString().trim())
+      .filter(v => v)
+      .join('\n');
+
+    const wrap = document.createElement('div');
+    const label = document.createElement('label');
+    label.setAttribute('for', 'notesField');
+    label.textContent = 'Notes';
+    wrap.appendChild(label);
+
+    const textarea = document.createElement('textarea');
+    textarea.id = 'notesField';
+    textarea.value = combinedValue;
+    textarea.dataset.extraHeaders = JSON.stringify(extraHeaders);
+    wrap.appendChild(textarea);
+
+    box.appendChild(wrap);
+  }
+
+  document.getElementById('statusBox').className = 'status';
+  document.getElementById('kmStatusBox').className = 'status';
+
+  // Populate the two read-only calculated lines right away, rather than
+  // waiting for the user to touch a field first.
+  refreshDaysSinceOilLine();
+  refreshKmRemainingLine();
+}
+
+document.getElementById('showMoreBtn').addEventListener('click', () => {
+  const more = document.getElementById('moreSection');
+  const nowHidden = more.classList.toggle('hidden');
+  document.getElementById('showMoreBtn').textContent = nowHidden ? 'Show more ▾' : 'Show less ▴';
+});
+
+document.getElementById('changeBikeBtn').addEventListener('click', () => {
+  document.getElementById('editSection').classList.add('hidden');
+  document.getElementById('searchCard').classList.remove('hidden');
+  currentRow = null;
+});
+
+// ---------------- Saving ----------------
+
+// Reads every [data-header] input inside the given box into `fields`
+// (converting date inputs back to the sheet's dd/mm/yyyy text).
+function collectFieldsIn(boxId, fields) {
+  document.querySelectorAll('#' + boxId + ' [data-header]').forEach(el => {
+    fields[el.dataset.header] = el.dataset.isDate === 'true'
+      ? inputValueToDdMmYyyy(el.value)
+      : el.value;
+  });
+  return fields;
+}
+
+// ---- Kilometers safety check ----
+// Guards against typos/OCR misreads: if a new "Last kilometers check"
+// value is LESS than the bike's current reading, or 100+ km MORE than it,
+// this flashes a confirmation modal showing the bike, the previous
+// reading, the new one, and the difference, before anything is saved.
+// Returns a Promise resolving true (go ahead and save) or false (user
+// cancelled -- nothing gets saved). Doesn't close on a backdrop click,
+// only the two buttons -- same as this file's other modals (sourceModal/
+// cropModal/odoModal), and appropriate here since this is a deliberate
+// confirm-or-cancel gate rather than an easily-dismissed popup.
+let kmWarningResolve = null;
+function showKmWarning(bikeName, oldKm, newKm) {
+  return new Promise((resolve) => {
+    kmWarningResolve = resolve;
+    const diff = newKm - oldKm;
+    const direction = diff < 0 ? 'less' : 'more';
+    document.getElementById('kmWarningMsg').innerHTML =
+      '<b>' + bikeName + '</b> was last checked at <b>' + oldKm.toLocaleString() + ' km</b>. ' +
+      "You're entering <b>" + newKm.toLocaleString() + ' km</b>, which is <b>' +
+      Math.abs(diff).toLocaleString() + ' km ' + direction + '</b> than the last reading. Are you sure this is correct?';
+    document.getElementById('kmWarningModal').classList.add('show');
+  });
+}
+function resolveKmWarning(result) {
+  document.getElementById('kmWarningModal').classList.remove('show');
+  if (kmWarningResolve) kmWarningResolve(result);
+  kmWarningResolve = null;
+}
+document.getElementById('kmWarningCancelBtn').addEventListener('click', () => resolveKmWarning(false));
+document.getElementById('kmWarningConfirmBtn').addEventListener('click', () => resolveKmWarning(true));
+
+// ---- "Change Oil" flow ----
+// Confirm -> pick oil type -> Next oil change = Last kilometers check +
+// that oil type's km interval, saved straight back to the sheet.
+const OIL_TYPES = [
+  { key: 'mineral', label: 'Mineral', addKm: 2000 },
+  { key: 'semi', label: 'Semi-Synthetic', addKm: 3000 },
+  { key: 'full', label: 'Fully Synthetic', addKm: 4000 }
+];
+
+// The "Next oil change" <input> and "Change Oil" <button> for whichever
+// bike is currently loaded -- set when the button is clicked, read again
+// once the oil type is confirmed.
+let changeOilTargetInput = null;
+let changeOilTargetBtn = null;
+
+function openChangeOilFlow(nextOilInputEl, btnEl) {
+  changeOilTargetInput = nextOilInputEl;
+  changeOilTargetBtn = btnEl;
+  document.getElementById('changeOilConfirmModal').classList.add('show');
+}
+
+document.getElementById('changeOilConfirmNoBtn').addEventListener('click', () => {
+  document.getElementById('changeOilConfirmModal').classList.remove('show');
+  changeOilTargetInput = null;
+  changeOilTargetBtn = null;
+});
+
+document.getElementById('changeOilConfirmYesBtn').addEventListener('click', () => {
+  document.getElementById('changeOilConfirmModal').classList.remove('show');
+  renderOilTypeOptions();
+  document.getElementById('changeOilTypeModal').classList.add('show');
+});
+
+function renderOilTypeOptions() {
+  const box = document.getElementById('oilTypeOptions');
+  box.innerHTML = OIL_TYPES.map((t, i) => `
+    <label class="oil-type-option">
+      <input type="radio" name="oilTypeChoice" value="${t.key}" ${i === 0 ? 'checked' : ''}>
+      ${t.label} — additional ${t.addKm.toLocaleString()} km
+    </label>
+  `).join('');
+}
+
+document.getElementById('changeOilTypeCancelBtn').addEventListener('click', () => {
+  document.getElementById('changeOilTypeModal').classList.remove('show');
+  changeOilTargetInput = null;
+  changeOilTargetBtn = null;
+});
+
+document.getElementById('changeOilTypeConfirmBtn').addEventListener('click', async () => {
+  if (!changeOilTargetInput || !nextOilHeaderName) return;
+
+  const checked = document.querySelector('input[name="oilTypeChoice"]:checked');
+  const chosen = OIL_TYPES.find(t => t.key === (checked && checked.value)) || OIL_TYPES[0];
+
+  // Read the CURRENT value straight out of the "Last kilometers check"
+  // input (not the possibly-stale currentRow cache), since the confirm
+  // step just asked staff to have that field already updated.
+  const kmInput = kmHeaderName
+    ? document.querySelector('#editSection [data-header="' + CSS.escape(kmHeaderName) + '"]')
+    : null;
+  const currentKm = kmInput ? Number(kmInput.value.toString().replace(/[^0-9.\-]/g, '')) : NaN;
+
+  if (!kmInput || kmInput.value.trim() === '' || isNaN(currentKm)) {
+    alert('Could not read a valid "Last kilometers check" number for this bike -- enter it first, then try Change Oil again.');
+    return;
+  }
+
+  const newNextOil = currentKm + chosen.addKm;
+  changeOilTargetInput.value = String(newNextOil);
+
+  // An oil change just happened -- also bump the "Oil change" date field to
+  // today, same as editing the km reading auto-updates "Date checked".
+  const todayIso = todayInputValue();
+  const fields = { [nextOilHeaderName]: String(newNextOil) };
+  if (oilChangeHeaderName) {
+    fields[oilChangeHeaderName] = inputValueToDdMmYyyy(todayIso);
+    const oilDateInput = document.querySelector('#editSection [data-header="' + CSS.escape(oilChangeHeaderName) + '"]');
+    if (oilDateInput) {
+      oilDateInput.value = todayIso;
+      oilDateInput.dispatchEvent(new Event('input', { bubbles: true }));
+      oilDateInput.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+  }
+
+  document.getElementById('changeOilTypeModal').classList.remove('show');
+  const btn = changeOilTargetBtn;
+  changeOilTargetInput = null;
+  changeOilTargetBtn = null;
+
+  // Both read-only lines depend on values just set programmatically above
+  // (no real user "input" event fired on the Next Oil Change field itself).
+  refreshDaysSinceOilLine();
+  refreshKmRemainingLine();
+
+  // Save straight away -- same shared save routine the quick km update and
+  // full save use, just scoped to "Next oil change" (+ "Oil change" date).
+  await saveFields(
+    fields,
+    btn,
+    document.getElementById('statusBox'),
+    'Change Oil'
+  );
+});
+
+// Checks the km field (if present in this particular save) against
+// currentRow's existing value. Returns true if it's fine to proceed
+// (no previous value to compare against, or the change is within a
+// normal range), or the user's choice after being shown the warning.
+async function confirmKmChangeIfNeeded(fields) {
+  if (!kmHeaderName || !Object.prototype.hasOwnProperty.call(fields, kmHeaderName)) return true;
+
+  const oldKmRaw = currentRow[kmHeaderName];
+  const newKmRaw = fields[kmHeaderName];
+  const oldKm = Number(oldKmRaw);
+  const newKm = Number(newKmRaw);
+  const oldValid = oldKmRaw !== '' && oldKmRaw !== undefined && oldKmRaw !== null && !isNaN(oldKm);
+  const newValid = newKmRaw !== '' && newKmRaw !== undefined && newKmRaw !== null && !isNaN(newKm);
+  if (!oldValid || !newValid) return true; // nothing to compare against yet
+
+  const diff = newKm - oldKm;
+  if (diff >= 0 && diff < 100) return true; // normal, expected increase
+
+  const bikeName = currentRow[keyHeader] || 'This bike';
+  return showKmWarning(bikeName, oldKm, newKm);
+}
+
+// While a save is in flight, disable every button on the page -- not just
+// the one clicked -- so a double-click (or clicking a different button
+// mid-save) can't fire off a second write. Only re-enables the buttons
+// that were actually enabled before the save started.
+function setAllButtonsDisabled(disabled) {
+  document.querySelectorAll('button').forEach(b => {
+    if (disabled) {
+      if (!b.disabled) b.dataset.reenableAfterSave = '1';
+      b.disabled = true;
+    } else if (b.dataset.reenableAfterSave) {
+      b.disabled = false;
+      delete b.dataset.reenableAfterSave;
+    }
+  });
+}
+
+// Shared POST-and-report routine used by both the quick "Update kilometers"
+// button and the full "Save changes" button — only the set of fields sent
+// and the button/status elements differ.
+async function saveFields(fields, btn, statusBox, idleLabel) {
+  if (!currentRow) return;
+
+  const okToProceed = await confirmKmChangeIfNeeded(fields);
+  if (!okToProceed) return; // user cancelled -- nothing saved
+
+  setAllButtonsDisabled(true);
+  btn.textContent = 'Saving…';
+
+  const payload = {
+    action: 'updateBike',
+    bike: currentRow[keyHeader],
+    fields: fields
+  };
+
+  // Fake staged progress ("Connecting…" then "Saving…") since Apps Script
+  // doesn't give us real progress events -- just something better than a
+  // silent wait while the request is in flight.
+  statusBox.className = 'status progress';
+  statusBox.innerHTML = '<span class="status-spinner"></span><span>Connecting…</span>';
+  const stageTimer = setTimeout(() => {
+    statusBox.innerHTML = '<span class="status-spinner"></span><span>Saving…</span>';
+  }, 500);
+
+  try {
+    const res = await fetch(scriptUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+    clearTimeout(stageTimer);
+    if (data.success) {
+      if (data.warning) {
+        // Post-write verification problems (the server re-reads what it
+        // wrote and compares) -- the save DID go through, but something
+        // should be checked by hand.
+        statusBox.textContent = 'Saved — "' + payload.bike + '" updated, but: ' + data.warning;
+        statusBox.className = 'status err';
+      } else {
+        statusBox.textContent = 'Saved — "' + payload.bike + '" updated.';
+        statusBox.className = 'status ok';
+      }
+      // Update local cache so re-selecting shows the fresh values without a refetch
+      Object.assign(currentRow, fields);
+    } else {
+      throw new Error(data.error || 'Unknown error');
+    }
+  } catch (err) {
+    clearTimeout(stageTimer);
+    statusBox.textContent = 'Could not save: ' + err.message;
+    statusBox.className = 'status err';
+  } finally {
+    setAllButtonsDisabled(false);
+    btn.textContent = idleLabel;
+  }
+}
+
+// Quick save: writes only the km reading + date checked from the top card.
+async function performQuickSave() {
+  const fields = collectFieldsIn('kmFieldsBox', {});
+  await saveFields(
+    fields,
+    document.getElementById('kmSaveBtn'),
+    document.getElementById('kmStatusBox'),
+    'Update kilometers'
+  );
+}
+
+// Full save: everything — the top card's km/date plus the whole record.
+async function performSave() {
+  const fields = collectFieldsIn('kmFieldsBox', {});
+  collectFieldsIn('fieldsBox', fields);
+
+  // The Notes box represents several trailing columns folded into one.
+  // Write its text into the first of those columns and clear the rest,
+  // so the data actually lives in a single place going forward.
+  const notesTextarea = document.getElementById('notesField');
+  if (notesTextarea) {
+    const extraHeaders = JSON.parse(notesTextarea.dataset.extraHeaders);
+    extraHeaders.forEach((h, i) => {
+      fields[h] = i === 0 ? notesTextarea.value : '';
+    });
+  }
+
+  await saveFields(
+    fields,
+    document.getElementById('saveBtn'),
+    document.getElementById('statusBox'),
+    'Save changes'
+  );
+}
+
+document.getElementById('saveBtn').addEventListener('click', performSave);
+document.getElementById('kmSaveBtn').addEventListener('click', performQuickSave);
+
+// ---------------- Camera capture + auto-read for speedometer photos ----------------
+// The cropped photo is sent to Claude (vision) to read the digits, via the
+// same readOdometerWithAI backend action / ANTHROPIC_API_KEY used by the
+// passport reader on contract.html. It's best-effort: whatever comes back
+// is shown as an editable starting point, never applied silently, since
+// speedometer photos (glare, angle, digit vs. needle dials) aren't always
+// clean reads. (Previously ran Tesseract.js entirely client-side -- swapped
+// out because it struggled with exactly those cases.)
+
+let ocrTargetKmFieldId = null;
+
+function openCameraFor(kmFieldId) {
+  ocrTargetKmFieldId = kmFieldId;
+  document.getElementById('sourceModal').classList.add('show');
+}
+
+document.getElementById('chooseCameraBtn').addEventListener('click', () => {
+  document.getElementById('sourceModal').classList.remove('show');
+  const input = document.getElementById('cameraInput');
+  input.value = '';
+  input.click();
+});
+document.getElementById('chooseLibraryBtn').addEventListener('click', () => {
+  document.getElementById('sourceModal').classList.remove('show');
+  const input = document.getElementById('libraryInput');
+  input.value = '';
+  input.click();
+});
+document.getElementById('chooseCancelBtn').addEventListener('click', () => {
+  document.getElementById('sourceModal').classList.remove('show');
+  ocrTargetKmFieldId = null;
+});
+
+function todayInputValue() {
+  const d = new Date();
+  const pad = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+}
+
+// ---- Step 1: pick a photo, then hand it to the crop modal ----
+function handleSelectedFile(file) {
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    // Crop step skipped for now, to test the AI reader against the full,
+    // uncropped photo first -- same "whole image" path the crop modal's
+    // own "Skip crop" button already used (buildProcessedImage(null)).
+    // The crop modal/box code below is untouched and still fully wired
+    // up; to bring the crop step back, restore the one line this
+    // replaced: `openCropModal(reader.result);`
+    const runNow = () => proceedToOdoModal(buildProcessedImage(null));
+    if (cropImage.src === reader.result && cropImage.complete && cropImage.naturalWidth) {
+      runNow(); // same photo picked again -- src unchanged, onload won't refire
+    } else {
+      cropImage.onload = runNow;
+      cropImage.src = reader.result;
+    }
+  };
+  reader.readAsDataURL(file);
+}
+
+document.getElementById('cameraInput').addEventListener('change', (e) => {
+  handleSelectedFile(e.target.files && e.target.files[0]);
+});
+document.getElementById('libraryInput').addEventListener('change', (e) => {
+  handleSelectedFile(e.target.files && e.target.files[0]);
+});
+
+// ---- Step 2: crop modal — a draggable, resizable box over the photo ----
+const cropStage = document.getElementById('cropStage');
+const cropImage = document.getElementById('cropImage');
+const cropBox = document.getElementById('cropBox');
+const cropHandle = document.getElementById('cropHandle');
+
+function placeDefaultCropBox() {
+  // Default box: centered, roomy strip — odometer digits are usually
+  // wider than tall. offsetLeft/Top/Width/Height on the <img> are
+  // relative to .crop-stage (its nearest positioned ancestor), so this
+  // works regardless of letterboxing from the image's own aspect ratio.
+  // IMPORTANT: this only measures correctly once the modal is actually
+  // visible — a hidden (display:none) element always measures 0×0, which
+  // previously produced a zero-size, unusable crop box.
+  const iw = cropImage.offsetWidth, ih = cropImage.offsetHeight;
+  const ix = cropImage.offsetLeft, iy = cropImage.offsetTop;
+  const bw = Math.max(30, Math.round(iw * 0.7));
+  const bh = Math.max(20, Math.round(ih * 0.22));
+  setCropBoxRect(ix + Math.round((iw - bw) / 2), iy + Math.round((ih - bh) / 2), bw, bh);
+}
+
+function openCropModal(dataUrl) {
+  // Show the modal first so the image has real, non-zero layout
+  // dimensions by the time we measure it.
+  document.getElementById('cropModal').classList.add('show');
+
+  const finish = () => {
+    // rAF gives the browser one paint tick to lay the now-visible modal
+    // out before we read offsetWidth/offsetHeight from it.
+    requestAnimationFrame(placeDefaultCropBox);
+  };
+
+  if (cropImage.src === dataUrl && cropImage.complete && cropImage.naturalWidth) {
+    // Same image already loaded (rare, but onload won't refire) — place directly.
+    finish();
+  } else {
+    cropImage.onload = finish;
+    cropImage.src = dataUrl;
+  }
+}
+
+function getImageDisplayRect() {
+  return {
+    left: cropImage.offsetLeft, top: cropImage.offsetTop,
+    width: cropImage.offsetWidth, height: cropImage.offsetHeight
+  };
+}
+
+function setCropBoxRect(left, top, width, height) {
+  cropBox.style.left = left + 'px';
+  cropBox.style.top = top + 'px';
+  cropBox.style.width = width + 'px';
+  cropBox.style.height = height + 'px';
+}
+
+function getCropBoxRect() {
+  return {
+    left: parseFloat(cropBox.style.left) || 0,
+    top: parseFloat(cropBox.style.top) || 0,
+    width: parseFloat(cropBox.style.width) || 0,
+    height: parseFloat(cropBox.style.height) || 0
+  };
+}
+
+// Dragging the box around (move)
+let dragState = null;
+cropBox.addEventListener('pointerdown', (e) => {
+  if (e.target === cropHandle) return; // handle has its own listener
+  cropBox.setPointerCapture(e.pointerId);
+  const box = getCropBoxRect();
+  dragState = { startX: e.clientX, startY: e.clientY, boxLeft: box.left, boxTop: box.top };
+  e.preventDefault();
+});
+cropBox.addEventListener('pointermove', (e) => {
+  if (!dragState) return;
+  const img = getImageDisplayRect();
+  const box = getCropBoxRect();
+  let newLeft = dragState.boxLeft + (e.clientX - dragState.startX);
+  let newTop = dragState.boxTop + (e.clientY - dragState.startY);
+  newLeft = Math.max(img.left, Math.min(newLeft, img.left + img.width - box.width));
+  newTop = Math.max(img.top, Math.min(newTop, img.top + img.height - box.height));
+  setCropBoxRect(newLeft, newTop, box.width, box.height);
+});
+cropBox.addEventListener('pointerup', () => { dragState = null; });
+cropBox.addEventListener('pointercancel', () => { dragState = null; });
+
+// Resizing via the corner handle
+let resizeState = null;
+cropHandle.addEventListener('pointerdown', (e) => {
+  cropHandle.setPointerCapture(e.pointerId);
+  const box = getCropBoxRect();
+  resizeState = { startX: e.clientX, startY: e.clientY, w: box.width, h: box.height, left: box.left, top: box.top };
+  e.preventDefault();
+  e.stopPropagation();
+});
+cropHandle.addEventListener('pointermove', (e) => {
+  if (!resizeState) return;
+  const img = getImageDisplayRect();
+  let newW = resizeState.w + (e.clientX - resizeState.startX);
+  let newH = resizeState.h + (e.clientY - resizeState.startY);
+  newW = Math.max(30, Math.min(newW, img.left + img.width - resizeState.left));
+  newH = Math.max(20, Math.min(newH, img.top + img.height - resizeState.top));
+  setCropBoxRect(resizeState.left, resizeState.top, newW, newH);
+});
+cropHandle.addEventListener('pointerup', () => { resizeState = null; });
+cropHandle.addEventListener('pointercancel', () => { resizeState = null; });
+
+// ---- Step 3: crop (or, if skipped, take the whole image), then upscale
+// small crops so digits aren't just a handful of pixels tall. No
+// grayscale/contrast step here -- that was a Tesseract-specific crutch;
+// Claude reads the natural color photo just fine on its own. ----
+function buildProcessedImage(sourceRectOrNull) {
+  const naturalW = cropImage.naturalWidth, naturalH = cropImage.naturalHeight;
+  let sx, sy, sw, sh;
+
+  if (sourceRectOrNull) {
+    const img = getImageDisplayRect();
+    const scaleX = naturalW / img.width;
+    const scaleY = naturalH / img.height;
+    sx = (sourceRectOrNull.left - img.left) * scaleX;
+    sy = (sourceRectOrNull.top - img.top) * scaleY;
+    sw = sourceRectOrNull.width * scaleX;
+    sh = sourceRectOrNull.height * scaleY;
+  } else {
+    sx = 0; sy = 0; sw = naturalW; sh = naturalH;
+  }
+
+  const targetMinWidth = 700;
+  const scale = sw < targetMinWidth ? Math.min(4, targetMinWidth / sw) : 1;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(sw * scale));
+  canvas.height = Math.max(1, Math.round(sh * scale));
+  const ctx = canvas.getContext('2d');
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(cropImage, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL('image/png');
+}
+
+document.getElementById('cropConfirmBtn').addEventListener('click', () => {
+  const rect = getCropBoxRect();
+  if (!rect.width || !rect.height || rect.width < 10 || rect.height < 10) {
+    alert('The crop box looks too small — drag the orange corner to make it bigger, then try again.');
+    return;
+  }
+  try {
+    const processed = buildProcessedImage(rect);
+    document.getElementById('cropModal').classList.remove('show');
+    proceedToOdoModal(processed);
+  } catch (err) {
+    alert('Could not use that crop (' + err.message + ') — try adjusting the box, or use the full photo instead.');
+  }
+});
+document.getElementById('cropSkipBtn').addEventListener('click', () => {
+  try {
+    const processed = buildProcessedImage(null);
+    document.getElementById('cropModal').classList.remove('show');
+    proceedToOdoModal(processed);
+  } catch (err) {
+    document.getElementById('cropModal').classList.remove('show');
+    alert('Could not process that photo (' + err.message + ').');
+  }
+});
+
+// ---- Step 4: show the (cropped + processed) image and run OCR on it ----
+async function proceedToOdoModal(processedDataUrl) {
+  document.getElementById('odoPreview').src = processedDataUrl;
+  document.getElementById('odoKmInput').value = '';
+  document.getElementById('odoDateInput').value = todayInputValue();
+  document.getElementById('odoModal').classList.add('show');
+
+  const ocrStatus = document.getElementById('ocrStatus');
+  ocrStatus.style.display = 'flex';
+  ocrStatus.innerHTML = '<div class="spinner"></div> Reading number from photo…';
+
+  try {
+    const commaIdx = processedDataUrl.indexOf(',');
+    const base64 = commaIdx !== -1 ? processedDataUrl.slice(commaIdx + 1) : processedDataUrl;
+    const res = await fetch(scriptUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({
+        action: 'readOdometerWithAI',
+        imageBase64: base64,
+        imageMimeType: 'image/png'
+      })
+    });
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error || 'Unknown error');
+
+    if (data.km) {
+      document.getElementById('odoKmInput').value = data.km;
+      ocrStatus.textContent = 'Detected ' + data.km + ' — check it against the photo before saving.';
+    } else {
+      ocrStatus.textContent = 'Could not read a number automatically — type it in below.';
+    }
+  } catch (err) {
+    ocrStatus.textContent = 'Automatic reading unavailable — type the number in below.';
+  }
+}
+
+document.getElementById('odoCancelBtn').addEventListener('click', () => {
+  document.getElementById('odoModal').classList.remove('show');
+  ocrTargetKmFieldId = null;
+});
+
+document.getElementById('odoConfirmBtn').addEventListener('click', async () => {
+  const kmVal = document.getElementById('odoKmInput').value.trim();
+  const dateVal = document.getElementById('odoDateInput').value;
+
+  if (!kmVal) {
+    alert('Enter the kilometers reading before saving.');
+    return;
+  }
+  if (!ocrTargetKmFieldId) return;
+
+  const kmInput = document.getElementById(ocrTargetKmFieldId);
+  if (kmInput) kmInput.value = kmVal;
+
+  if (dateHeaderName) {
+    const dateInput = document.querySelector('#editSection [data-header="' + CSS.escape(dateHeaderName) + '"]');
+    if (dateInput) dateInput.value = dateVal;
+  }
+
+  document.getElementById('odoModal').classList.remove('show');
+  ocrTargetKmFieldId = null;
+
+  // Photo flow only touches the km reading + date, so the quick save
+  // (km + date only) is the right write here.
+  await performQuickSave();
+});
+</script>
+
+
+<script>
+/* ---- Date-in-words labels (shared across all pages) ----
+   Every <input type="date"> gets a small red label right after it that
+   writes the selected date out in words -- e.g. "8 July 2026" -- so a
+   date like 08/07 can never be misread as August 7 (American style).
+   You still pick the date in the box exactly as before; this only
+   changes what's DISPLAYED, never what's saved to the sheet.
+   Handles date boxes created later (e.g. the Return picker on Bikes
+   Status) via a DOM observer, and values set by code (prefills,
+   defaults) via a light polling loop. */
+(function () {
+  var MONTHS = ['January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December'];
+
+  function dateWords(iso) {
+    var m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(iso || '');
+    if (!m) return '';
+    var monthIdx = parseInt(m[2], 10) - 1;
+    if (monthIdx < 0 || monthIdx > 11) return '';
+    return parseInt(m[3], 10) + ' ' + MONTHS[monthIdx] + ' ' + parseInt(m[1], 10);
+  }
+
+  function ensureLabel(inp) {
+    var el = inp.__dateWordsEl;
+    if (el && el.parentNode) return el;
+    el = document.createElement('span');
+    el.className = 'date-words-label';
+    el.style.cssText = 'display:inline-block;font-size:12.5px;font-weight:700;' +
+      'color:#C62828;margin-top:3px;margin-left:2px;line-height:1.25;white-space:nowrap;';
+    if (inp.nextSibling) {
+      inp.parentNode.insertBefore(el, inp.nextSibling);
+    } else {
+      inp.parentNode.appendChild(el);
+    }
+    inp.__dateWordsEl = el;
+    return el;
+  }
+
+  function refreshDateWordLabels() {
+    var inputs = document.querySelectorAll('input[type="date"]');
+    for (var i = 0; i < inputs.length; i++) {
+      var inp = inputs[i];
+      if (!inp.parentNode) continue;
+      var el = ensureLabel(inp);
+      var text = dateWords(inp.value);
+      if (el.textContent !== text) el.textContent = text;
+    }
+  }
+
+  // React immediately when the user picks/types a date.
+  document.addEventListener('change', function (e) {
+    if (e.target && e.target.type === 'date') refreshDateWordLabels();
+  }, true);
+  document.addEventListener('input', function (e) {
+    if (e.target && e.target.type === 'date') refreshDateWordLabels();
+  }, true);
+
+  // Catch date boxes that get created after page load (re-rendered lists,
+  // pop-up pickers). refreshDateWordLabels is idempotent, so the observer
+  // re-firing on its own label insertions settles immediately.
+  if (window.MutationObserver) {
+    new MutationObserver(refreshDateWordLabels)
+      .observe(document.documentElement, { childList: true, subtree: true });
+  }
+
+  // Catch values set by code (defaults, prefills from other pages), which
+  // fire no events. A few date boxes at 2 checks/second costs nothing.
+  setInterval(refreshDateWordLabels, 500);
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', refreshDateWordLabels);
+  } else {
+    refreshDateWordLabels();
+  }
+})();
+</script>
+
+</body>
+</html>

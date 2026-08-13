@@ -1,0 +1,3680 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bikes Status — AA Scooters</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="nav.js" defer></script>
+<style>
+  :root{
+    --sand:#F5EFE6;
+    --ink:#1A2421;
+    --petrol:#0F3D3E;
+    --petrol-light:#175A5B;
+    --cone:#FF6B35;
+    --card:#FFFFFF;
+    --line:#DED4C2;
+    --muted:#5A6663;
+    --ok:#2F855A;
+    --rented:#B7791F;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; background:var(--sand); color:var(--ink);
+    font-family:'Inter',sans-serif; min-height:100vh;
+  }
+  .page-head{ max-width:520px; margin:0 auto; padding:22px 16px 4px; }
+  .page-head h1{
+    font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:26px;
+    color:var(--petrol); margin:0;
+  }
+  .page-head .sub{ color:var(--muted); font-size:13px; margin-top:6px; }
+
+  main{ max-width:520px; margin:0 auto; padding:16px 16px 60px; }
+
+  .search-wrap{ position:relative; margin-bottom:6px; }
+  .search-wrap input{
+    width:100%; padding:12px 14px; border:1px solid var(--line); border-radius:10px;
+    font-size:15px; font-family:'Inter',sans-serif; background:#fff; color:var(--ink);
+  }
+  .search-wrap input:focus{ outline:none; border-color:var(--petrol-light); }
+  .ac-list{
+    position:absolute; left:0; right:0; top:100%;
+    background:#fff; border:1px solid var(--line); border-top:none;
+    border-radius:0 0 9px 9px;
+    max-height:220px; overflow-y:auto;
+    z-index:20; display:none;
+    box-shadow:0 8px 18px rgba(15,61,62,.1);
+  }
+  .ac-list.show{ display:block; }
+  .ac-item{
+    padding:10px 12px; font-size:14px; cursor:pointer;
+    border-bottom:1px solid #F0EBE0;
+  }
+  .ac-item:last-child{ border-bottom:none; }
+  .ac-item:hover, .ac-item.hi{ background:#F5EFE6; }
+  .ac-item mark{ background:#FFE3D2; color:var(--ink); border-radius:2px; }
+
+  .load-status{
+    font-size:12px; color:#B36A2E; background:#FFF3E6; border:1px solid #F3D9B8;
+    border-radius:7px; padding:7px 10px; margin-bottom:12px; display:none;
+  }
+  .load-status.show{ display:block; }
+
+  .results-count{
+    font-size:12px; color:#7A8A86; margin:14px 2px 10px;
+    font-family:'Barlow Condensed',sans-serif; letter-spacing:.06em; text-transform:uppercase;
+  }
+
+  .bike-card{
+    background:var(--card); border:1px solid var(--line); border-left:5px solid var(--line);
+    border-radius:10px; padding:12px 14px; margin-bottom:10px;
+  }
+  .bike-card.rented{ border-left-color:var(--rented); }
+  .bike-card.not-rented{ border-left-color:var(--ok); }
+
+  .bc-top{ display:flex; align-items:baseline; justify-content:space-between; gap:10px; }
+  .bc-name{
+    font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:17px; color:var(--petrol);
+  }
+  .bc-tag{
+    font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:12.5px;
+    letter-spacing:.04em; text-transform:uppercase; white-space:nowrap;
+  }
+  .bc-tag.rented{ color:var(--rented); }
+  .bc-tag.not-rented{ color:var(--ok); }
+  .bc-renter{
+    font-size:12.5px; color:var(--petrol); margin-top:6px;
+    background:#EEF5F2; border:1px solid #D8E8E1; border-radius:7px;
+    padding:5px 9px; display:inline-block;
+  }
+  .bc-renter b{ font-weight:700; }
+  .bc-chatname{ color:var(--muted); font-style:italic; text-decoration:none; }
+  a.bc-chatname{ color:#1a73e8; font-style:normal; text-decoration:underline; cursor:pointer; }
+  a.bc-chatname:hover{ color:#0b57d0; }
+  .bc-details{ font-size:12.5px; color:var(--muted); margin-top:6px; line-height:1.5; }
+  .bc-details b{ color:var(--ink); font-weight:600; }
+  .bc-finance{ font-size:12.5px; color:var(--muted); margin-top:4px; line-height:1.5; }
+  .bc-finance b{ color:var(--ink); font-weight:600; }
+
+  .due-badge{
+    display:inline-block; font-family:'Barlow Condensed',sans-serif; font-weight:700;
+    font-size:11px; letter-spacing:.04em; text-transform:uppercase;
+    padding:2px 7px; border-radius:5px; margin-left:4px; vertical-align:middle;
+  }
+  .due-badge.contact{ background:#FFF3E6; color:#B36A2E; }
+  .due-badge.due-today{ background:#FDECEC; color:#C0392B; }
+  .due-badge.overdue{ background:#C0392B; color:#fff; }
+
+  .bc-actions{ display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
+  .bc-actions .swap-btn{ flex:1 1 100%; }
+  .bc-btn{
+    flex:1; padding:9px 10px; border-radius:8px; border:1px solid var(--line);
+    font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:13px;
+    letter-spacing:.03em; text-transform:uppercase; cursor:pointer;
+    background:#fff; color:var(--petrol);
+  }
+  .bc-btn:active{ transform:scale(.98); }
+  .bc-btn:disabled{ opacity:.55; cursor:default; }
+  .bc-btn.return-btn{ background:var(--petrol); color:#fff; border-color:var(--petrol); }
+  .bc-btn.extend-btn{ background:#fff; color:var(--muted); }
+  .bc-btn.edit-time-btn{ background:#fff; color:var(--muted); }
+  .bc-btn.confirm-edit-time{ background:var(--cone); color:#fff; border-color:var(--cone); }
+  .bc-btn.cancel-edit-time{ background:#fff; color:var(--muted); }
+  .bc-btn.confirm-return{ background:var(--cone); color:#fff; border-color:var(--cone); }
+  .bc-btn.cancel-return{ background:#fff; color:var(--muted); }
+
+  .bc-actions-picker{ flex-wrap:wrap; }
+  .picker-input{
+    flex:1 1 100%; padding:9px 10px; border:1px solid var(--line); border-radius:8px;
+    font-size:14px; font-family:'Inter',sans-serif; background:#fff; color:var(--ink);
+  }
+  .extend-datedays-row{
+    flex:1 1 100%; display:flex; flex-direction:column; align-items:stretch; gap:8px;
+  }
+  .extend-datedays-row .picker-input{ flex:0 0 auto; }
+  .extend-datedays-row .or-label{ flex:0 0 auto; font-size:12px; color:var(--muted); text-align:center; }
+  .extend-month-row{
+    flex:1 1 100%; display:flex; align-items:center; gap:7px;
+    font-size:13px; color:var(--ink); font-weight:500;
+  }
+  .extend-month-row input[type="checkbox"]{
+    width:17px; height:17px; accent-color:var(--cone); cursor:pointer;
+  }
+  .extend-month-row label{ cursor:pointer; }
+  .extend-note{
+    flex:1 1 100%; font-size:11.5px; color:var(--muted); line-height:1.4; margin-top:-2px;
+  }
+  .extend-price-breakdown{
+    flex:1 1 100%; font-size:13px; font-weight:700; color:#C0392B;
+    min-height:16px; margin-top:2px; margin-bottom:2px;
+  }
+
+  .empty-hint{ font-size:13px; color:#8A948F; padding:14px 2px; text-align:center; }
+
+  .bc-btn.swap-btn{ background:#fff; color:var(--muted); border-style:dashed; }
+  .bc-actions .contact-btn{ flex:1 1 100%; }
+  .bc-btn.contact-btn{ background:#EEF5F2; color:var(--petrol); border-color:var(--petrol-light); }
+
+  /* ---- Swap Bike modal ---- */
+  .modal-backdrop{
+    display:none; position:fixed; inset:0; background:rgba(26,36,33,.55);
+    align-items:center; justify-content:center; padding:16px; z-index:50;
+  }
+  .modal-backdrop.show{ display:flex; }
+  .modal-card{
+    background:var(--card); border-radius:12px; padding:18px;
+    width:100%; max-width:420px; max-height:90vh; overflow-y:auto;
+    box-shadow:0 12px 30px rgba(15,61,62,.25);
+  }
+  .modal-title{
+    font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:20px;
+    color:var(--petrol); margin:0 0 14px;
+  }
+  .swap-section{ margin-bottom:14px; padding-bottom:14px; border-bottom:1px solid var(--line); }
+  .swap-section:last-of-type{ border-bottom:none; margin-bottom:6px; padding-bottom:0; }
+  .swap-section-label{
+    font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:13px;
+    letter-spacing:.05em; text-transform:uppercase; color:var(--muted); margin-bottom:6px;
+  }
+  .swap-field-label{ display:block; font-size:12px; color:var(--muted); margin:8px 0 4px; }
+  /* Wrapper for the New Bike field so its custom ac-list dropdown (same
+     type-to-search pattern as the top search box and contract.html) can
+     position itself directly under the input. Replaces the old native
+     <input list>/<datalist> combo, which was unreliable across browsers. */
+  .swap-field-wrap{ position:relative; }
+  .swap-input{
+    width:100%; box-sizing:border-box; padding:9px 10px; border:1px solid var(--line);
+    border-radius:8px; font-size:14px; font-family:'Inter',sans-serif;
+    background:#fff; color:var(--ink);
+  }
+  .swap-input:disabled{ background:#F0EEE7; color:var(--muted); }
+  .swap-checkbox-row{
+    display:flex; align-items:center; gap:7px; margin-top:10px;
+    font-size:13px; color:var(--ink); font-weight:500;
+  }
+  .swap-checkbox-row input[type="checkbox"]{
+    width:17px; height:17px; accent-color:var(--cone); cursor:pointer;
+  }
+  .swap-checkbox-row label{ cursor:pointer; }
+  .swap-upgrade-fields{ margin-top:4px; }
+  .swap-error{
+    font-size:12.5px; color:#C0392B; background:#FDECEC; border:1px solid #F5C6C6;
+    border-radius:7px; padding:8px 10px; margin-bottom:12px; line-height:1.4;
+  }
+  .modal-actions{ display:flex; gap:8px; margin-top:6px; }
+  .modal-actions .bc-btn{ flex:1; }
+  .bc-btn.save-swap, .bc-btn.confirm-swap-final{ background:var(--cone); color:#fff; border-color:var(--cone); }
+  .bc-btn.cancel-swap, .bc-btn.cancel-swap-confirm{ background:#fff; color:var(--muted); }
+  .swap-confirm-summary p{ font-size:14px; color:var(--ink); line-height:1.5; margin:0 0 10px; }
+
+  /* ---- Contact Customer modal ---- */
+  .contact-sub{ font-size:12px; color:var(--muted); margin:-8px 0 12px; }
+  .contact-msg-box{
+    white-space:pre-wrap; font-size:14px; line-height:1.5; color:var(--ink);
+    background:#FBFAF7; border:1px solid var(--line); border-radius:9px;
+    padding:12px 13px; max-height:40vh; overflow-y:auto; margin-bottom:14px;
+  }
+  .contact-wa-link{ margin:-8px 0 14px; font-size:13.5px; }
+  .contact-wa-link a{ color:#1a73e8; text-decoration:underline; font-weight:600; cursor:pointer; }
+  .contact-wa-link a:hover{ color:#0b57d0; }
+  .contact-messenger-notice{
+    margin:-8px 0 14px; font-size:13px; line-height:1.45; color:var(--muted);
+    background:#EAF3FF; border:1px solid #C7DEFF; border-radius:9px; padding:9px 12px;
+  }
+  .bc-btn.copy-contact{ background:var(--cone); color:#fff; border-color:var(--cone); }
+  .bc-btn.close-contact{ background:#fff; color:var(--muted); }
+
+  /* ---- QuickView button + modal -- deliberately not in nav.js or
+     index.html; this button is the only way to open it (see CLAUDE.md-
+     style comment on openQuickView below). ---- */
+  .qv-btn{
+    margin-top:12px; padding:9px 16px; border:1px solid var(--petrol-light);
+    border-radius:8px; background:var(--petrol); color:#fff; font-size:13.5px;
+    font-weight:600; font-family:'Inter',sans-serif; cursor:pointer;
+  }
+  .qv-btn:hover{ background:var(--petrol-light); }
+  .qv-btn:disabled{
+    background:#B9C2BF; border-color:#B9C2BF; cursor:not-allowed;
+  }
+  .qv-modal-card{ max-width:560px; }
+  .qv-table-wrap{ overflow-x:auto; }
+  .qv-table{ width:100%; border-collapse:collapse; }
+  .qv-table thead th{
+    text-align:left; font-family:'Barlow Condensed',sans-serif; font-weight:700;
+    font-size:11.5px; text-transform:uppercase; letter-spacing:.02em; color:var(--muted);
+    padding:0 8px 8px 0; border-bottom:1px solid var(--line); cursor:pointer;
+    user-select:none; white-space:nowrap;
+  }
+  .qv-table thead th:hover{ color:var(--petrol); }
+  .qv-table thead th.qv-sorted{ color:var(--petrol); }
+  .qv-sort-arrow{ font-size:10px; margin-left:3px; display:inline-block; }
+  .qv-table tbody td{
+    padding:9px 8px 9px 0; border-bottom:1px solid var(--line); vertical-align:top;
+    font-size:12.5px; color:var(--ink);
+  }
+  .qv-table tbody tr:last-child td{ border-bottom:none; }
+  .qv-bike{
+    font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:14.5px;
+    color:var(--petrol);
+  }
+  .qv-date{ white-space:nowrap; color:var(--muted); }
+  .qv-year-sub{ font-size:10.5px; font-weight:500; color:var(--muted); margin-top:2px; }
+  /* Bigger top margin (was 3px) plus its own padding below give the
+     Delivery link real separation from the chat-name link right above it
+     in the Contact cell -- the two used to sit close enough together that
+     it was easy to tap the wrong one. */
+  .qv-delivery{ margin-top:10px; }
+  .qv-delivery a{
+    font-size:11px; color:#1a73e8; text-decoration:underline; white-space:nowrap;
+    display:inline-flex; align-items:center; gap:4px; padding:2px 0;
+  }
+  .qv-delivery a:hover{ color:#0b57d0; }
+  .qv-wa-link{
+    color:#1a73e8; text-decoration:underline; cursor:pointer;
+    display:inline-flex; align-items:center; gap:4px; padding:2px 0;
+  }
+  .qv-wa-link:hover{ color:#0b57d0; }
+  .qv-wa-none{ color:var(--muted); font-style:italic; display:inline-flex; align-items:center; gap:4px; }
+  .qv-contact-icon{ font-size:11px; line-height:1; display:inline-flex; align-items:center; flex-shrink:0; }
+  .qv-contact-svg{ width:13px; height:13px; flex-shrink:0; }
+  .qv-finance{ font-size:11px; color:var(--muted); margin-top:3px; white-space:nowrap; }
+  .qv-empty{ font-size:13.5px; color:var(--muted); padding:10px 0; }
+  .qv-available{ margin-top:16px; padding-top:12px; border-top:1px solid #E4E4E4; }
+  .qv-available-title{
+    font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:12.5px;
+    letter-spacing:.04em; text-transform:uppercase; color:var(--muted); margin-bottom:8px;
+  }
+  .qv-available-list{ display:flex; flex-wrap:wrap; gap:6px; }
+  .qv-available-chip{
+    font-size:12px; background:#F3F3F1; border:1px solid #E4E4E4; border-radius:6px;
+    padding:3px 8px; white-space:nowrap; color:var(--ink);
+  }
+  .qv-available-year{ color:var(--muted); font-size:10.5px; margin-left:2px; }
+</style>
+</head>
+<body>
+
+<div id="topbar-mount"></div>
+
+<div class="page-head">
+  <h1>Bikes Status</h1>
+  <div class="sub">All bikes, who they're rented to, and when they're due back</div>
+  <button type="button" id="quickViewBtn" class="qv-btn" disabled>QuickView</button>
+</div>
+
+<main>
+  <div class="search-wrap field">
+    <input type="text" id="bikeSearch" placeholder="Search bikes… e.g. GT, Aerox" autocomplete="off">
+    <div class="ac-list" id="bikeAcList"></div>
+  </div>
+
+  <div class="load-status" id="loadStatus">Loading bikes…</div>
+  <div class="results-count" id="resultsCount"></div>
+  <div id="listBox"></div>
+</main>
+
+<div id="swapModalMount"></div>
+<div id="contactModalMount"></div>
+<div id="quickviewModalMount"></div>
+
+<!-- RETEST-MARKER-3 2026-07-21T16:53-after-sitely-gone-and-oncomputer-task-worked -->
+<script>
+const scriptUrl = ''; // DISCONNECTED: this Vercel copy is intentionally not wired to the live backend (dev/testing only, see project CLAUDE.md)
+
+let bikeNames = [];    // list of bike name strings, alphabetically sorted
+let customerRows = null;
+let categoryRows = []; // bike -> category text, from the Bike Tax tab (for auto-pricing extensions)
+
+function setLoadStatus(msg) {
+  const el = document.getElementById('loadStatus');
+  if (!msg) { el.classList.remove('show'); return; }
+  el.textContent = msg;
+  el.classList.add('show');
+}
+
+function loadData() {
+  setLoadStatus('Loading bikes…');
+
+  // QuickView reads bikeNames/customerRows straight out of memory rather
+  // than fetching anything itself -- if it's clicked before this first
+  // populates them (or while a later reload is still in flight after a
+  // Return/Extend/Swap), there's nothing there yet and it wrongly shows
+  // "No bikes are currently rented out" even when bikes clearly are. Kept
+  // disabled for the whole time a load is in progress, only re-enabled
+  // once bikeNames/customerRows have actually been populated below.
+  const quickViewBtn = document.getElementById('quickViewBtn');
+  if (quickViewBtn) quickViewBtn.disabled = true;
+
+  return Promise.all([
+    fetch(scriptUrl + '?action=parts').then(res => res.json()),
+    fetch(scriptUrl).then(res => res.json()).catch(err => ({ success: false, error: err.message }))
+  ])
+    .then(([partsResult, customerResult]) => {
+      if (!partsResult.success) throw new Error(partsResult.error || 'Could not load bikes');
+      const bikeHeader = partsResult.headers[0];
+      bikeNames = partsResult.rows
+        .filter(r => !r.__struck) // struck-through in Parts & Oil = sold, don't show it
+        .map(r => (r[bikeHeader] || '').toString().trim())
+        .filter(Boolean)
+        .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+      categoryRows = partsResult.categoryRows || [];
+
+      // Pricing now comes live off the "rates per day" sheet tab every load
+      // (see readRatesPerDayTable_ in Code.gs) instead of the hand-copied
+      // table this page used to carry -- RATES only falls back to
+      // RATES_FALLBACK's last-known numbers if this particular read failed.
+      if (isValidRatesTable(partsResult.rates)) {
+        RATES = partsResult.rates;
+        ratesStale = false;
+      } else {
+        RATES = RATES_FALLBACK;
+        ratesStale = true;
+      }
+
+      const loadWarnings = [];
+      if (customerResult && customerResult.success) {
+        customerRows = customerResult.rows;
+      } else {
+        customerRows = [];
+        loadWarnings.push('Rental info unavailable (' + (customerResult && customerResult.error ? customerResult.error : 'unknown error') + ') — bikes will show as "Not rented".');
+      }
+      if (ratesStale) {
+        loadWarnings.push('Could not refresh pricing from the sheet' +
+          (partsResult.ratesWarning ? ' (' + partsResult.ratesWarning + ')' : '') +
+          ' — auto-priced extension amounts may use last-known (possibly stale) rates.');
+      }
+      setLoadStatus(loadWarnings.length ? loadWarnings.join(' ') : null);
+      // bikeNames/customerRows are both populated now (even in the "rental
+      // info unavailable" branch above, customerRows is at least a valid
+      // empty array rather than undefined) -- safe for QuickView to read.
+      if (quickViewBtn) quickViewBtn.disabled = false;
+      render();
+    })
+    .catch(err => {
+      setLoadStatus('Could not load bikes: ' + err.message);
+    });
+}
+
+// Parse dates in the dd/MM/yyyy format the sheet returns.
+function parseFlexibleDate(str) {
+  if (!str) return null;
+  str = String(str).trim();
+  var slashMatch = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (slashMatch) {
+    var d = parseInt(slashMatch[1], 10), m = parseInt(slashMatch[2], 10) - 1, y = parseInt(slashMatch[3], 10);
+    var dt = new Date(y, m, d);
+    if (!isNaN(dt.getTime())) return dt;
+  }
+  var dt2 = new Date(str);
+  if (!isNaN(dt2.getTime())) return dt2;
+  return null;
+}
+
+function formatDateDisplay(str) {
+  var date = parseFlexibleDate(str);
+  if (!date) return str || '—';
+  return date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+// yyyy-MM-dd (what <input type="date"> gives us) -> dd/MM/yyyy (how the
+// sheet -- and customerRows.returnDate -- stores it). Used to update a
+// customer row's returnDate locally right after a successful "Return",
+// without waiting on a full reload.
+function isoToDmy(iso) {
+  const m = String(iso || '').trim().match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (!m) return '';
+  const y = m[1], mo = m[2].padStart(2, '0'), d = m[3].padStart(2, '0');
+  return `${d}/${mo}/${y}`;
+}
+
+function normalizeBikeName(s) {
+  return (s || '').toString()
+    .toLowerCase()
+    .replace(/\([^)]*\)/g, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+// Words/numerals used to tell apart otherwise-identical bike names that are
+// actually different bikes — e.g. "Gran Filano" and "Gran Filano Two" are
+// two separate bikes, not a loose match of the same one.
+const DISTINGUISHING_SUFFIXES = new Set([
+  'one','two','three','four','five','six','seven','eight','nine','ten',
+  'i','ii','iii','iv','v','vi','vii','viii','ix','x',
+  '1','2','3','4','5','6','7','8','9','10'
+]);
+
+function bikeNamesMatch(a, b) {
+  const na = normalizeBikeName(a);
+  const nb = normalizeBikeName(b);
+  if (!na || !nb) return false;
+  if (na === nb) return true;
+
+  const ta = na.split(' ');
+  const tb = nb.split(' ');
+  const shorter = ta.length <= tb.length ? ta : tb;
+  const longer = ta.length <= tb.length ? tb : ta;
+
+  // Fuzzy match allowed when the shorter name is a clean word-for-word
+  // prefix of the longer one — UNLESS the extra trailing word(s) are a
+  // distinguishing number/ordinal, in which case it's a different bike.
+  const isPrefix = shorter.every((tok, i) => tok === longer[i]);
+  if (isPrefix) {
+    const extra = longer.slice(shorter.length);
+    if (extra.some(t => DISTINGUISHING_SUFFIXES.has(t))) return false;
+    return true;
+  }
+
+  return na.includes(nb) || nb.includes(na);
+}
+
+// ---- Short display name for a bike, used only in the outward-facing
+// Contact Customer message -- the full sheet name (e.g. "Yamaha GT 125
+// Two") is more than a customer needs; they just want "GT". Strips a
+// leading known brand word, a bare or "cc"-suffixed displacement number,
+// "keyless"/"standard key"/"manual" wording, and a trailing
+// distinguishing suffix -- reusing DISTINGUISHING_SUFFIXES above, since
+// that's the exact same "One/Two/I/II/1/2..." list already used to tell
+// individual bikes apart. Falls back to the untouched full name if
+// stripping would leave nothing.
+//
+// BRAND_PREFIXES is a plain list of brand words to drop from the front --
+// add to it by hand if a new brand shows up in the fleet that isn't
+// already covered here; nothing else in the app depends on this list
+// being complete, a brand missing here just means that one word doesn't
+// get dropped from the customer-facing message.
+const BRAND_PREFIXES = new Set([
+  'yamaha', 'honda', 'suzuki', 'kawasaki', 'vespa', 'sym', 'gpx', 'kymco',
+  'aprilia', 'benelli', 'scomadi', 'royal', 'alloy', 'vino', 'ducati', 'piaggio'
+]);
+
+// Color/finish words to drop from the customer-facing bike name -- add to
+// this by hand if a new color shows up in the fleet naming that isn't
+// covered here yet, same maintenance approach as BRAND_PREFIXES above.
+const COLOR_WORDS = new Set([
+  'red', 'orange', 'yellow', 'green', 'blue', 'purple', 'pink',
+  'black', 'white', 'grey', 'gray', 'silver', 'gold', 'brown', 'beige',
+  'cream', 'navy', 'maroon', 'teal', 'matte', 'metallic', 'glossy', 'camo'
+]);
+
+// Short model codes that should stay fully capitalized (e.g. "GT", "PCX")
+// rather than getting only their first letter capitalized. Add to this by
+// hand as new acronym-style model names show up in the fleet.
+const ACRONYM_EXCEPTIONS = new Set(['gt', 'pcx']);
+
+// Capitalizes a short bike name for customer-facing display: each word
+// gets its first letter capitalized, except words in ACRONYM_EXCEPTIONS
+// which are rendered fully uppercase (e.g. "gt" -> "GT").
+function capitalizeBikeName(s) {
+  return s.split(' ').map((word) => {
+    if (!word) return word;
+    const lw = word.toLowerCase();
+    if (ACRONYM_EXCEPTIONS.has(lw)) return lw.toUpperCase();
+    return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+  }).join(' ');
+}
+
+function shortBikeName(fullName) {
+  const original = (fullName || '').toString().trim();
+  if (!original) return original;
+
+  // Drop parenthetical notes first, same as normalizeBikeName above.
+  let tokens = original.replace(/\([^)]*\)/g, ' ').trim().split(/\s+/).filter(Boolean);
+  if (!tokens.length) return original;
+
+  // Drop a leading brand word (case-insensitive), e.g. "Yamaha".
+  if (tokens.length > 1 && BRAND_PREFIXES.has(tokens[0].toLowerCase())) {
+    tokens = tokens.slice(1);
+  }
+
+  // Drop a trailing distinguishing suffix (One/Two/.../I/II/.../1/2...) --
+  // same rule bikeNamesMatch uses to tell individual bikes apart.
+  if (tokens.length > 1 && DISTINGUISHING_SUFFIXES.has(tokens[tokens.length - 1].toLowerCase())) {
+    tokens = tokens.slice(0, -1);
+  }
+
+  // Drop cc/displacement figures, keyless/manual wording, and color/finish
+  // words. "Standard Key" is handled just after, as a two-word phrase,
+  // since neither word alone should always be dropped (e.g. a bike simply
+  // named "Key").
+  tokens = tokens.filter((t) => {
+    const lt = t.toLowerCase();
+    if (/^\d+cc$/.test(lt)) return false;    // "155cc"
+    if (/^\d{2,4}$/.test(lt)) return false;  // bare "125", "300"
+    if (lt === 'keyless' || lt === 'manual') return false;
+    if (COLOR_WORDS.has(lt)) return false;   // "Matte Black", "Red", etc.
+    return true;
+  });
+
+  const joined = tokens.join(' ')
+    .replace(/\bstandard\s+key\b/i, '')
+    .trim()
+    .replace(/\s+/g, ' ');
+  if (!joined) return original;
+  return capitalizeBikeName(joined);
+}
+
+// Honorifics to strip from the front of a customer's name before greeting
+// them by first name -- e.g. "Mr. Somchai Srisuk" -> "Somchai". Add to
+// this by hand if a new honorific shows up in the Customer sheet.
+const HONORIFIC_PREFIXES = new Set([
+  'mr', 'mrs', 'ms', 'miss', 'mister', 'mistress', 'dr', 'master'
+]);
+
+// First word of the customer's name (after stripping a leading honorific),
+// for the Contact Customer message's greeting -- e.g. "Somchai Srisuk" ->
+// "Somchai", "Mr. Somchai Srisuk" -> "Somchai". Falls back to "there" if
+// the name is blank so the message never reads "Hi ,".
+//
+// Always Title-Cased on the way out (first letter up, rest down), because
+// passport-derived names on file are often ALL CAPS (e.g. "KADILYN") --
+// that's fine for the record itself, but reads like shouting in a WhatsApp
+// greeting, so it's normalized here regardless of how it's stored.
+function firstNameOf(fullName) {
+  const trimmed = (fullName || '').toString().trim();
+  if (!trimmed) return 'there';
+  // Strip a leading honorific even when it's glued straight onto the name
+  // with no space, e.g. "Mr.Somchai" -> "Somchai". Longest prefixes first
+  // so "mrs" matches before "mr" does (otherwise "Mrs. Somchai" would only
+  // lose the "mr" and leave "s. Somchai"). We only strip if what follows is
+  // whitespace, an uppercase letter, or end-of-string -- checked with a
+  // *case-sensitive* test done separately from the case-insensitive prefix
+  // match, so real names that happen to start with "ms"/"dr" (e.g. "Msomi")
+  // aren't chewed into.
+  const honorifics = Array.from(HONORIFIC_PREFIXES).sort((a, b) => b.length - a.length).join('|');
+  const prefixRe = new RegExp('^(' + honorifics + ')\\.?', 'i');
+  const m = trimmed.match(prefixRe);
+  let stripped = trimmed;
+  if (m) {
+    const rest = trimmed.slice(m[0].length);
+    if (rest === '' || /^[A-Z\s]/.test(rest)) {
+      stripped = rest.trim();
+    }
+  }
+  const tokens = (stripped || trimmed).split(/\s+/);
+  const first = tokens[0] || '';
+  if (!first) return 'there';
+  return first.charAt(0).toUpperCase() + first.slice(1).toLowerCase();
+}
+
+// Turns a stored phone number into a WhatsApp click-to-chat link
+// (https://wa.me/<countrycode><number>, digits only, no "+", no spaces, no
+// leading 0), or null if there's nothing usable to link to -- callers must
+// fall back to plain text in that case rather than showing a dead link.
+// Two number formats exist in the data today: newer ones already carry a
+// country code (e.g. "+66 637970510", from the WhatsApp-screenshot-AI
+// fill), and older ones typed in by hand are plain Thai domestic numbers
+// with no country code (e.g. "081 234 5678"). Both are handled here:
+//   - Already has a "+": strip it and all spaces -- that's already the
+//     exact digit string wa.me needs.
+//   - No "+": assume Thailand (the only case this business has), strip
+//     spaces and one leading "0", then prefix "66".
+// Anything left with too few digits to plausibly be a real phone number
+// is treated as unusable.
+function buildWhatsAppLink(rawNumber) {
+  const trimmed = (rawNumber || '').toString().trim();
+  if (!trimmed) return null;
+
+  let digits;
+  if (trimmed.indexOf('+') === 0) {
+    digits = trimmed.replace(/[^0-9]/g, '');
+  } else {
+    const local = trimmed.replace(/[^0-9]/g, '').replace(/^0/, '');
+    digits = local ? ('66' + local) : '';
+  }
+
+  if (digits.length < 8) return null; // too short to be a real number -- don't link
+  return 'https://wa.me/' + digits;
+}
+
+// Facebook Messenger deep link -- messengerId is already normalized to a
+// bare username or numeric profile.php id by extractFacebookUsername_ at
+// write time (Code.gs), so no further parsing is needed here. Unlike
+// wa.me, m.me has no "?text=" pre-fill parameter -- see renterContactChannel
+// and the contact-modal code below for how the UI works around that.
+function buildMessengerLink(messengerId) {
+  const trimmed = (messengerId || '').toString().trim();
+  if (!trimmed) return null;
+  return 'https://m.me/' + encodeURIComponent(trimmed);
+}
+
+// Which chat channel a given renter should be contacted through. Falls
+// back to WhatsApp (today's only option) unless the Contract-page "How to
+// contact us" field was explicitly set to Messenger AND a messenger
+// username was actually captured -- so a record with contactMethod
+// mis-set but no messengerId doesn't produce a dead m.me link.
+function renterContactChannel(renter) {
+  if (!renter) return 'whatsapp';
+  const method = (renter.contactMethod || '').toString().trim().toLowerCase();
+  if (method === 'messenger' && (renter.messengerId || '').toString().trim()) return 'messenger';
+  return 'whatsapp';
+}
+
+// ---- Auto-pricing for long extensions (1-month checkbox, or 30+ days) ----
+// Mirrors the Price Calculator / Available Bikes rate table exactly, so the
+// "Amount paid" field on the extend form can auto-fill with the correct
+// quote instead of staff having to go work it out on another page.
+const CATEGORY_DEFS = [
+  { key: "125cc",                      label: "125CC" },
+  { key: "150-155cc standard key",     label: "155CC Standard Key" },
+  { key: "150-155cc keyless",          label: "155CC Keyless" },
+  { key: "nmax 155cc keyless",         label: "Nmax 155CC" },
+  { key: "forza 300cc",                label: "Forza 300CC" },
+  { key: "xmax 300 keyless",           label: "XMAX 300" },
+];
+
+// Anton, 08/08/2026: this used to be the ONLY copy of the rate table --
+// hand-copied from the "rates per day" sheet tab and never updated again,
+// which quietly drifted out of sync with the real prices on the sheet (27
+// of the 30 day-rows had gone stale by the time this was caught). Now it's
+// kept only as an offline/failure fallback: RATES starts out pointing at
+// this, then loadData() overwrites it with whatever the server just read
+// live off the sheet (see readRatesPerDayTable_ in Code.gs). If that live
+// read ever fails, the auto-priced extension amount still needs SOME
+// number to offer staff (imperfect and possibly stale beats nothing), so
+// RATES quietly stays on this last-known table and ratesStale gets set for
+// setLoadStatus to mention.
+const RATES_FALLBACK = {
+  1:[300,400,450,500,600,800],2:[600,800,900,1000,1200,1600],
+  3:[900,1200,1300,1400,1800,2400],4:[1000,1300,1500,1600,2300,3100],
+  5:[1100,1500,1800,1900,2800,3800],6:[1200,1700,1900,2000,3300,4500],
+  7:[1300,1800,2000,2100,3800,5100],8:[1400,1900,2100,2200,4200,5700],
+  9:[1500,2000,2200,2300,4600,6300],10:[1600,2200,2300,2400,5000,6800],
+  11:[1700,2300,2400,2500,5400,7300],12:[1800,2400,2500,2600,5800,7800],
+  13:[1900,2500,2600,2700,6200,8300],14:[2000,2600,2700,2800,6500,8700],
+  15:[2100,2700,2800,2900,6900,9100],16:[2200,2800,2900,3000,7100,9500],
+  17:[2300,2900,3000,3100,7500,9800],18:[2400,3000,3100,3200,7900,10100],
+  19:[2500,3100,3300,3400,8300,10300],20:[2500,3200,3500,3600,8700,10500],
+  21:[2600,3300,3600,3700,9000,10700],22:[2600,3400,3700,3800,8100,10800],
+  23:[2700,3500,3800,3900,8400,11000],24:[2700,3600,3900,4200,8700,11200],
+  25:[2800,3700,4000,4500,9000,11400],26:[2800,3800,4100,4600,9200,11600],
+  27:[2900,3900,4200,4700,9400,11800],28:[2900,3900,4300,4800,9600,11900],
+  29:[3000,4000,4400,4900,9800,12000],30:[3000,4000,4500,5000,10000,12000],
+};
+let RATES = RATES_FALLBACK;
+let ratesStale = false; // true once loadData() has actually tried and failed to get a live table
+
+// Shape-checks whatever action=parts sent back as `rates` before trusting
+// it -- every one of days 1-30 has to be present as an array of exactly 6
+// real numbers, or this is treated the same as a failed read (fall back
+// rather than auto-price off a partly-broken table).
+function isValidRatesTable(r) {
+  if (!r || typeof r !== 'object') return false;
+  for (let d = 1; d <= 30; d++) {
+    const row = r[d];
+    if (!Array.isArray(row) || row.length !== 6) return false;
+    if (row.some(v => typeof v !== 'number' || isNaN(v))) return false;
+  }
+  return true;
+}
+
+function normalizeCategory(s) {
+  return (s || '').toString().trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+// Tries an exact match against the canonical key first (fast path), then
+// falls back to keyword matching. The Category column is free-typed by
+// staff, so its exact wording/punctuation varies bike-to-bike — e.g.
+// "Forza 300" instead of "Forza 300CC", no hyphen in "150-155", extra
+// spacing — and an exact-string match alone was silently failing on these,
+// which is why the auto-priced amount was coming back as 0 instead of a
+// real quote.
+function findCategoryIndex(catText) {
+  const norm = normalizeCategory(catText);
+  if (!norm) return -1;
+
+  const exact = CATEGORY_DEFS.findIndex(c => c.key === norm);
+  if (exact !== -1) return exact;
+
+  const has = (s) => norm.indexOf(s) !== -1;
+  if (has('forza')) return 4;
+  if (has('xmax')) return 5;
+  if (has('nmax')) return 3;
+  if (has('125')) return 0;
+  if (has('150') || has('155')) {
+    return has('keyless') ? 2 : 1; // 155CC Keyless vs 155CC Standard Key
+  }
+  return -1;
+}
+
+function priceForCategory(catIndex, months, leftoverDays) {
+  if (catIndex < 0) return null;
+  const monthlyRate = RATES[30][catIndex];
+  if (months === 0) {
+    return RATES[leftoverDays] ? RATES[leftoverDays][catIndex] : null;
+  }
+  const dailyRate = monthlyRate / 30;
+  return Math.round(monthlyRate * months + leftoverDays * dailyRate);
+}
+
+// Quotes the extension period itself (1 calendar month if the checkbox is
+// ticked, otherwise the plain day count) at that bike's category rate.
+// Returns null if the bike's category isn't set or isn't a known rate
+// category (a custom-rate bike), in which case staff enter the amount by
+// hand as before.
+function computeExtendPrice(bikeName, extendMonth, days) {
+  const match = categoryRows.find(cr => bikeNamesMatch(cr.bike, bikeName));
+  const catIndex = findCategoryIndex(match ? match.category : '');
+  if (catIndex < 0) return null;
+
+  let months, leftoverDays;
+  if (extendMonth) {
+    months = 1;
+    leftoverDays = 0;
+  } else {
+    const totalDays = days > 0 ? days : 0;
+    months = Math.floor(totalDays / 30);
+    leftoverDays = totalDays % 30;
+  }
+  return priceForCategory(catIndex, months, leftoverDays);
+}
+
+// Prices a SHORT extension (under 30 days, "Extend 1 month" not ticked) at
+// the daily rate this booking is ACTUALLY paying -- the customer's real
+// total price divided by the real number of days that total covers
+// (rentingDateFrom -> returnDate), times the days being added.
+//
+// "Real total price" prefers renter.contractTotalPrice -- the Contract
+// sheet's own running total, which survives swaps/extensions across a
+// customer's whole rental -- and only falls back to this customer-sheet
+// row's own totalPrice when there's no Contract match, exactly the same
+// preference renterPaidDisplayHtml() uses for the "Total paid" line on the
+// Rented card. Same total-paid-over-total-days formula computeSwapDefaults()
+// already uses elsewhere on this page for the bike-swap feature.
+//
+// Anton, 22/07/2026: this used to reconstruct a "catalog" price from the
+// bike's rate-category table (RATES/CATEGORY_DEFS) for the current booking's
+// month/day span, then divide THAT catalog price by the day count --
+// instead of the customer's real total price. That drifted from reality
+// any time the actual price differed from the rate table (a deal, a
+// discount, a stale table entry, etc), which is why the auto-filled
+// extension amount could come out wrong. Fixed to use the real numbers
+// instead of reconstructing an estimate from the rate table.
+//
+// Deliberately does NOT apply to long extensions -- see computeExtendPrice()
+// above, which still prices those off the category rate table on purpose (a
+// 3-day trial rental extended by 45 days shouldn't stay pinned to the
+// 3-day rate for the whole 45).
+function computeShortExtendPrice(renter, days) {
+  if (!renter || !days || days <= 0) return null;
+
+  const hasContractTotal = renter.contractTotalPrice !== '' && renter.contractTotalPrice !== undefined && renter.contractTotalPrice !== null;
+  const totalPaid = Number(hasContractTotal ? renter.contractTotalPrice : renter.totalPrice);
+  if (!totalPaid || isNaN(totalPaid) || totalPaid <= 0) return null;
+
+  // Anton, 13/08/2026: totalPaid above can be contractTotalPrice -- the
+  // WHOLE-rental running total across every leg this customer has been
+  // extended through, not just this row's own dates. Dividing that by
+  // just THIS row's own rentingDateFrom-to-returnDate span understated
+  // the real day count for anyone who'd already been extended before,
+  // which overstated the daily rate (e.g. a ฿4,200 whole-rental total
+  // divided by this leg's own 14 days = ฿300/day, instead of ฿4,200
+  // divided by the real 43 total days ≈ ฿98/day -- see this booking's own
+  // bug report). renter.ledgerTotalDays (Code.gs's doGet, parsed off this
+  // row's own ledger note -- see appendLedgerEntry/parseLedgerTotal_) is
+  // that same running total's day count, so it's used whenever both
+  // totalPaid and ledgerTotalDays are drawing from that same whole-rental
+  // total. Falls back to this row's own date span exactly when there's no
+  // ledger history yet (a first-ever booking, never extended) -- in that
+  // case the two numbers are identical anyway.
+  const hasLedgerTotalDays = renter.ledgerTotalDays !== '' && renter.ledgerTotalDays !== undefined && renter.ledgerTotalDays !== null;
+  let totalBaseDays;
+  if (hasContractTotal && hasLedgerTotalDays) {
+    totalBaseDays = Number(renter.ledgerTotalDays);
+  } else {
+    const from = parseFlexibleDate(renter.rentingDateFrom);
+    const to = parseFlexibleDate(renter.returnDate);
+    if (!from || !to || to <= from) return null;
+    totalBaseDays = Math.round((to - from) / 86400000);
+  }
+  if (!totalBaseDays || isNaN(totalBaseDays) || totalBaseDays <= 0) return null;
+
+  const dailyRate = totalPaid / totalBaseDays;
+  return Math.round(dailyRate * days);
+}
+
+// Plain-text "4 days × ฿186/day = ฿744" breakdown shown under the extend
+// form's date/days row, so staff can see how the auto-filled Amount paid
+// figure was worked out instead of just having a number appear. Always
+// derives its wording FROM computeShortExtendPrice()/computeExtendPrice()'s
+// own result -- never recomputes the price independently -- so the text
+// and the amount field can never disagree with each other.
+function extendPriceBreakdownText(renter, extendMonth, days) {
+  if (!renter || (!extendMonth && (!days || days <= 0))) return '';
+
+  const fmt = (n) => '฿' + Math.round(n).toLocaleString('en-US');
+  const isLongExtension = extendMonth || (days >= 30);
+
+  if (isLongExtension) {
+    const price = computeExtendPrice(renter.bikeModel, extendMonth, days);
+    if (price == null) return '';
+    if (extendMonth) {
+      return '1 month = ' + fmt(price);
+    }
+    const months = Math.floor(days / 30);
+    const leftoverDays = days % 30;
+    if (months === 0) {
+      return days + ' days = ' + fmt(price); // shouldn't normally hit -- isLongExtension implies 30+
+    }
+    if (leftoverDays === 0) {
+      return months + (months === 1 ? ' month' : ' months') + ' = ' + fmt(price);
+    }
+    return months + (months === 1 ? ' month' : ' months') + ' + ' +
+      leftoverDays + (leftoverDays === 1 ? ' day' : ' days') + ' = ' + fmt(price);
+  }
+
+  const price = computeShortExtendPrice(renter, days);
+  if (price == null) return '';
+  const dailyRate = Math.round(price / days);
+  return days + (days === 1 ? ' day' : ' days') + ' × ' + fmt(dailyRate) + '/day = ' + fmt(price);
+}
+
+// Writes extendPriceBreakdownText()'s output into the small text line
+// under the date/days row -- or clears it if there's nothing to show yet
+// (blank days field, or a custom-rate bike with no formula to quote).
+function updateExtendPriceBreakdown(rowNumber, renter, extendMonth, days) {
+  const el = document.getElementById('extendPriceBreakdown-' + rowNumber);
+  if (!el) return;
+  el.textContent = extendPriceBreakdownText(renter, extendMonth, days);
+}
+
+// Whether a customer row counts as "still rented", per the "situation"
+// column: "Returned" means the bike is back; blank or "Rented" (or anything
+// else) means it's still out.
+//
+// This page keeps its own copy of this logic (rather than calling the
+// shared action=bikeRentalStatus endpoint in Code.gs -- see
+// getBikeRentalStatus() there) because it already needs the FULL customer
+// row for every bike (passport, dates, rowNumber, etc.) to power return/
+// extend/adjust-pickup, not just a yes/no. getBikeRentalStatus() is a
+// server-side port of this exact function -- if this matching logic ever
+// needs to change, both copies need updating together.
+function isRentedSituation(situation) {
+  const s = (situation || '').toString().trim().toLowerCase();
+  return s !== 'returned';
+}
+
+// Finds the customer record currently holding this bike: same bike model,
+// whose "situation" column isn't "Returned". The same bike can have several
+// old, already-returned rows earlier in the sheet — if more than one row
+// still qualifies, the one lowest down / most recently entered in the sheet
+// wins, since that's the actual current booking.
+function findCurrentRenter(bikeName) {
+  if (!customerRows || !customerRows.length) return null;
+  if (!normalizeBikeName(bikeName)) return null;
+
+  const candidates = customerRows
+    .map((r, sheetIndex) => ({ r, sheetIndex }))
+    .filter(({ r }) => bikeNamesMatch(r.bikeModel, bikeName) && isRentedSituation(r.situation));
+
+  if (!candidates.length) return null;
+
+  candidates.sort((a, b) => b.sheetIndex - a.sheetIndex);
+
+  return candidates[0].r;
+}
+
+// Finds the most recent PAST rental of this bike ("situation" = "Returned")
+// with a parseable return date — used to order "not rented" bikes by how
+// recently they came back.
+function findLastReturn(bikeName) {
+  if (!customerRows || !customerRows.length) return null;
+  if (!normalizeBikeName(bikeName)) return null;
+
+  const candidates = customerRows.filter(r => {
+    if (!bikeNamesMatch(r.bikeModel, bikeName)) return false;
+    if (isRentedSituation(r.situation)) return false;
+    return !!parseFlexibleDate(r.returnDate);
+  });
+
+  if (!candidates.length) return null;
+
+  candidates.sort((a, b) => {
+    const da = parseFlexibleDate(a.returnDate) || new Date(0);
+    const db = parseFlexibleDate(b.returnDate) || new Date(0);
+    return db - da;
+  });
+
+  return candidates[0];
+}
+
+// Due-date urgency label for a currently-rented bike: due tomorrow ->
+// "Contact customer", due today -> "Due today", due date already passed ->
+// "Overdue". Anything further out returns null (just show the plain date).
+function getDueLabel(returnDateStr) {
+  const due = parseFlexibleDate(returnDateStr);
+  if (!due) return null;
+  due.setHours(0, 0, 0, 0);
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const diffDays = Math.round((due - today) / (1000 * 60 * 60 * 24));
+
+  if (diffDays < 0) return { text: 'Overdue', cls: 'overdue' };
+  if (diffDays === 0) return { text: 'Due today', cls: 'due-today' };
+  if (diffDays === 1) return { text: 'Contact customer', cls: 'contact' };
+  return null;
+}
+
+// Case-insensitive, multi-word "contains all tokens" matcher — same rule
+// used on the Customer Record search fields.
+function tokenMatch(value, query) {
+  if (!query) return true;
+  const v = (value || '').toString().toLowerCase();
+  const tokens = query.toLowerCase().trim().split(/\s+/).filter(Boolean);
+  return tokens.every(t => v.includes(t));
+}
+
+function highlight(value, query) {
+  const str = String(value || '');
+  const tokens = (query || '').toLowerCase().trim().split(/\s+/).filter(Boolean);
+  if (!tokens.length) return str;
+
+  // Collect match ranges against the ORIGINAL string only -- never against
+  // a string a previous token has already spliced <mark> tags into. The
+  // old version ran each token's replace() on the growing output, so a
+  // later short token (e.g. a single-letter middle initial like "A")
+  // could match inside the literal text "mark" of a tag an earlier token
+  // had just inserted, corrupting the HTML (visible on the page as stray
+  // "ark>" text). Ranges are merged before building the output in one
+  // pass, so overlapping/adjacent matches from different tokens can't
+  // nest or double-wrap either.
+  const ranges = [];
+  tokens.forEach(t => {
+    const escaped = t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp(escaped, 'ig');
+    let m;
+    while ((m = re.exec(str))) {
+      ranges.push([m.index, m.index + m[0].length]);
+      if (m[0].length === 0) re.lastIndex++;
+    }
+  });
+  if (!ranges.length) return str;
+
+  ranges.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const merged = [ranges[0].slice()];
+  for (let i = 1; i < ranges.length; i++) {
+    const [s, e] = ranges[i];
+    const last = merged[merged.length - 1];
+    if (s <= last[1]) last[1] = Math.max(last[1], e);
+    else merged.push([s, e]);
+  }
+
+  let out = '';
+  let cursor = 0;
+  merged.forEach(([s, e]) => {
+    out += str.slice(cursor, s) + '<mark>' + str.slice(s, e) + '</mark>';
+    cursor = e;
+  });
+  out += str.slice(cursor);
+  return out;
+}
+
+let openReturnRowNumber = null;   // rowNumber whose inline return date-picker is showing
+let savingReturnRowNumber = null; // rowNumber currently being saved as returned
+let savingReturnStage = 'connecting'; // 'connecting' | 'saving' -- fake staged progress text on the Confirm button
+
+// Whether the "Early return" checkbox is currently ticked, per rowNumber --
+// kept as its own persisted map (rather than just reading the checkbox's
+// live DOM state) so a re-render triggered by something unrelated (e.g. the
+// deposit lookup resolving) doesn't silently untick it and hide the refund
+// fields the user was mid-way through filling in. Cleared whenever the
+// Return popup for that row opens fresh, cancels, or confirms.
+let returnEarlyToggleOpen = {};
+// Whether the Return popup's "Return deposit in cash" checkbox is ticked,
+// per rowNumber -- same persisted-map approach as returnEarlyToggleOpen
+// above, so an unrelated re-render doesn't silently untick it. Only ever
+// meaningful (and only ever shown) when returnDepositMatches[rowNumber] is
+// a real, non-cash matched deposit -- see refreshReturnCashToggleUI. Mutually
+// exclusive with entering a deduction amount (see
+// refreshReturnDeductionCashExclusivity): handing back part of a deposit as
+// a damage deduction and part of it cross-method as cash at the same time
+// would need the full any-to-any split Anton asked NOT to build, so the UI
+// simply blocks combining the two instead.
+let returnCashToggleOpen = {};
+let openExtendRowNumber = null;   // rowNumber whose inline extend form is showing
+let savingExtendRowNumber = null; // rowNumber currently being saved as extended
+let savingExtendStage = 'connecting'; // 'connecting' | 'saving' -- fake staged progress text on the Confirm button
+let openEditTimeRowNumber = null;   // rowNumber whose inline "edit pickup time" form is showing
+let savingEditTimeRowNumber = null; // rowNumber currently being saved with a new return time
+let savingEditTimeStage = 'connecting'; // 'connecting' | 'saving' -- fake staged progress text on the Confirm button
+
+// While a return/extend save is in flight, disable every button on the
+// page -- not just the row's own Confirm button -- so a double-click (or
+// clicking a different row's button mid-save) can't fire off a second
+// write and create a duplicate entry. Only re-enables the buttons that
+// were actually enabled before the save started; the row's own Confirm/
+// Cancel buttons are separately re-rendered via render()'s isSaving logic.
+function setAllButtonsDisabled(disabled) {
+  document.querySelectorAll('button').forEach(b => {
+    if (disabled) {
+      if (!b.disabled) b.dataset.reenableAfterSave = '1';
+      b.disabled = true;
+    } else if (b.dataset.reenableAfterSave) {
+      b.disabled = false;
+      delete b.dataset.reenableAfterSave;
+    }
+  });
+}
+
+function todayIso() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function renterActionsHtml(renter) {
+  const rowNumber = renter.rowNumber;
+
+  if (openReturnRowNumber === rowNumber) {
+    const isSaving = savingReturnRowNumber === rowNumber;
+    // Reads from returnDepositTypeDisplay (kept up to date by
+    // initReturnDepositLookup) rather than recomputing straight from
+    // renter.deposit -- that field is often blank even when a real deposit
+    // exists elsewhere (see that function's comment), and recomputing fresh
+    // on every render() would reset an already-resolved label back to a
+    // stale guess the moment anything else re-renders the list (e.g. the
+    // Confirm button's saving-state ticks). Falls back to "Loading…" only
+    // on the very first render, before the lookup has had a chance to run.
+    const depositTypeText = returnDepositTypeDisplay[rowNumber] ||
+      ((renter.deposit || '').toString().trim() || 'Loading…');
+    const earlyReturnChecked = !!returnEarlyToggleOpen[rowNumber];
+    return `
+      <div class="bc-actions bc-actions-picker">
+        <input type="date" class="picker-input" id="returnDateInput-${rowNumber}" value="${todayIso()}" ${isSaving ? 'disabled' : ''}>
+        <div class="extend-month-row">
+          <input type="checkbox" id="returnEarlyToggle-${rowNumber}" ${earlyReturnChecked ? 'checked' : ''} ${isSaving ? 'disabled' : ''}>
+          <label for="returnEarlyToggle-${rowNumber}">Early return</label>
+        </div>
+        <div id="returnEarlyFields-${rowNumber}" style="${earlyReturnChecked ? '' : 'display:none;'}">
+          <input type="number" min="0" step="any" class="picker-input" id="returnRefundAmountInput-${rowNumber}" placeholder="Refund amount (฿) — leave at 0 for a normal return" ${isSaving ? 'disabled' : ''}>
+          <select class="picker-input" id="returnRefundPaidByInput-${rowNumber}" ${isSaving ? 'disabled' : ''}>
+            <option value="">Refund paid via…</option>
+            <option value="cash">Cash</option>
+            <option value="scan">Scan / Bank Transfer</option>
+            <option value="wise">Wise</option>
+            <option value="revolut">Revolut</option>
+          </select>
+          <div class="extend-note">A refund above ฿0 reduces this booking's total price, the Contract page's total, and this bike's earnings for the CURRENT month — and logs a negative income entry for the current month, routed to Cash/Wise/Revolut same as any other income (Scan/Bank Transfer logs the entry but touches nothing further). Leave it at 0 to just return the bike as normal on the date above.</div>
+        </div>
+        <div class="extend-month-row">Deposit type: <strong id="returnDepositTypeLabel-${rowNumber}">${depositTypeText}</strong></div>
+        <input type="number" min="0" step="any" class="picker-input" id="returnDepositAmountInput-${rowNumber}" placeholder="Deposit amount to return (฿)" ${isSaving ? 'disabled' : ''}>
+        <div class="extend-note" id="returnDepositNote-${rowNumber}"></div>
+        <div class="extend-month-row" id="returnCashToggleRow-${rowNumber}" style="display:none;">
+          <input type="checkbox" id="returnCashToggle-${rowNumber}" ${returnCashToggleOpen[rowNumber] ? 'checked' : ''} ${isSaving ? 'disabled' : ''}>
+          <label for="returnCashToggle-${rowNumber}">Return deposit in cash</label>
+        </div>
+        <input type="number" min="0" step="any" class="picker-input" id="returnDeductionsInput-${rowNumber}" placeholder="Deductions (฿)" ${isSaving ? 'disabled' : ''}>
+        <input type="text" class="picker-input" id="returnDeductionReasonInput-${rowNumber}" placeholder="Reason for deduction (if any)" ${isSaving ? 'disabled' : ''}>
+        <button class="bc-btn confirm-return" data-row="${rowNumber}" ${isSaving ? 'disabled' : ''}>${isSaving ? (savingReturnStage === 'saving' ? 'Saving…' : 'Connecting…') : 'Confirm'}</button>
+        <button class="bc-btn cancel-return" data-row="${rowNumber}" ${isSaving ? 'disabled' : ''}>Cancel</button>
+      </div>
+    `;
+  }
+
+  if (openExtendRowNumber === rowNumber) {
+    const isSaving = savingExtendRowNumber === rowNumber;
+    // Deal checkbox (Anton, 20/07/2026) -- only ever applies to a LONG
+    // extension (1-month checkbox, or 30+ days), which closes this booking
+    // out and opens a brand-new customer-sheet row for the extension
+    // period, same as the Customer Record page's own "Add" form used to
+    // handle before long extensions started submitting straight from here.
+    // Deliberately NOT offered for a short, in-place extension -- see
+    // refreshExtendDealVisibility, which shows/hides this row live as
+    // staff type days or tick "Extend 1 month". Defaults to already-ticked
+    // when this booking's current Contact-cell note already ends in
+    // "Deal", so continuing an existing deal customer into their next
+    // extension period doesn't require staff to remember to re-tick it.
+    const renterIsDeal = /\bDeal\s*$/i.test((renter.contact || '').toString().trim());
+    return `
+      <div class="bc-actions bc-actions-picker">
+        <div class="extend-datedays-row">
+          <input type="date" class="picker-input" id="extendDateInput-${rowNumber}" ${isSaving ? 'disabled' : ''}>
+          <span class="or-label">or</span>
+          <input type="number" min="1" step="1" class="picker-input" id="extendDaysInput-${rowNumber}" placeholder="Days to extend" ${isSaving ? 'disabled' : ''}>
+        </div>
+        <div class="extend-price-breakdown" id="extendPriceBreakdown-${rowNumber}"></div>
+        <input type="number" min="0" step="any" class="picker-input" id="extendAmountInput-${rowNumber}" placeholder="Amount paid (฿)" ${isSaving ? 'disabled' : ''}>
+        <select class="picker-input" id="extendPaidByInput-${rowNumber}" ${isSaving ? 'disabled' : ''}>
+          <option value="">Paid by…</option>
+          <option value="cash">Cash</option>
+          <option value="scan">QR Scan</option>
+          <option value="wise">Wise</option>
+          <option value="revolut">Revolut</option>
+        </select>
+        <div class="extend-month-row" id="extendDepositToggleRow-${rowNumber}" style="display:none;">
+          <input type="checkbox" id="extendDepositToggle-${rowNumber}" ${isSaving ? 'disabled' : ''}>
+          <label for="extendDepositToggle-${rowNumber}">Paid from an existing deposit</label>
+        </div>
+        <select class="picker-input" id="extendDepositSelect-${rowNumber}" style="display:none;" ${isSaving ? 'disabled' : ''}>
+          <option value="">— Select —</option>
+        </select>
+        <div class="extend-month-row">
+          <input type="checkbox" id="extendMonthCheckbox-${rowNumber}" ${isSaving ? 'disabled' : ''}>
+          <label for="extendMonthCheckbox-${rowNumber}">Extend 1 month</label>
+        </div>
+        <div class="extend-month-row" id="extendDealToggleRow-${rowNumber}" style="display:none;">
+          <input type="checkbox" id="extendDealCheckbox-${rowNumber}" ${renterIsDeal ? 'checked' : ''} ${isSaving ? 'disabled' : ''}>
+          <label for="extendDealCheckbox-${rowNumber}">Deal</label>
+        </div>
+        <div class="extend-note">1 month, or 30+ days, closes this booking out and starts a fresh rental record for the new period — the amount paid becomes that new record's total price. ("Paid from an existing deposit" above still applies to this too.)</div>
+        <button class="bc-btn confirm-extend" data-row="${rowNumber}" ${isSaving ? 'disabled' : ''}>${isSaving ? (savingExtendStage === 'saving' ? 'Saving…' : 'Connecting…') : 'Confirm'}</button>
+        <button class="bc-btn cancel-extend" data-row="${rowNumber}" ${isSaving ? 'disabled' : ''}>Cancel</button>
+      </div>
+    `;
+  }
+
+  if (openEditTimeRowNumber === rowNumber) {
+    const isSaving = savingEditTimeRowNumber === rowNumber;
+    // Defaults to whatever pickup date/time the calendar is currently
+    // showing: the confirmed date if staff have already adjusted this
+    // booking once, otherwise the original due date. Either way, this
+    // popup only ever writes to the calendar-only confirmed-date column
+    // -- never to the booking's actual due date.
+    const defaultDate = parseFlexibleDate(renter.confirmedReturnDate) || parseFlexibleDate(renter.returnDate);
+    const editDateValue = defaultDate ? toIsoDate(defaultDate) : todayIso();
+    // Prefills from whichever of the two already-existing link fields has
+    // something on file -- the Contract's own deliveryLink first (set at
+    // intake via "Deliver to hotel"), falling back to this row's own
+    // pickupLink (set via calendar.html's "Add/Change delivery/pickup
+    // link" button) if that's the only one set. Blank if neither is.
+    const editLinkValue = renter.deliveryLink || renter.pickupLink || '';
+    return `
+      <div class="bc-actions bc-actions-picker">
+        <div class="extend-datedays-row">
+          <input type="date" class="picker-input" id="editDateInput-${rowNumber}" value="${editDateValue}" ${isSaving ? 'disabled' : ''}>
+          <input type="time" class="picker-input" id="editTimeInput-${rowNumber}" value="${renter.returnTime || ''}" ${isSaving ? 'disabled' : ''}>
+        </div>
+        <input type="url" class="picker-input" id="editLinkInput-${rowNumber}" value="${quickviewEscapeAttr(editLinkValue)}" placeholder="Delivery/pickup link (Google Maps, optional)" ${isSaving ? 'disabled' : ''}>
+        <div class="extend-note">Adjusts the pickup date &amp; time shown on the bike-returns calendar only — the booking's actual due date on this page is not changed. The link (if any) is added to the calendar event and mirrored onto the Contract.</div>
+        <button class="bc-btn confirm-edit-time" data-row="${rowNumber}" ${isSaving ? 'disabled' : ''}>${isSaving ? (savingEditTimeStage === 'saving' ? 'Saving…' : 'Connecting…') : 'Confirm'}</button>
+        <button class="bc-btn cancel-edit-time" data-row="${rowNumber}" ${isSaving ? 'disabled' : ''}>Cancel</button>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="bc-actions">
+      <button class="bc-btn return-btn" data-row="${rowNumber}">Return</button>
+      <button class="bc-btn extend-btn" data-row="${rowNumber}">Extend</button>
+      <button class="bc-btn swap-btn" data-row="${rowNumber}">Swap Bike</button>
+      <button class="bc-btn edit-time-btn" data-row="${rowNumber}">Adjust Pickup</button>
+      <button class="bc-btn contact-btn" data-row="${rowNumber}">📩 Contact Customer</button>
+    </div>
+  `;
+}
+
+function bikeCardHtml(name, renter, query) {
+  const rented = !!renter;
+  const cls = rented ? 'rented' : 'not-rented';
+  const dueLabel = rented ? getDueLabel(renter.returnDate) : null;
+
+  // If we have both a chat name and a usable link for this renter's chat
+  // channel, show the chat name as a clickable link that opens that chat
+  // directly; otherwise fall back to the same plain, non-clickable text as
+  // before (e.g. no chat name at all, or a chat name but nothing on file
+  // to link with). Channel (WhatsApp vs Messenger) comes from
+  // renterContactChannel -- see its comment for the fallback logic.
+  const channel = rented ? renterContactChannel(renter) : 'whatsapp';
+  const chatLink = rented
+    ? (channel === 'messenger' ? buildMessengerLink(renter.messengerId) : buildWhatsAppLink(renter.number))
+    : null;
+  const chatLinkTitle = channel === 'messenger' ? 'Open Messenger chat' : 'Open WhatsApp chat';
+  // Link availability depends only on whether the resolved channel actually
+  // has something to link to (a usable WhatsApp number, or a Messenger
+  // username) -- NOT on whether a "chat name" happens to be on file too.
+  // Previously this whole thing was gated on renter.chatName, which
+  // silently hid the chat link for anyone with a Messenger username set
+  // but no WhatsApp-era "chat name" ever entered (that field predates
+  // Messenger support and was never required for it) -- e.g. Christian Jay
+  // Verona, 20/07/2026. Falls back to the generic "(chat)" label when
+  // there's a link but no chat name to show alongside it.
+  const chatNameHtml = (rented && (chatLink || renter.chatName))
+    ? (chatLink
+        ? ' <a class="bc-chatname" href="' + chatLink + '" target="_blank" rel="noopener" title="' + chatLinkTitle + '">' + (renter.chatName ? '(chat: ' + renter.chatName + ')' : '(chat)') + '</a>'
+        : ' <span class="bc-chatname">(chat: ' + renter.chatName + ')</span>')
+    : '';
+
+  const renterLine = rented
+    ? `<div class="bc-renter">🧑‍✈️ Rented to: <b>${renter.name || 'Unknown'}</b>${chatNameHtml}${renter.contact ? ' &nbsp;·&nbsp; ' + renter.contact : ''}</div>`
+    : '';
+
+  const dueBadge = dueLabel
+    ? `<span class="due-badge ${dueLabel.cls}">${dueLabel.text}</span>`
+    : '';
+
+  const details = rented
+    ? `<b>Due back:</b> ${formatDateDisplay(renter.returnDate)} ${dueBadge}`
+    : `Not rented`;
+
+  // Total paid + deposit on file -- both sourced (where possible) from the
+  // matched Contract row via Code.gs's findContractFinancialsForCustomerRow_,
+  // so this reflects the customer's whole rental (surviving swaps/
+  // extensions), not just this one customer-sheet row's own leg amount.
+  const financeLine = rented
+    ? `<div class="bc-finance">💰 Paid: ${renterPaidDisplayHtml(renter)} &nbsp;·&nbsp; 🔒 Deposit: ${renterDepositDisplayHtml(renter)}</div>`
+    : '';
+
+  const actions = rented ? renterActionsHtml(renter) : '';
+
+  return `
+    <div class="bike-card ${cls}">
+      <div class="bc-top">
+        <div class="bc-name">${highlight(name, query)}</div>
+        <div class="bc-tag ${cls}">${rented ? 'Rented' : 'Not rented'}</div>
+      </div>
+      ${renterLine}
+      <div class="bc-details">${details}</div>
+      ${financeLine}
+      ${actions}
+    </div>
+  `;
+}
+
+function render() {
+  const listBox = document.getElementById('listBox');
+  const countEl = document.getElementById('resultsCount');
+  const query = document.getElementById('bikeSearch').value.trim();
+
+  const matches = bikeNames
+    .filter(name => tokenMatch(name, query))
+    .map(name => {
+      const renter = findCurrentRenter(name);
+      const lastReturn = renter ? null : findLastReturn(name);
+      return { name, renter, lastReturn };
+    });
+
+  // Rented bikes first, soonest due-back at the very top. Not-rented bikes
+  // follow, most-recently-returned first; bikes with no rental history at
+  // all go last, alphabetically.
+  matches.sort((a, b) => {
+    if (a.renter && b.renter) {
+      const da = parseFlexibleDate(a.renter.returnDate) || new Date(8640000000000000);
+      const db = parseFlexibleDate(b.renter.returnDate) || new Date(8640000000000000);
+      return da - db;
+    }
+    if (a.renter && !b.renter) return -1;
+    if (!a.renter && b.renter) return 1;
+
+    const da = a.lastReturn ? parseFlexibleDate(a.lastReturn.returnDate) : null;
+    const db = b.lastReturn ? parseFlexibleDate(b.lastReturn.returnDate) : null;
+    if (da && db) return db - da;
+    if (da && !db) return -1;
+    if (!da && db) return 1;
+    return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+  });
+
+  countEl.textContent = matches.length + (matches.length === 1 ? ' bike' : ' bikes');
+
+  if (!matches.length) {
+    listBox.innerHTML = '<div class="empty-hint">No matching bikes.</div>';
+    return;
+  }
+
+  listBox.innerHTML = matches.map(m => bikeCardHtml(m.name, m.renter, query)).join('');
+}
+
+/* ---------------- Search box with live narrowing + autocomplete ---------------- */
+
+const searchInput = document.getElementById('bikeSearch');
+const acList = document.getElementById('bikeAcList');
+let hiIndex = -1;
+
+function closeAc() {
+  acList.classList.remove('show');
+  acList.innerHTML = '';
+  hiIndex = -1;
+}
+
+function openAc(query) {
+  const options = bikeNames.filter(n => tokenMatch(n, query)).slice(0, 8);
+  if (!query || options.length === 0) { closeAc(); return; }
+  acList.innerHTML = options.map((v, i) =>
+    `<div class="ac-item" data-index="${i}">${highlight(v, query)}</div>`
+  ).join('');
+  acList.classList.add('show');
+  hiIndex = -1;
+  Array.from(acList.children).forEach((el, i) => {
+    el.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      searchInput.value = options[i];
+      closeAc();
+      render();
+    });
+  });
+  acList._options = options;
+}
+
+searchInput.addEventListener('input', () => {
+  openAc(searchInput.value.trim());
+  render();
+});
+
+searchInput.addEventListener('focus', () => {
+  openAc(searchInput.value.trim());
+});
+
+searchInput.addEventListener('keydown', (e) => {
+  const items = Array.from(acList.children);
+  if (e.key === 'Enter') {
+    // Enter just confirms the current text as the filter (list is already
+    // narrowed live) and closes the suggestion dropdown.
+    e.preventDefault();
+    if (hiIndex >= 0 && acList._options) {
+      searchInput.value = acList._options[hiIndex];
+    }
+    closeAc();
+    render();
+    return;
+  }
+  if (!items.length) return;
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    hiIndex = Math.min(hiIndex + 1, items.length - 1);
+    items.forEach((el, i) => el.classList.toggle('hi', i === hiIndex));
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    hiIndex = Math.max(hiIndex - 1, 0);
+    items.forEach((el, i) => el.classList.toggle('hi', i === hiIndex));
+  } else if (e.key === 'Escape') {
+    closeAc();
+  }
+});
+
+document.addEventListener('click', (e) => {
+  if (!searchInput.contains(e.target) && !acList.contains(e.target)) closeAc();
+});
+
+/* ---------------- Return button + inline date-picker ---------------- */
+
+document.getElementById('listBox').addEventListener('click', (e) => {
+  const returnBtn = e.target.closest('.return-btn');
+  if (returnBtn) {
+    openReturnRowNumber = parseInt(returnBtn.dataset.row, 10);
+    delete returnEarlyToggleOpen[openReturnRowNumber];
+    delete returnCashToggleOpen[openReturnRowNumber];
+    openExtendRowNumber = null;
+    openEditTimeRowNumber = null;
+    render();
+    initReturnDepositLookup(openReturnRowNumber);
+    return;
+  }
+
+  const cancelBtn = e.target.closest('.cancel-return');
+  if (cancelBtn) {
+    delete returnDepositMatches[openReturnRowNumber];
+    delete returnDepositTypeDisplay[openReturnRowNumber];
+    delete returnEarlyToggleOpen[openReturnRowNumber];
+    delete returnCashToggleOpen[openReturnRowNumber];
+    openReturnRowNumber = null;
+    render();
+    return;
+  }
+
+  const confirmBtn = e.target.closest('.confirm-return');
+  if (confirmBtn) {
+    const rowNumber = parseInt(confirmBtn.dataset.row, 10);
+    const input = document.getElementById('returnDateInput-' + rowNumber);
+    const isoDate = input ? input.value : '';
+    if (!isoDate) {
+      alert('Pick a date first.');
+      return;
+    }
+
+    const deductionInput = document.getElementById('returnDeductionsInput-' + rowNumber);
+    const reasonInput = document.getElementById('returnDeductionReasonInput-' + rowNumber);
+    const deductionRaw = deductionInput ? deductionInput.value.trim() : '';
+    const deductionAmount = deductionRaw === '' ? 0 : parseFloat(deductionRaw);
+    const reason = reasonInput ? reasonInput.value.trim() : '';
+    const depositMatch = returnDepositMatches[rowNumber] || null;
+
+    if (isNaN(deductionAmount) || deductionAmount < 0) {
+      alert('Enter a valid deduction amount.');
+      return;
+    }
+    if (deductionAmount > 0 && !depositMatch) {
+      alert('There\'s no deposit on file to deduct from — clear the deduction amount, or fix the deposit match above first.');
+      return;
+    }
+    if (deductionAmount > 0 && !reason) {
+      alert('Enter a reason for the deduction.');
+      return;
+    }
+
+    // "Return deposit in cash" -- only ever actionable when it's actually
+    // ticked AND not currently disabled (disabled means either it's not
+    // eligible for this row -- no real non-cash deposit matched -- or the
+    // deduction field has a value, see refreshReturnDeductionCashExclusivity).
+    // Deliberately kept mutually exclusive with a deduction rather than
+    // supporting both on the same return -- see that function's comment.
+    const cashToggleEl = document.getElementById('returnCashToggle-' + rowNumber);
+    const returnDepositAsCash = !!(cashToggleEl && !cashToggleEl.disabled && cashToggleEl.checked);
+    if (returnDepositAsCash && deductionAmount > 0) {
+      // Shouldn't be reachable through the UI (each field disables the
+      // other), but guard it anyway rather than silently sending both.
+      alert('Can\'t return the deposit in cash while a deduction is entered — clear one or the other.');
+      return;
+    }
+    if (returnDepositAsCash && (!depositMatch || !depositMatch.amount)) {
+      alert('No deposit amount on file to return as cash — check the deposit match above first.');
+      return;
+    }
+
+    // Early return + refund -- a separate, independent piece from the
+    // security-deposit deduction just validated above. Only read/validated
+    // when the "Early return" box is actually ticked; unticked, this is
+    // exactly the same normal-return call as before.
+    const isEarlyReturn = !!returnEarlyToggleOpen[rowNumber];
+    let refundAmount = 0;
+    let refundPaidBy = '';
+    if (isEarlyReturn) {
+      const refundAmountInput = document.getElementById('returnRefundAmountInput-' + rowNumber);
+      const refundPaidByInput = document.getElementById('returnRefundPaidByInput-' + rowNumber);
+      const refundRaw = refundAmountInput ? refundAmountInput.value.trim() : '';
+      refundAmount = refundRaw === '' ? 0 : parseFloat(refundRaw);
+      refundPaidBy = refundPaidByInput ? refundPaidByInput.value : '';
+      if (isNaN(refundAmount) || refundAmount < 0) {
+        alert('Enter a valid refund amount (0 or more).');
+        return;
+      }
+      if (refundAmount > 0 && !refundPaidBy) {
+        alert('Select how the refund was paid.');
+        return;
+      }
+    }
+
+    confirmReturn(rowNumber, isoDate, depositMatch, deductionAmount, reason, isEarlyReturn, refundAmount, refundPaidBy, returnDepositAsCash);
+    return;
+  }
+
+  const extendBtn = e.target.closest('.extend-btn');
+  if (extendBtn) {
+    openExtendRowNumber = parseInt(extendBtn.dataset.row, 10);
+    extendAmountManuallyEditedRows.delete(openExtendRowNumber); // fresh popup, allow auto-fill again
+    openReturnRowNumber = null;
+    openEditTimeRowNumber = null;
+    render();
+    return;
+  }
+
+  const cancelExtendBtn = e.target.closest('.cancel-extend');
+  if (cancelExtendBtn) {
+    extendAmountManuallyEditedRows.delete(openExtendRowNumber);
+    openExtendRowNumber = null;
+    render();
+    return;
+  }
+
+  const confirmExtendBtn = e.target.closest('.confirm-extend');
+  if (confirmExtendBtn) {
+    const rowNumber = parseInt(confirmExtendBtn.dataset.row, 10);
+    const daysInput = document.getElementById('extendDaysInput-' + rowNumber);
+    const amountInput = document.getElementById('extendAmountInput-' + rowNumber);
+    const monthCheckbox = document.getElementById('extendMonthCheckbox-' + rowNumber);
+    const paidByInput = document.getElementById('extendPaidByInput-' + rowNumber);
+    const depositToggle = document.getElementById('extendDepositToggle-' + rowNumber);
+    const depositSelect = document.getElementById('extendDepositSelect-' + rowNumber);
+    const dealCheckbox = document.getElementById('extendDealCheckbox-' + rowNumber);
+    const extendMonth = !!(monthCheckbox && monthCheckbox.checked);
+    const days = daysInput ? parseInt(daysInput.value, 10) : NaN;
+    const amountRaw = amountInput ? amountInput.value.trim() : '';
+    const paidBy = paidByInput ? paidByInput.value : '';
+    // A blank amount is treated as 0 rather than rejected — for long
+    // extensions (checkbox, or 30+ days) a 0/blank amount gets auto-priced
+    // below in confirmExtend() as a fallback, in case the live auto-fill
+    // listeners didn't get a chance to run.
+    const amount = amountRaw === '' ? 0 : parseFloat(amountRaw);
+    // "Paid from an existing deposit" applies to both the short, in-place
+    // extension and the long one -- it used to be discarded for a long
+    // extension (that used to hand off to customers.html, which had its
+    // own separate copy of this option), but a long extension now submits
+    // directly from here too, so this same toggle covers it.
+    const isLongExtension = extendMonth || (days >= 30);
+    const paidFromDeposit = !!(depositToggle && depositToggle.checked);
+    const depositCategory = paidFromDeposit ? depositCategoryForPaidBy(paidBy) : null;
+    const depositRow = paidFromDeposit && depositSelect ? depositSelect.value : '';
+    // Deal only ever applies to a long extension (Anton, 20/07/2026,
+    // explicitly scoped out for short extensions) -- deliberately not read
+    // at all outside this branch, so an unnoticed stale tick can never
+    // affect a short, in-place extension.
+    const isDeal = isLongExtension && !!(dealCheckbox && dealCheckbox.checked);
+    // Days aren't needed when the "Extend 1 month" checkbox is ticked —
+    // the checkbox alone determines the new due date in that case.
+    if (!extendMonth && (!days || days <= 0)) {
+      alert('Enter how many days to extend.');
+      return;
+    }
+    if (isNaN(amount) || amount < 0) {
+      alert('Enter the amount paid.');
+      return;
+    }
+    if (!paidBy) {
+      alert('Select how this extension was paid.');
+      return;
+    }
+    if (paidFromDeposit && depositCategory !== 'cash' && !depositRow) {
+      alert('Select which deposit this is being paid from.');
+      return;
+    }
+    confirmExtend(rowNumber, days, amount, extendMonth, paidBy, paidFromDeposit, depositCategory, depositRow, isDeal);
+    return;
+  }
+
+  const editTimeBtn = e.target.closest('.edit-time-btn');
+  if (editTimeBtn) {
+    openEditTimeRowNumber = parseInt(editTimeBtn.dataset.row, 10);
+    openReturnRowNumber = null;
+    openExtendRowNumber = null;
+    render();
+    return;
+  }
+
+  const cancelEditTimeBtn = e.target.closest('.cancel-edit-time');
+  if (cancelEditTimeBtn) {
+    openEditTimeRowNumber = null;
+    render();
+    return;
+  }
+
+  const confirmEditTimeBtn = e.target.closest('.confirm-edit-time');
+  if (confirmEditTimeBtn) {
+    const rowNumber = parseInt(confirmEditTimeBtn.dataset.row, 10);
+    const dateInput = document.getElementById('editDateInput-' + rowNumber);
+    const timeInput = document.getElementById('editTimeInput-' + rowNumber);
+    const linkInput = document.getElementById('editLinkInput-' + rowNumber);
+    const isoDate = dateInput ? dateInput.value : '';
+    const hhmm = timeInput ? timeInput.value : '';
+    const deliveryLink = linkInput ? linkInput.value.trim() : '';
+    if (!isoDate) {
+      alert('Pick a date first.');
+      return;
+    }
+    if (!hhmm) {
+      alert('Pick a time first.');
+      return;
+    }
+    confirmEditTime(rowNumber, isoDate, hhmm, deliveryLink);
+  }
+});
+
+// Parses an <input type="date">'s yyyy-MM-dd value into a local Date at
+// midnight -- deliberately NOT reusing parseFlexibleDate's generic
+// `new Date(str)` fallback for this, since browsers parse a bare
+// "yyyy-MM-dd" string as UTC midnight, which can land on the wrong local
+// day depending on the device's timezone. Building the Date from its
+// year/month/day parts directly sidesteps that entirely.
+function parseIsoDateLocal(iso) {
+  const m = String(iso || '').trim().match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (!m) return null;
+  return new Date(parseInt(m[1], 10), parseInt(m[2], 10) - 1, parseInt(m[3], 10));
+}
+
+function extendCurrentDueDate(rowNumber) {
+  const renter = (customerRows || []).find(r => r.rowNumber === rowNumber);
+  return renter ? parseFlexibleDate(renter.returnDate) : null;
+}
+
+// The extend form's "Extend to" date and "Days" fields are two views of
+// the same thing -- editing either one recomputes the other from the
+// row's current due date, so staff can use whichever is more convenient
+// in the moment without the two ever disagreeing about what's actually
+// being requested. Whichever field's value confirmExtend() ends up
+// reading (always the days field, today) is guaranteed correct either way.
+function syncExtendDaysFromDate(rowNumber) {
+  const dateInput = document.getElementById('extendDateInput-' + rowNumber);
+  const daysInput = document.getElementById('extendDaysInput-' + rowNumber);
+  if (!dateInput || !daysInput || !dateInput.value) return;
+
+  const dueDate = extendCurrentDueDate(rowNumber);
+  const picked = parseIsoDateLocal(dateInput.value);
+  if (!dueDate || !picked) return;
+
+  const days = Math.round((picked - dueDate) / 86400000);
+  daysInput.value = days > 0 ? days : '';
+  maybeAutofillExtendAmount(rowNumber);
+}
+
+function syncExtendDateFromDays(rowNumber) {
+  const dateInput = document.getElementById('extendDateInput-' + rowNumber);
+  const daysInput = document.getElementById('extendDaysInput-' + rowNumber);
+  if (!dateInput || !daysInput) return;
+
+  const days = parseInt(daysInput.value, 10);
+  const dueDate = extendCurrentDueDate(rowNumber);
+  if (!days || days <= 0 || !dueDate) return;
+
+  const newDate = new Date(dueDate.getTime() + days * 86400000);
+  dateInput.value = toIsoDate(newDate);
+}
+
+// Rows whose "Amount paid" field staff have typed into directly on the
+// extend form -- once that happens, maybeAutofillExtendAmount() below
+// stops touching that row's amount field so the manual figure sticks,
+// until the popup is closed and reopened fresh (see the extend-btn and
+// confirm-extend handlers, which clear a row out of this set).
+let extendAmountManuallyEditedRows = new Set();
+
+// Auto-fills the "Amount paid" field on the extend form, LIVE, every time
+// the days field, the date field, or the "Extend 1 month" checkbox
+// changes -- unless staff have already typed into the amount field
+// themselves this time round, in which case it's left alone.
+//
+// Two different formulas apply, matching how staff actually price these:
+//  - LONG extension (the "Extend 1 month" checkbox ticked, or 30+ days):
+//    computeExtendPrice() quotes the extension period as a fresh booking
+//    of its own, at its own proper tiered/monthly rate.
+//  - SHORT extension (anything under 30 days): computeShortExtendPrice()
+//    charges the daily rate this booking is already on, instead of
+//    re-quoting the couple of extra days as their own mini-booking.
+function maybeAutofillExtendAmount(rowNumber) {
+  const daysInput = document.getElementById('extendDaysInput-' + rowNumber);
+  const amountInput = document.getElementById('extendAmountInput-' + rowNumber);
+  const monthCheckbox = document.getElementById('extendMonthCheckbox-' + rowNumber);
+  if (!daysInput || !amountInput || !monthCheckbox) return;
+
+  const extendMonth = monthCheckbox.checked;
+  const days = parseInt(daysInput.value, 10);
+  const renter = (customerRows || []).find(r => r.rowNumber === rowNumber);
+
+  // The "X days × ฿Y/day = ฿Z" text line updates every time, regardless of
+  // whether staff have manually overridden the amount field below -- it's
+  // informational, showing what the formula says, even if a different
+  // figure has been typed in by hand.
+  updateExtendPriceBreakdown(rowNumber, renter, extendMonth, days);
+  // Deal checkbox only ever applies to a long extension -- kept in sync
+  // live with the exact same days/month-checkbox inputs that determine
+  // isLongExtension below, via every path that can change them (typing
+  // days, picking a date, or ticking "Extend 1 month" all funnel through
+  // this function).
+  refreshExtendDealVisibility(rowNumber);
+
+  if (extendAmountManuallyEditedRows.has(rowNumber)) return; // staff already overrode the amount field this round
+  if (!extendMonth && (!days || days <= 0)) return; // nothing to price yet
+  if (!renter) return;
+
+  const isLongExtension = extendMonth || (days >= 30);
+  const price = isLongExtension
+    ? computeExtendPrice(renter.bikeModel, extendMonth, days)
+    : computeShortExtendPrice(renter, days);
+
+  if (price != null) {
+    amountInput.value = price;
+  }
+}
+
+document.getElementById('listBox').addEventListener('input', (e) => {
+  const daysEl = e.target.closest('[id^="extendDaysInput-"]');
+  if (daysEl) {
+    const rowNumber = parseInt(daysEl.id.replace('extendDaysInput-', ''), 10);
+    syncExtendDateFromDays(rowNumber);
+    maybeAutofillExtendAmount(rowNumber);
+    return;
+  }
+
+  const dateEl = e.target.closest('[id^="extendDateInput-"]');
+  if (dateEl) {
+    syncExtendDaysFromDate(parseInt(dateEl.id.replace('extendDateInput-', ''), 10));
+    return;
+  }
+
+  // Staff typing directly into the amount field is what marks it as a
+  // manual override -- setting .value from maybeAutofillExtendAmount()
+  // itself doesn't fire this 'input' event, so only a real keystroke here
+  // stops the live auto-fill for this row.
+  const amountEl = e.target.closest('[id^="extendAmountInput-"]');
+  if (amountEl) {
+    extendAmountManuallyEditedRows.add(parseInt(amountEl.id.replace('extendAmountInput-', ''), 10));
+  }
+
+  const deductionEl = e.target.closest('[id^="returnDeductionsInput-"]');
+  if (deductionEl) {
+    refreshReturnDeductionCashExclusivity(parseInt(deductionEl.id.replace('returnDeductionsInput-', ''), 10));
+  }
+});
+
+document.getElementById('listBox').addEventListener('change', (e) => {
+  const monthEl = e.target.closest('[id^="extendMonthCheckbox-"]');
+  if (monthEl) {
+    maybeAutofillExtendAmount(parseInt(monthEl.id.replace('extendMonthCheckbox-', ''), 10));
+  }
+
+  const paidByEl = e.target.closest('[id^="extendPaidByInput-"]');
+  if (paidByEl) {
+    refreshExtendPaidFromDepositUI(parseInt(paidByEl.id.replace('extendPaidByInput-', ''), 10));
+  }
+
+  const depositToggleEl = e.target.closest('[id^="extendDepositToggle-"]');
+  if (depositToggleEl) {
+    refreshExtendPaidFromDepositUI(parseInt(depositToggleEl.id.replace('extendDepositToggle-', ''), 10));
+  }
+
+  const earlyToggleEl = e.target.closest('[id^="returnEarlyToggle-"]');
+  if (earlyToggleEl) {
+    const rowNumber = parseInt(earlyToggleEl.id.replace('returnEarlyToggle-', ''), 10);
+    returnEarlyToggleOpen[rowNumber] = earlyToggleEl.checked;
+    refreshReturnEarlyUI(rowNumber);
+  }
+
+  const cashToggleEl = e.target.closest('[id^="returnCashToggle-"]');
+  if (cashToggleEl) {
+    const rowNumber = parseInt(cashToggleEl.id.replace('returnCashToggle-', ''), 10);
+    returnCashToggleOpen[rowNumber] = cashToggleEl.checked;
+    refreshReturnDeductionCashExclusivity(rowNumber);
+  }
+});
+
+// Shows/hides the refund amount + paid-via fields under the Return popup's
+// "Early return" checkbox -- toggles the container's style.display directly
+// rather than calling render(), so any deposit/deduction values staff
+// already typed elsewhere in the same popup aren't wiped out (same
+// technique refreshExtendPaidFromDepositUI above already uses for its own
+// deposit toggle).
+function refreshReturnEarlyUI(rowNumber) {
+  const fields = document.getElementById('returnEarlyFields-' + rowNumber);
+  if (!fields) return;
+  fields.style.display = returnEarlyToggleOpen[rowNumber] ? '' : 'none';
+}
+
+// ---- "Paid from an existing deposit" for the short (in-place) extend flow.
+// Mirrors the same feature on accounts.html / customers.html: pick a
+// payment method of scan/wise/revolut on the extend form and a checkbox
+// appears letting staff draw the extension payment from an existing
+// security deposit instead of a fresh cash transaction. Only applies to
+// the short, in-place extension -- the long extension (1 month / 30+ days)
+// hands off to customers.html, which has its own copy of this feature. ----
+function money(n) {
+  if (n === '' || n === null || n === undefined || isNaN(Number(n))) return '—';
+  const num = Number(n);
+  const sign = num < 0 ? '-' : '';
+  return sign + '฿' + Math.abs(num).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function depositCategoryForPaidBy(paidByVal) {
+  const v = (paidByVal || '').toString().trim().toLowerCase();
+  if (v === 'scan') return 'bank';
+  if (v === 'wise') return 'wise';
+  if (v === 'revolut') return 'revolut';
+  // Anton, 13/08/2026: Cash deposits have no tracking-sheet row to pick
+  // from (see deductCashDeposit in Code.gs) -- 'cash' isn't a
+  // DEPOSIT_CATEGORIES key, it's a special marker refreshExtendPaidFromDepositUI
+  // and the confirm-extend handler both check for, to skip the dropdown
+  // and send this straight to the Contract-only deduction path.
+  if (v === 'cash') return 'cash';
+  return null;
+}
+
+// Category keys (as used in the deposits data / DEPOSIT_CATEGORIES in
+// Code.gs) back to the label staff actually use for that payment method.
+const DEPOSIT_CATEGORY_LABELS = { bank: 'Scan', wise: 'Wise', revolut: 'Revolut' };
+
+function normalizePersonName(s) {
+  return (s || '').toString().trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+// ---- Auto-fills the deposit-return amount on the Return popup ----
+// The customer row's own "deposit method" field (Cash/Scan/Wise/Revolut/
+// Passport/blank) is often NOT reliable -- it can be blank even when a real
+// security deposit for that person is sitting in the Wise/Revolut/Scan
+// tracking table (e.g. it was never filled in on the intake form). So this
+// only trusts that field for the two cases where no lookup makes sense at
+// all (Cash -- nothing to look up; blank/Passport/anything unmapped -- go
+// straight to searching by name instead of assuming there's nothing there):
+//  - Cash: amount stays blank/disabled, nothing to look up.
+//  - Scan/Wise/Revolut: search that ONE category's table for a name match
+//    first (fast path, matches what's actually recorded for this booking).
+//  - If that doesn't turn up exactly one match (including when the stored
+//    method is blank, Passport, or anything else not in the three
+//    categories): fall back to searching ALL THREE categories by name.
+//    A single match there fills in the amount AND corrects the displayed
+//    deposit type to whatever category it was actually found under.
+// Zero or multiple matches (in either step) leave the amount blank with a
+// note, rather than guess.
+//
+// Whenever exactly one deposit is matched (either step), its {category,
+// row} is remembered in returnDepositMatches so Confirm knows exactly
+// which sheet row to clear -- and whether there's a real deposit to
+// deduct from at all -- without re-searching. Cleared/left unset in every
+// other case (Cash, no match, multiple matches), so Confirm can tell "no
+// deposit to touch" apart from "a deposit was found".
+let returnDepositMatches = {};
+
+// What the "Deposit type" label should actually show right now, per row --
+// the single source of truth renterActionsHtml()'s template reads from
+// (see its comment). Only ever set to "Loading…"/a corrected label when
+// the customer row's own deposit field was blank to begin with; a booking
+// with a real recorded method (Cash/Scan/Wise/Revolut/Passport) shows that
+// immediately and this map is never touched for it.
+let returnDepositTypeDisplay = {};
+
+async function initReturnDepositLookup(rowNumber) {
+  const renter = (customerRows || []).find(r => r.rowNumber === rowNumber);
+  const amountInput = document.getElementById('returnDepositAmountInput-' + rowNumber);
+  const note = document.getElementById('returnDepositNote-' + rowNumber);
+  const typeLabel = document.getElementById('returnDepositTypeLabel-' + rowNumber);
+  if (!renter || !amountInput || !note) return;
+
+  amountInput.value = '';
+  amountInput.disabled = false;
+  note.textContent = '';
+  // Reset any red/bold warning styling a previous open of this same row
+  // may have applied (see the "untraceable Scan/Wise/Revolut deposit"
+  // branch below) -- otherwise a plain, later note could be stranded in
+  // red as if it were still an error.
+  note.style.color = '';
+  note.style.fontWeight = '';
+  delete returnDepositMatches[rowNumber];
+  // Cleared unconditionally on every fresh lookup, not just when blank --
+  // otherwise a stale label from a previous open of this same row (e.g.
+  // corrected to "Wise" last time) could linger and mask a freshly-loaded,
+  // genuinely different renter.deposit value on this run.
+  delete returnDepositTypeDisplay[rowNumber];
+  // Same reasoning -- the "Return deposit in cash" checkbox only makes
+  // sense against a freshly-matched, real non-cash deposit (see
+  // refreshReturnCashToggleUI below), so hide/reset it on every fresh
+  // lookup too rather than leaving a stale row-vs-match mismatch on screen.
+  delete returnCashToggleOpen[rowNumber];
+  refreshReturnCashToggleUI(rowNumber);
+
+  const depositType = (renter.deposit || '').toString().trim();
+  const depositTypeWasBlank = !depositType;
+
+  // Nothing recorded on the booking itself -- show "Loading…" instead of
+  // jumping straight to "No deposit on file", since the cross-category
+  // search below might still find a real one (see this function's header
+  // comment). Corrected to whatever's actually found once that resolves.
+  if (depositTypeWasBlank) {
+    returnDepositTypeDisplay[rowNumber] = 'Loading…';
+    if (typeLabel) typeLabel.textContent = 'Loading…';
+  }
+
+  if (depositType.toLowerCase() === 'cash') {
+    // Cash deposits are never logged in the Wise/Scan/Revolut tracking
+    // sheet, so there's nothing to search for or clear -- but that doesn't
+    // mean there's no deposit at all. Still register a match (row: null,
+    // since there's no sheet row) so Confirm treats a Deduction entered
+    // here as legitimate instead of blocking it with "no deposit on file".
+    amountInput.disabled = true;
+    note.textContent = 'Cash deposit — not tracked here. Any deduction below will be logged as cash income.';
+    returnDepositMatches[rowNumber] = { category: 'cash', row: null };
+    return;
+  }
+
+  const primaryCategory = depositCategoryForPaidBy(depositType);
+  note.textContent = 'Looking up deposit…';
+
+  let res;
+  try {
+    res = await fetch(scriptUrl + '?action=deposits').then(r => r.json());
+  } catch (err) {
+    res = null;
+  }
+  // The Return popup may have been closed/re-opened on a different row
+  // while this fetch was in flight -- bail out quietly rather than writing
+  // into the wrong row's fields.
+  if (openReturnRowNumber !== rowNumber || !document.getElementById('returnDepositAmountInput-' + rowNumber)) return;
+  if (!res || !res.success) {
+    note.textContent = 'Could not load deposits — enter amount manually.';
+    if (depositTypeWasBlank) {
+      returnDepositTypeDisplay[rowNumber] = 'Unknown';
+      if (typeLabel) typeLabel.textContent = 'Unknown';
+    }
+    return;
+  }
+
+  const deposits = res.deposits || [];
+  const target = normalizePersonName(renter.name);
+
+  if (primaryCategory) {
+    const inCategory = deposits.filter(d => d.category === primaryCategory && normalizePersonName(d.name) === target);
+    if (inCategory.length === 1) {
+      amountInput.value = inCategory[0].amount;
+      note.textContent = 'Matched ' + depositType + ' deposit for ' + renter.name + ' — ' + money(inCategory[0].amount) + ' remaining.';
+      returnDepositMatches[rowNumber] = { category: primaryCategory, row: inCategory[0].row, amount: Number(inCategory[0].amount) || 0 };
+      refreshReturnCashToggleUI(rowNumber);
+      return;
+    }
+    if (inCategory.length > 1) {
+      note.textContent = 'Multiple matching ' + depositType + ' deposits found for ' + renter.name + ' — enter manually.';
+      return;
+    }
+    // inCategory.length === 0 -- fall through to the cross-category search
+    // below, in case it was actually logged under a different method.
+  }
+
+  const anyMatch = deposits.filter(d => normalizePersonName(d.name) === target);
+  if (anyMatch.length === 1) {
+    const match = anyMatch[0];
+    const label = DEPOSIT_CATEGORY_LABELS[match.category] || match.category;
+    returnDepositTypeDisplay[rowNumber] = label;
+    if (typeLabel) typeLabel.textContent = label;
+    amountInput.value = match.amount;
+    note.textContent = (depositType ? 'No "' + depositType + '" match, but found' : 'Found') +
+      ' a ' + label + ' deposit for ' + renter.name + ' — ' + money(match.amount) + ' remaining.';
+    returnDepositMatches[rowNumber] = { category: match.category, row: match.row, amount: Number(match.amount) || 0 };
+    refreshReturnCashToggleUI(rowNumber);
+    return;
+  }
+
+  if (anyMatch.length > 1) {
+    note.textContent = 'Multiple matching deposits found for ' + renter.name + ' across categories — enter manually.';
+    if (depositTypeWasBlank) {
+      returnDepositTypeDisplay[rowNumber] = 'Multiple possible matches';
+      if (typeLabel) typeLabel.textContent = 'Multiple possible matches';
+    }
+    return;
+  }
+
+  // anyMatch.length === 0 from here on -- nothing tracked anywhere under
+  // this name, in any category.
+  if (!depositTypeWasBlank) {
+    // A real deposit method WAS recorded on this booking (e.g. staff typed
+    // "Scan") -- trust it and just report nothing turned up. Guessing from
+    // the rental's own payment method below would second-guess a value
+    // staff deliberately entered.
+    amountInput.disabled = true;
+    note.textContent = 'No deposit on file.';
+    return;
+  }
+
+  // Nothing recorded on the booking's OWN deposit field, AND nothing
+  // turned up searching by name either -- this is the common "staff never
+  // bothered filling in the deposit-method dropdown for a cash deposit"
+  // case. Rather than leave it at a flat "No deposit on file" (which reads
+  // identically whether a deposit was ever taken at all), fall back to
+  // whatever payment method the RENTAL ITSELF was paid by -- a separate,
+  // almost-always-filled-in field -- as a best guess, so staff see e.g.
+  // "Cash" instead of nothing. Cash is trusted as a guess and stays
+  // editable (nothing is ever tracked for a cash deposit anyway, so there's
+  // nothing to verify against -- see that branch below); a guessed
+  // Scan/Wise/Revolut is treated very differently -- see the branch below,
+  // which flags it as needing a human check instead of just letting staff
+  // type an amount in by hand.
+  const rentalPaidBy = (renter.paidBy || '').toString().trim();
+  const rentalPaidByLower = rentalPaidBy.toLowerCase();
+
+  if (rentalPaidByLower === 'cash') {
+    returnDepositTypeDisplay[rowNumber] = 'Cash';
+    if (typeLabel) typeLabel.textContent = 'Cash';
+    amountInput.disabled = true;
+    note.textContent = 'No deposit tracked — assumed Cash, based on how the rental itself was paid. Any deduction below will be logged as cash income.';
+    returnDepositMatches[rowNumber] = { category: 'cash', row: null };
+    return;
+  }
+
+  const fallbackCategory = depositCategoryForPaidBy(rentalPaidBy);
+  if (fallbackCategory) {
+    const label = DEPOSIT_CATEGORY_LABELS[fallbackCategory] || rentalPaidBy;
+    returnDepositTypeDisplay[rowNumber] = label;
+    if (typeLabel) typeLabel.textContent = label;
+    // Anton, 21/07/2026: unlike Cash (genuinely never logged in the
+    // Wise/Scan/Revolut tracking table, see the branch above -- nothing
+    // to check there), a Scan/Wise/Revolut deposit SHOULD always be
+    // traceable to a real row in that table. If it isn't, that's a data
+    // problem, not something to paper over -- this used to silently
+    // ASSUME a deposit existed here just because that's how the rental
+    // itself happened to be paid, and let staff log a deduction against
+    // it anyway (registering a match with row: null). That's exactly how
+    // an untracked, unverifiable deduction could get logged as if it were
+    // real. Now this stops and flags it instead: amountInput stays
+    // disabled and no match is registered, so Confirm's own "no deposit
+    // on file to deduct from" guard blocks any deduction here until a
+    // human has actually checked.
+    amountInput.disabled = true;
+    note.style.color = '#C0392B';
+    note.style.fontWeight = '600';
+    note.textContent = '⚠️ No tracked ' + label + ' deposit found for ' + renter.name + ' in this month\'s records, ' +
+      'under any category. This rental was paid by ' + label + ', so a real deposit here should be traceable — ' +
+      'please check the Wise/Revolut/Scan deposit tables by hand before returning this bike, and correct it on ' +
+      'the Contract page if it turns out to be missing or logged wrong.';
+    return;
+  }
+
+  // Rental paidBy is blank or something unrecognized too -- no better
+  // guess available than a flat "no deposit on file".
+  amountInput.disabled = true;
+  returnDepositTypeDisplay[rowNumber] = 'No deposit on file';
+  if (typeLabel) typeLabel.textContent = 'No deposit on file';
+  note.textContent = 'No deposit on file.';
+}
+
+// ---- Shows/hides the Return popup's "Return deposit in cash" checkbox --
+// only ever offered against a real, matched Scan/Bank, Wise or Revolut
+// deposit (a sheet row actually exists to clear -- see returnDepositMatches
+// above). Never offered for a Cash deposit (already cash, nothing to
+// convert) or when nothing's been matched yet/at all. Hiding it also resets
+// its ticked state and unchecks the box, so a stale tick from a previous
+// row/lookup can never survive into a case where it no longer applies. ----
+function refreshReturnCashToggleUI(rowNumber) {
+  const toggleRow = document.getElementById('returnCashToggleRow-' + rowNumber);
+  if (!toggleRow) return;
+  const match = returnDepositMatches[rowNumber];
+  const eligible = !!(match && match.category && match.category !== 'cash' && match.row);
+  toggleRow.style.display = eligible ? '' : 'none';
+  if (!eligible) {
+    returnCashToggleOpen[rowNumber] = false;
+    const cb = document.getElementById('returnCashToggle-' + rowNumber);
+    if (cb) cb.checked = false;
+  }
+  refreshReturnDeductionCashExclusivity(rowNumber);
+}
+
+// ---- Keeps "Return deposit in cash" and "Deductions" mutually exclusive
+// (Anton, 22/07/2026): handling a deduction AND a cross-method cash return
+// on the same deposit at once would need the full any-to-any split he
+// deliberately asked not to build (see returnDeposit's design comment in
+// Code.gs) -- so instead of supporting that, the UI just blocks combining
+// the two. Whichever the user fills in first locks out the other field
+// entirely (greyed out via disabled, not merely warned about), so there's
+// no way to end up with both set at once:
+//   - Deduction entered (> 0)  -> the cash checkbox is disabled (and
+//     force-unticked, in case it was already ticked before the deduction
+//     was typed).
+//   - Cash checkbox ticked     -> the deduction + reason inputs are
+//     disabled, so nothing can be typed into them while it's ticked.
+// Clearing whichever one was set unlocks the other again. ----
+function refreshReturnDeductionCashExclusivity(rowNumber) {
+  const cashCb = document.getElementById('returnCashToggle-' + rowNumber);
+  const deductionInput = document.getElementById('returnDeductionsInput-' + rowNumber);
+  const reasonInput = document.getElementById('returnDeductionReasonInput-' + rowNumber);
+  if (!cashCb || !deductionInput) return;
+  if (cashCb.disabled) return; // isSaving, or not eligible -- leave render()'s own disabling alone
+
+  const deductionRaw = deductionInput.value.trim();
+  const deductionHasValue = deductionRaw !== '' && parseFloat(deductionRaw) > 0;
+  if (deductionHasValue && cashCb.checked) {
+    // Shouldn't be reachable (each branch below disables the other field
+    // before this could happen), but if it ever is, deduction wins and the
+    // stale cash tick is cleared rather than silently sending both.
+    cashCb.checked = false;
+    returnCashToggleOpen[rowNumber] = false;
+  }
+
+  cashCb.disabled = deductionHasValue;
+  deductionInput.disabled = cashCb.checked;
+  if (reasonInput) reasonInput.disabled = cashCb.checked;
+}
+
+async function populateExtendDepositSelect(rowNumber, categoryKey) {
+  const select = document.getElementById('extendDepositSelect-' + rowNumber);
+  if (!select) return;
+  select.innerHTML = '<option value="">Loading…</option>';
+  select.disabled = true;
+  try {
+    const res = await fetch(scriptUrl + '?action=deposits').then(r => r.json());
+    // The row may have been collapsed/re-rendered while this fetch was in
+    // flight (extend cancelled, another row opened) -- bail out quietly.
+    if (openExtendRowNumber !== rowNumber || !document.getElementById('extendDepositSelect-' + rowNumber)) return;
+    if (!res.success) {
+      select.innerHTML = '<option value="">— Could not load deposits —</option>';
+      return;
+    }
+    const matches = (res.deposits || []).filter(d => d.category === categoryKey);
+    if (!matches.length) {
+      select.innerHTML = '<option value="">— No deposits available —</option>';
+      return;
+    }
+    select.innerHTML = '<option value="">— Select —</option>' +
+      matches.map(d => `<option value="${d.row}">${(d.name || '(no name)')} — ${money(d.amount)}</option>`).join('');
+  } catch (err) {
+    select.innerHTML = '<option value="">— Could not load deposits —</option>';
+  } finally {
+    if (openExtendRowNumber === rowNumber && document.getElementById('extendDepositSelect-' + rowNumber)) {
+      select.disabled = false;
+    }
+  }
+}
+
+function refreshExtendPaidFromDepositUI(rowNumber) {
+  const toggleRow = document.getElementById('extendDepositToggleRow-' + rowNumber);
+  const toggleCheckbox = document.getElementById('extendDepositToggle-' + rowNumber);
+  const select = document.getElementById('extendDepositSelect-' + rowNumber);
+  const paidByInput = document.getElementById('extendPaidByInput-' + rowNumber);
+  if (!toggleRow || !toggleCheckbox || !select || !paidByInput) return;
+
+  const category = depositCategoryForPaidBy(paidByInput.value);
+  if (!category) {
+    toggleRow.style.display = 'none';
+    toggleCheckbox.checked = false;
+    select.style.display = 'none';
+    select.disabled = true;
+    select.innerHTML = '<option value="">— Select —</option>';
+    return;
+  }
+
+  toggleRow.style.display = '';
+
+  // Cash (Anton, 13/08/2026): no tracking-sheet rows to choose between --
+  // Code.gs finds the customer's own Contract row by name automatically,
+  // same as the Deposits page's Cash section already does -- so this
+  // dropdown never applies here, checked or not.
+  if (category === 'cash') {
+    select.style.display = 'none';
+    select.disabled = true;
+    select.innerHTML = '<option value="">— Select —</option>';
+    return;
+  }
+
+  if (toggleCheckbox.checked) {
+    select.style.display = '';
+    populateExtendDepositSelect(rowNumber, category);
+  } else {
+    select.style.display = 'none';
+    select.disabled = true;
+    select.innerHTML = '<option value="">— Select —</option>';
+  }
+}
+
+// Shows/hides the Deal checkbox row live, exactly when this extend popup's
+// current inputs would actually trigger a LONG extension (see confirmExtend's
+// isLongExtension check -- kept in sync with that same rule here). Forces
+// the checkbox back off whenever it's hidden, so toggling days back down
+// under 30 (or unticking "Extend 1 month") can't leave a stale, invisible
+// tick behind that would otherwise do nothing anyway once hidden -- see the
+// confirm-extend handler, which only ever reads this checkbox inside its
+// own isLongExtension branch.
+function refreshExtendDealVisibility(rowNumber) {
+  const toggleRow = document.getElementById('extendDealToggleRow-' + rowNumber);
+  const toggleCheckbox = document.getElementById('extendDealCheckbox-' + rowNumber);
+  const monthCheckbox = document.getElementById('extendMonthCheckbox-' + rowNumber);
+  const daysInput = document.getElementById('extendDaysInput-' + rowNumber);
+  if (!toggleRow || !toggleCheckbox || !monthCheckbox) return;
+
+  const extendMonth = monthCheckbox.checked;
+  const days = daysInput ? parseInt(daysInput.value, 10) : NaN;
+  const isLongExtension = extendMonth || (days >= 30);
+
+  if (isLongExtension) {
+    toggleRow.style.display = '';
+  } else {
+    toggleRow.style.display = 'none';
+    toggleCheckbox.checked = false;
+  }
+}
+
+function confirmReturn(rowNumber, isoDate, depositMatch, deductionAmount, reason, isEarlyReturn, refundAmount, refundPaidBy, returnDepositAsCash) {
+  savingReturnRowNumber = rowNumber;
+  savingReturnStage = 'connecting';
+  render();
+  setAllButtonsDisabled(true);
+  const stageTimer = setTimeout(() => { savingReturnStage = 'saving'; render(); setAllButtonsDisabled(true); }, 500);
+
+  // A normal return (the "Early return" box left unticked) keeps using the
+  // exact same 'markReturned' action as always -- nothing about that path
+  // changes. 'earlyReturnBike' is only ever sent when the box is ticked,
+  // even if the refund amount itself is 0 -- earlyReturnBike() handles a
+  // 0 refund by doing exactly the same close-out markReturned does (see its
+  // own comment in Code.gs), so ticking the box and leaving it at 0 is
+  // still just a normal return, just routed through the one action that
+  // already knows how to handle either case.
+  const body = isEarlyReturn
+    ? { action: 'earlyReturnBike', rowNumber: rowNumber, returnDate: isoDate, refundAmount: refundAmount, refundPaidBy: refundPaidBy }
+    : { action: 'markReturned', rowNumber: rowNumber, returnDate: isoDate };
+
+  fetch(scriptUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify(body)
+  })
+    .then(res => res.json())
+    .then(result => {
+      clearTimeout(stageTimer);
+      setAllButtonsDisabled(false);
+      if (!result.success) throw new Error(result.error || 'Could not save.');
+      // Post-write verification problems (the server re-reads what it
+      // wrote and compares) come back as a warning -- the save DID go
+      // through, but something should be checked by hand.
+      if (result.warning) alert('Saved, but: ' + result.warning);
+      openReturnRowNumber = null;
+      savingReturnRowNumber = null;
+      delete returnDepositMatches[rowNumber];
+      delete returnDepositTypeDisplay[rowNumber];
+      delete returnEarlyToggleOpen[rowNumber];
+      delete returnCashToggleOpen[rowNumber];
+
+      // Both markReturned and earlyReturnBike touch this one customer
+      // row's return date/time-color/situation the same way -- a refund
+      // (earlyReturnBike only) additionally changes this row's total price
+      // plus the Contract/ledger/bikes/accounts sheets, but none of those
+      // are reflected in the on-page bikes-status list anyway (it doesn't
+      // show total price once a bike drops off the "currently rented"
+      // list), so the same direct local update covers both cases without
+      // waiting on a full reload.
+      const row = (customerRows || []).find(r => r.rowNumber === rowNumber);
+      if (row) {
+        row.returnDate = isoToDmy(isoDate);
+        row.situation = 'Returned';
+        render();
+      } else {
+        // Shouldn't normally happen, but fall back to a full reload rather
+        // than leave the list looking out of date if it ever does.
+        return loadData();
+      }
+
+      // The bike return itself is already saved by this point -- the
+      // deposit side (clearing the matched entry, logging any deduction as
+      // its own income) is a separate, best-effort follow-up call so a
+      // problem there never undoes or blocks the return that just
+      // succeeded. Only fires when a deposit was actually matched on this
+      // popup; a booking with no deposit on file skips this entirely.
+      if (depositMatch) {
+        submitReturnDeposit(depositMatch, deductionAmount, reason, row ? row.name : '', row ? row.bikeModel : '', returnDepositAsCash);
+      }
+    })
+    .catch(err => {
+      clearTimeout(stageTimer);
+      setAllButtonsDisabled(false);
+      savingReturnRowNumber = null;
+      render();
+      alert('Could not mark as returned: ' + err.message);
+    });
+}
+
+// Fires after confirmReturn()'s markReturned call has already succeeded --
+// the bike return itself is done and saved by this point, so this is a
+// separate best-effort step: clears the matched security deposit entirely
+// and, if a deduction was entered, logs it as its own normal income entry
+// (see the 'returnDeposit' action in Code.gs for exactly what that does
+// server-side). A problem here surfaces as its own alert rather than
+// rolling back the return that already succeeded.
+function submitReturnDeposit(depositMatch, deductionAmount, reason, customerName, bikeModel, returnDepositAsCash) {
+  const body = {
+    action: 'returnDeposit',
+    category: depositMatch.category,
+    row: depositMatch.row,
+    deductionAmount: deductionAmount,
+    reason: reason,
+    customerName: customerName,
+    bikeModel: bikeModel
+  };
+  // "Return deposit in cash" -- always the WHOLE matched deposit amount,
+  // never split with a deduction (the two are mutually exclusive in the
+  // UI, and returnDepositAsCash is only ever true when deductionAmount is
+  // 0 -- see the confirm-return click handler). Reuses returnDeposit()'s
+  // existing (and already-correct) cross-method release/payout handling in
+  // Code.gs -- see its design comment -- just always fixed to 'cash' here,
+  // rather than exposing the full any-to-any category switch that logic
+  // also supports.
+  if (returnDepositAsCash && depositMatch.amount) {
+    body.returnedVia = 'cash';
+    body.returnedViaAmount = depositMatch.amount;
+  }
+  fetch(scriptUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify(body)
+  })
+    .then(res => res.json())
+    .then(result => {
+      if (!result.success) {
+        alert('Bike marked returned, but the deposit could not be processed: ' + (result.error || 'unknown error'));
+        return;
+      }
+      if (result.warning) alert('Deposit processed, but: ' + result.warning);
+    })
+    .catch(err => {
+      alert('Bike marked returned, but the deposit could not be processed: ' + err.message);
+    });
+}
+
+// Lets staff record the actual agreed pickup DATE & TIME on an active
+// booking -- e.g. the intake form had a placeholder time, or the customer
+// is returning a day early. This only ever updates the shared bike-
+// returns calendar (moving/recoloring that one event); the booking's
+// actual due date shown elsewhere on this page (overdue badge, extend
+// math, etc.) is never touched.
+function confirmEditTime(rowNumber, isoDate, hhmm, deliveryLink) {
+  savingEditTimeRowNumber = rowNumber;
+  savingEditTimeStage = 'connecting';
+  render();
+  setAllButtonsDisabled(true);
+  const stageTimer = setTimeout(() => { savingEditTimeStage = 'saving'; render(); setAllButtonsDisabled(true); }, 500);
+
+  fetch(scriptUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({ action: 'updateReturnPickup', rowNumber: rowNumber, returnDate: isoDate, returnTime: hhmm, deliveryLink: deliveryLink })
+  })
+    .then(res => res.json())
+    .then(result => {
+      clearTimeout(stageTimer);
+      setAllButtonsDisabled(false);
+      if (!result.success) throw new Error(result.error || 'Could not save.');
+      if (result.warning) alert('Saved, but: ' + result.warning);
+      openEditTimeRowNumber = null;
+      savingEditTimeRowNumber = null;
+
+      // updateReturnPickup touches this one customer row's return time,
+      // confirmed-pickup-date, and (if a link was entered) pickupLink
+      // columns -- plus, best-effort, the matching Contract row's own
+      // deliveryLink, and the shared calendar event to match -- nothing
+      // else shifts, so the on-page list can be updated directly instead
+      // of waiting on a full reload of the bikes + customer data.
+      const row = (customerRows || []).find(r => r.rowNumber === rowNumber);
+      if (row) {
+        row.returnTime = hhmm;
+        row.confirmedReturnDate = isoToDmy(isoDate);
+        // Mirrors both link fields locally so this popup's own prefill
+        // (deliveryLink || pickupLink) and QuickView's "🛵 Delivery" link
+        // (which reads deliveryLink) both reflect the change immediately,
+        // without needing a full reload -- same reasoning as returnTime/
+        // confirmedReturnDate just above.
+        row.pickupLink = deliveryLink;
+        row.deliveryLink = deliveryLink;
+        render();
+      } else {
+        // Shouldn't normally happen, but fall back to a full reload rather
+        // than leave the list looking out of date if it ever does.
+        return loadData();
+      }
+    })
+    .catch(err => {
+      clearTimeout(stageTimer);
+      setAllButtonsDisabled(false);
+      savingEditTimeRowNumber = null;
+      render();
+      alert('Could not update the return time: ' + err.message);
+    });
+}
+
+// Adds one calendar month to a date, clamping to the last day of the
+// target month when the start date doesn't exist there (e.g. Jan 31 + 1
+// month lands on Feb 28/29, not Mar 3).
+function addOneCalendarMonth(date) {
+  const d = new Date(date.getTime());
+  const startDay = d.getDate();
+  d.setMonth(d.getMonth() + 1);
+  if (d.getDate() !== startDay) {
+    d.setDate(0);
+  }
+  return d;
+}
+
+function toIsoDate(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+// A long extension (1-month checkbox, or 30+ days typed in) doesn't just
+// push the due date on the existing booking — it closes that booking out
+// (using its current due date, unchanged, as the point it ended) and hands
+// off to the Customer Record form to start a brand-new rental record for
+// the extension period, prefilled from this booking's details. The
+// checkbox takes precedence over the days field if both are given.
+function confirmExtend(rowNumber, daysToExtend, amountPaid, extendMonth, paidBy, paidFromDeposit, depositCategory, depositRow, isDeal) {
+  const isLongExtension = extendMonth || (daysToExtend >= 30);
+
+  if (isLongExtension) {
+    const renter = (customerRows || []).find(r => r.rowNumber === rowNumber);
+    if (!renter) {
+      alert("Could not find this booking's details — try refreshing the page.");
+      return;
+    }
+    const oldDue = parseFlexibleDate(renter.returnDate);
+    if (!oldDue) {
+      alert('Could not read the current due date to extend from.');
+      return;
+    }
+    const newReturn = extendMonth
+      ? addOneCalendarMonth(oldDue)
+      : new Date(oldDue.getTime() + daysToExtend * 86400000);
+
+    // Fallback in case the live auto-fill listeners didn't get a chance to
+    // run (e.g. Confirm clicked immediately after ticking the checkbox):
+    // price the extension period from the bike's category rate if nothing
+    // was entered. There's no follow-up screen to fix a missing price on
+    // anymore (this now submits directly), so if neither a typed amount
+    // nor an auto-price is available, this stops here rather than closing
+    // out the old booking and submitting a ฿0 extension.
+    let finalAmount = amountPaid;
+    if (!finalAmount) {
+      const autoPrice = computeExtendPrice(renter.bikeModel, extendMonth, daysToExtend);
+      if (autoPrice != null) {
+        finalAmount = autoPrice;
+      } else {
+        alert("Couldn't auto-calculate a price for \"" + renter.bikeModel + "\" (no matching category found) — enter the total price by hand in the Amount field above, then hit Confirm again.");
+        return;
+      }
+    }
+
+    savingExtendRowNumber = rowNumber;
+    savingExtendStage = 'connecting';
+    render();
+    setAllButtonsDisabled(true);
+    const closeStageTimer = setTimeout(() => { savingExtendStage = 'saving'; render(); setAllButtonsDisabled(true); }, 500);
+
+    // Closes out the old booking, then submits the new period straight
+    // through -- the same plain intake call customers.html's own Add form
+    // makes (no `action` field, so Code.gs's doPost falls through to its
+    // default customer-intake branch) -- instead of routing through that
+    // page for a manual review + click. Uses this booking's data exactly
+    // as it sits on the sheet right now; there's currently no in-app edit
+    // for a customer-sheet row, so if anything here turns out wrong,
+    // fix it on the sheet directly.
+    fetch(scriptUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ action: 'closeBikeForExtend', rowNumber: rowNumber })
+    })
+      .then(res => res.json())
+      .then(closeResult => {
+        if (!closeResult.success) throw new Error(closeResult.error || 'Could not close out the old booking.');
+        // Post-write verification problems come back as a warning -- the
+        // close-out DID go through, but something should be checked by
+        // hand. Held onto and combined with any warning from the new row
+        // below, rather than surfaced separately.
+        const closeWarning = closeResult.warning || null;
+
+        const payload = {
+          contact: renter.contact || '',
+          name: renter.name || '',
+          nationality: renter.nationality || '',
+          passport: renter.passport || '',
+          bikeModel: renter.bikeModel || '',
+          rentingDateFrom: toIsoDate(oldDue),
+          returnDate: toIsoDate(newReturn),
+          returnTime: renter.returnTime || '',
+          deliverToHotel: renter.deliverToHotel || '',
+          totalPrice: String(finalAmount),
+          paidBy: paidBy || renter.paidBy || '',
+          source: 'extend',
+          // Lets the new row's ledger note pick up this booking's full
+          // rental history (every prior leg) instead of starting blank --
+          // see appendLedgerEntry's isExtendSource branch in Code.gs.
+          previousRowNumber: String(rowNumber),
+          // Deal (Anton, 20/07/2026) -- only ever sent for a long extension
+          // (see the confirm-extend handler, which never sets isDeal=true
+          // outside that case). Code.gs's plain customer-intake branch
+          // (the one this payload hits, same as customers.html's Add form)
+          // already reads data.isDeal and appends the " Deal" tag onto this
+          // new row's Contact-cell running-total note -- no backend change
+          // needed for this to work.
+          isDeal: !!isDeal
+        };
+        // Cash (Anton, 13/08/2026) has no depositRow to select -- see
+        // refreshExtendPaidFromDepositUI -- so it's allowed through here
+        // without one; every other category still requires a picked row.
+        if (paidFromDeposit && depositCategory && (depositCategory === 'cash' || depositRow)) {
+          payload.paidFromDeposit = true;
+          payload.depositCategory = depositCategory;
+          payload.depositRow = depositCategory === 'cash' ? '' : Number(depositRow);
+        }
+
+        return fetch(scriptUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify(payload)
+        })
+          .then(res => res.json())
+          .then(addResult => {
+            if (!addResult.success) throw new Error(addResult.error || 'Could not save the extension.');
+            const warnings = [closeWarning, addResult.warning].filter(Boolean);
+            if (warnings.length) alert('Extended, but: ' + warnings.join(' '));
+          });
+      })
+      .then(() => {
+        clearTimeout(closeStageTimer);
+        setAllButtonsDisabled(false);
+        extendAmountManuallyEditedRows.delete(rowNumber);
+        openExtendRowNumber = null;
+        savingExtendRowNumber = null;
+        return loadData();
+      })
+      .catch(err => {
+        clearTimeout(closeStageTimer);
+        setAllButtonsDisabled(false);
+        savingExtendRowNumber = null;
+        render();
+        alert('Could not extend: ' + err.message);
+      });
+    return;
+  }
+
+  // Short extension (under 30 days, checkbox not ticked): simple in-place
+  // update, same as before.
+  savingExtendRowNumber = rowNumber;
+  savingExtendStage = 'connecting';
+  render();
+  setAllButtonsDisabled(true);
+  const stageTimer = setTimeout(() => { savingExtendStage = 'saving'; render(); setAllButtonsDisabled(true); }, 500);
+
+  fetch(scriptUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({
+      action: 'extendBike',
+      rowNumber: rowNumber,
+      daysToExtend: daysToExtend,
+      amountPaid: amountPaid,
+      paidBy: paidBy,
+      paidFromDeposit: paidFromDeposit,
+      depositCategory: depositCategory,
+      depositRow: depositRow
+    })
+  })
+    .then(res => res.json())
+    .then(result => {
+      clearTimeout(stageTimer);
+      setAllButtonsDisabled(false);
+      if (!result.success) throw new Error(result.error || 'Could not save.');
+      // Post-write verification problems (the server re-reads everything
+      // it wrote -- customer row, income row, cash row, bikes/deposit
+      // totals -- and compares) come back as a warning: the extension DID
+      // save, but something should be checked by hand.
+      if (result.warning) alert('Extended, but: ' + result.warning);
+      extendAmountManuallyEditedRows.delete(rowNumber);
+      openExtendRowNumber = null;
+      savingExtendRowNumber = null;
+      return loadData();
+    })
+    .catch(err => {
+      clearTimeout(stageTimer);
+      setAllButtonsDisabled(false);
+      savingExtendRowNumber = null;
+      render();
+      alert('Could not extend: ' + err.message);
+    });
+}
+
+/* ---------------- Swap Bike ---------------- */
+
+let swapModalRowNumber = null;   // rowNumber the swap modal is open for
+let swapStep = 'edit';           // 'edit' | 'confirm'
+let swapDraft = { newBike: '', returnAmount: 0, newBikeAmount: 0 };
+let swapError = '';
+let swapSaving = false;
+let swapMouseDownOnBackdrop = false;
+let swapAcHiIndex = -1;          // highlighted index in the New Bike autocomplete dropdown
+
+function fmtMoney(n) {
+  const num = Number(n);
+  return (isNaN(num) ? 0 : num).toLocaleString('en-US', { maximumFractionDigits: 2 });
+}
+
+function paidByDisplayName(paidByVal) {
+  const v = (paidByVal || '').toString().trim().toLowerCase();
+  if (v === 'scan') return 'QR Scan';
+  if (v === 'cash') return 'Cash';
+  if (v === 'wise') return 'Wise';
+  if (v === 'revolut') return 'Revolut';
+  return paidByVal || '—';
+}
+
+// "Total paid" line for the Rented card -- prefers the Contract sheet's
+// running total (contractTotalPrice/contractPaidBy, matched server-side by
+// findContractFinancialsForCustomerRow_ in Code.gs), since that's the
+// figure that survives swaps/extensions across a customer's whole rental.
+// Falls back to this customer-sheet row's own totalPrice/paidBy only when
+// no Contract match was found at all (e.g. a customer with no linked
+// Contract row) -- better an approximate figure than a blank one.
+function renterPaidDisplayHtml(renter) {
+  const hasContractTotal = renter.contractTotalPrice !== '' && renter.contractTotalPrice !== undefined && renter.contractTotalPrice !== null;
+  const totalPrice = hasContractTotal ? renter.contractTotalPrice : renter.totalPrice;
+  const paidBy = hasContractTotal ? renter.contractPaidBy : renter.paidBy;
+  const hasTotal = totalPrice !== '' && totalPrice !== undefined && totalPrice !== null && !isNaN(Number(totalPrice));
+  const amountText = hasTotal ? ('฿' + fmtMoney(totalPrice)) : '—';
+  const methodText = paidBy ? paidByDisplayName(paidBy) : '';
+  return '<b>' + amountText + '</b>' + (methodText ? ' (' + methodText + ')' : '');
+}
+
+// "Deposit" line for the Rented card -- deposit method + amount only ever
+// come from the matched Contract row (the "customer" sheet has no deposit-
+// amount column of its own at all), so a miss there just means this shows
+// "—". A Passport deposit has no amount to show (see contract.html's
+// deposit-amount field, hidden whenever "Passport" is selected), so that
+// case is called out by name instead of showing "฿0".
+//
+// Currency: renter.depositCurrency is blank whenever the deposit is plain
+// Thai Baht (the default -- nothing was ever selected on the "Change
+// currency" picker on the contract form), in which case this shows the ฿
+// symbol as before. Whenever a staff member DID tag the deposit with a
+// different currency (e.g. RMB, USD), this shows "<amount> <code>"
+// instead -- same convention contract.html's own receipt view uses --
+// rather than always showing ฿ regardless of what was actually recorded.
+function renterDepositDisplayHtml(renter) {
+  const method = (renter.deposit || '').toString().trim();
+  if (!method) return '<b>—</b>';
+  if (method.toLowerCase() === 'passport') return '<b>Passport</b> (on file)';
+  const amount = renter.depositAmount;
+  const hasAmount = amount !== '' && amount !== undefined && amount !== null && !isNaN(Number(amount));
+  if (!hasAmount) return '<b>' + method + '</b>';
+  const currency = (renter.depositCurrency || '').toString().trim();
+  const amountText = currency ? (fmtMoney(amount) + ' ' + currency) : ('฿' + fmtMoney(amount));
+  return '<b>' + amountText + '</b> (' + method + ')';
+}
+
+// Bikes not currently rented (per the same "situation" logic as everywhere
+// else on this page), minus the bike being swapped out itself -- swapping a
+// bike for itself isn't a real option here.
+function getAvailableBikeNames(excludeName) {
+  return (bikeNames || []).filter(name => {
+    if (bikeNamesMatch(name, excludeName)) return false;
+    return !findCurrentRenter(name);
+  });
+}
+
+// Return Amount = daily rate (original total price / total rental-period
+// days) x days used so far. "Days used" counts from the rental's start
+// date up to today, with a 2pm cutoff: before 2pm, today doesn't count yet;
+// at/after 2pm, it does. Capped to [0, totalDays] so an overdue swap can't
+// produce a negative remainder. New Bike Amount is the exact remainder
+// (total - returnAmount), not separately rounded, so the two always sum
+// back to the original total without rounding drift.
+function computeSwapDefaults(renter) {
+  const total = Number(renter.totalPrice) || 0;
+  const start = parseFlexibleDate(renter.rentingDateFrom);
+  const due = parseFlexibleDate(renter.returnDate);
+
+  if (!start || !due) {
+    return { returnAmount: 0, newBikeAmount: total, totalDays: null };
+  }
+
+  const start0 = new Date(start); start0.setHours(0, 0, 0, 0);
+  const due0 = new Date(due); due0.setHours(0, 0, 0, 0);
+  const totalDays = Math.max(1, Math.round((due0 - start0) / 86400000));
+
+  const now = new Date();
+  const today0 = new Date(now); today0.setHours(0, 0, 0, 0);
+  const calendarDaysElapsed = Math.max(0, Math.round((today0 - start0) / 86400000));
+  const isAfter2pm = now.getHours() >= 14;
+  let daysUsed = calendarDaysElapsed + (isAfter2pm ? 1 : 0);
+  daysUsed = Math.min(Math.max(daysUsed, 0), totalDays);
+
+  const dailyRate = total / totalDays;
+  const returnAmount = Math.round(dailyRate * daysUsed);
+  const newBikeAmount = Math.round((total - returnAmount) * 100) / 100;
+
+  return { returnAmount, newBikeAmount, totalDays, daysUsed };
+}
+
+function openSwapModal(rowNumber) {
+  const renter = (customerRows || []).find(r => r.rowNumber === rowNumber);
+  if (!renter) {
+    alert("Could not find this booking's details — try refreshing the page.");
+    return;
+  }
+  const defaults = computeSwapDefaults(renter);
+  swapModalRowNumber = rowNumber;
+  swapStep = 'edit';
+  swapError = '';
+  swapSaving = false;
+  swapDraft = {
+    newBike: '', returnAmount: defaults.returnAmount, newBikeAmount: defaults.newBikeAmount,
+    upgradeChecked: false, additionalAmount: 0, additionalPaidBy: ''
+  };
+  renderSwapModal();
+}
+
+function closeSwapModal() {
+  swapModalRowNumber = null;
+  swapStep = 'edit';
+  swapError = '';
+  swapSaving = false;
+  renderSwapModal();
+}
+
+/* ---------------- Contact Customer modal ---------------- */
+// Same purpose as the Contact Customer feature on oilchange.html, but
+// built as a dynamically-injected modal (like Swap Bike above) rather
+// than a static hidden <div>, to match this page's existing pattern.
+// Just generates a pre-filled message for staff to copy and paste into
+// WhatsApp themselves -- no messaging API involved.
+//
+// {{firstName}} and {{bikeShort}} are the only placeholders used right
+// now; {{bikeShort}} uses customerFacingBikeModel() (the Bike Tax tab's
+// actual "Model" column, e.g. "NMAX"/"PCX"/"GT") rather than the internal
+// sheet name (e.g. "Rax Two" -- an internal nickname staff use, which
+// means nothing to a customer) or the old shortBikeName() word-mangling
+// -- see customerFacingBikeModel()'s comment below for why.
+const CONTACT_MESSAGE_TEMPLATE = `Hi {{firstName}} 🙏, hope you're doing well! Just a quick reminder that your {{bikeShort}} is due back tomorrow. Would you like to return it as planned, or would you prefer to extend the rental? Let us know either way — thanks so much! 🛵`;
+
+// Capitalizes one word of a Bike Tax "Model" value for customer-facing
+// text: guarantees the first letter is capitalized, but otherwise leaves
+// the rest of the word's casing exactly as typed in the sheet (unlike
+// capitalizeBikeName() above, which force-lowercases everything after the
+// first letter -- wrong here, since real model names like "NMAX"/"XMAX"
+// are meant to stay fully uppercase). GT and PCX are still forced to
+// their standard all-caps acronym form regardless of how they're typed,
+// via the same ACRONYM_EXCEPTIONS list capitalizeBikeName() uses.
+function capitalizeModelWord(word) {
+  if (!word) return word;
+  const lw = word.toLowerCase();
+  if (ACRONYM_EXCEPTIONS.has(lw)) return lw.toUpperCase();
+  return word.charAt(0).toUpperCase() + word.slice(1);
+}
+
+// Customer-facing bike name for the Contact Customer message: looks up
+// the bike's real Model from the Bike Tax tab (categoryRows, same source
+// already used for pricing/category lookups on this page) rather than
+// trying to shorten the internal sheet name -- staff sometimes name bikes
+// internally in ways that mean nothing to a customer (e.g. "Rax Two"),
+// and the actual model ("NMAX") is what should go in an outward-facing
+// message. Falls back to the old shortBikeName() mangling of the sheet
+// name only if this bike can't be found in Bike Tax at all (better than
+// showing nothing), and to the raw sheet name if even that comes up
+// empty.
+function customerFacingBikeModel(bikeName) {
+  const match = categoryRows.find(cr => bikeNamesMatch(cr.bike, bikeName));
+  const model = match ? (match.model || '').toString().trim() : '';
+  if (model) {
+    return model.split(/\s+/).map(capitalizeModelWord).join(' ');
+  }
+  return shortBikeName(bikeName) || bikeName;
+}
+
+let contactModalRowNumber = null; // rowNumber the Contact Customer modal is open for
+let contactCopyResetTimer = null;
+let contactMouseDownOnBackdrop = false;
+// Base wa.me link (no ?text= yet) for the currently-open Contact Customer
+// modal, if the customer has a usable number -- kept so the input
+// listener further down can rebuild the WhatsApp link's pre-filled text
+// live as staff edit the (now contenteditable) message box, without a
+// full renderContactModal() re-render wiping out the in-progress edit.
+let contactWaLinkBase = null;
+// Messenger equivalent of the above -- m.me has no ?text= pre-fill param
+// (see buildMessengerLink's comment), so this is just the bare chat link,
+// opened by copyContactMessage() right after the message is copied to the
+// clipboard rather than being clickable up front like the WhatsApp link.
+let contactMessengerLinkBase = null;
+// Which channel the currently-open Contact Customer modal is using --
+// drives both contactModalHtml()'s layout (WhatsApp pre-filled link vs.
+// Messenger "can't pre-fill, copy it" notice) and copyContactMessage()'s
+// post-copy behavior (auto-navigate to Messenger only).
+let contactChannel = 'whatsapp';
+
+function openContactModal(rowNumber) {
+  contactModalRowNumber = rowNumber;
+  renderContactModal();
+}
+
+function closeContactModal() {
+  contactModalRowNumber = null;
+  clearTimeout(contactCopyResetTimer);
+  renderContactModal();
+}
+
+function contactModalHtml() {
+  if (!contactModalRowNumber) { contactWaLinkBase = null; contactMessengerLinkBase = null; return ''; }
+  const renter = (customerRows || []).find(r => r.rowNumber === contactModalRowNumber);
+  if (!renter) { contactWaLinkBase = null; contactMessengerLinkBase = null; return ''; }
+
+  const message = CONTACT_MESSAGE_TEMPLATE
+    .replace(/\{\{firstName\}\}/g, firstNameOf(renter.name))
+    .replace(/\{\{bikeShort\}\}/g, customerFacingBikeModel(renter.bikeModel));
+
+  contactChannel = renterContactChannel(renter);
+
+  let waLinkHtml = '';
+  let messengerNoticeHtml = '';
+
+  if (contactChannel === 'messenger') {
+    // Messenger has no wa.me-style "?text=" pre-fill param (confirmed via
+    // research, 20/07/2026), so there's no clickable pre-filled link to
+    // show here -- instead, a plain notice, and the Copy button below
+    // (see copyContactMessage) copies the message AND opens the Messenger
+    // chat in one click, since a two-step "copy, then separately go find
+    // the chat" flow is what this notice exists to avoid.
+    contactWaLinkBase = null;
+    contactMessengerLinkBase = buildMessengerLink(renter.messengerId);
+    messengerNoticeHtml = `<div class="contact-messenger-notice">Messenger chats can't be pre-filled with a message. Click <b>Copy</b> below — it'll copy the text and open the chat for you, so you can just paste it in.</div>`;
+  } else {
+    // Same WhatsApp link as the "chat: X" link on the bike card (built the
+    // same way, from the same Contract-sheet-sourced phone number) -- shown
+    // just above the Close/Copy buttons. The message is pre-filled into the
+    // chat via wa.me's ?text= param (same trick used for the Bike Returns
+    // Calendar's "Return reminder" link), so clicking this opens WhatsApp
+    // with the message already typed in -- no copy/paste needed. The Copy
+    // button stays too, in case staff want the message to paste somewhere
+    // else instead. Omitted entirely if there's no usable number on file,
+    // same fallback as the bike card.
+    const waLink = buildWhatsAppLink(renter.number);
+    contactWaLinkBase = waLink;
+    contactMessengerLinkBase = null;
+    waLinkHtml = waLink
+      ? `<div class="contact-wa-link"><a href="${waLink}?text=${encodeURIComponent(message)}" target="_blank" rel="noopener">Open WhatsApp chat ↗</a></div>`
+      : '';
+  }
+
+  return `
+    <div class="modal-backdrop show" id="contactBackdrop">
+      <div class="modal-card">
+        <h2 class="modal-title">Contact Customer</h2>
+        ${renter.contact ? `<div class="contact-sub">Contact: ${renter.contact}</div>` : ''}
+        <div class="contact-msg-box" id="contactMsgBox" contenteditable="true">${message}</div>
+        ${waLinkHtml}
+        ${messengerNoticeHtml}
+        <div class="modal-actions">
+          <button class="bc-btn close-contact" type="button">Close</button>
+          <button class="bc-btn copy-contact" type="button">Copy</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderContactModal() {
+  const mount = document.getElementById('contactModalMount');
+  if (mount) mount.innerHTML = contactModalHtml();
+}
+
+/* ---------------- QuickView modal ----------------
+   A simple read-only table of every currently-rented bike -- the bike's
+   model year, who it's rented to, their chat name (as a WhatsApp link),
+   and the full rental span: the date the rental started ("Since") as
+   well as when it's due back, so the total time on rent is visible at a
+   glance rather than just the due date on its own. Deliberately NOT a
+   separate page: it only ever exists as this overlay, opened by the
+   "QuickView" button on this page, so there's no separate URL to link
+   from nav.js or index.html (and nothing to accidentally expose there
+   either).
+
+   Below the table, a separate "Available" section (Anton, 20/07/2026)
+   lists every bike NOT currently rented as small name+year chips that wrap
+   left to right, not a second table, so it doesn't widen the modal.
+
+   Deliberately kept to 4 columns (Bike, Renter, Rented, WhatsApp) so the
+   whole table fits on one screen with no left/right scrolling -- the
+   bike's model year is folded into the Bike cell as a small line under
+   the name rather than its own column, and the rental's start date and
+   due-back date are shown together as one "since -> due" range in a
+   single Rented cell rather than two separate date columns. Paid and
+   Deposit (Anton, 20/07/2026) are shown the same space-saving way: two
+   more small sub-lines under the date range in that same Rented cell,
+   NOT their own columns -- a 5th/6th column briefly existed but made the
+   table too wide for mobile, forcing horizontal scrolling. The delivery-
+   address link (also Anton, 20/07/2026) gets the same treatment under the
+   WhatsApp cell instead, below the chat name -- previously lived under
+   Rented, but that copy never actually rendered (Code.gs's data feed for
+   this page never sent the link at all until this same date), so there
+   was nothing working to preserve there.
+
+   Sorting: the default listing (quickviewSortColumn === null) is soonest
+   return date first, same as the original list view. Clicking a column
+   header sorts by that column ascending; clicking the SAME header again
+   reverses to descending. Clicking the Rented header from the default
+   state re-produces the same soonest-first order (it's the same
+   comparator, keyed on the due-back end of the range), so it reads as
+   "back to normal" even though it's now tracked as an explicit sort.
+   Sort state resets to the default every time the modal is (re)opened,
+   per CLAUDE.md-style expectation that QuickView always opens the same
+   way. */
+let quickviewOpen = false;
+let quickviewMouseDownOnBackdrop = false;
+let quickviewSortColumn = null; // null | 'bike' | 'renter' | 'date' | 'contact'
+let quickviewSortDirection = 'asc'; // 'asc' | 'desc' -- meaningless while column is null
+
+const QUICKVIEW_COLUMNS = [
+  { key: 'bike', label: 'Bike' },
+  { key: 'renter', label: 'Renter' },
+  { key: 'date', label: 'Rented' },
+  // Header renamed from "WhatsApp" to "Contact" (Anton, 20/07/2026) --
+  // this cell is meant to grow beyond just WhatsApp later (Messenger,
+  // Facebook, etc.), so the generic label matches sooner rather than
+  // needing another rename then. The column key stays 'contact' to match.
+  { key: 'contact', label: 'Contact' },
+];
+
+// ---- Small icon per contact channel, keyed by type -- only 'whatsapp'
+// exists today (every chat name/number on file is assumed to be WhatsApp),
+// but Anton's flagged more channels (Messenger, Facebook) coming later, so
+// this is a lookup to extend rather than an inline literal to duplicate
+// once a real "channel" field exists per contact. Falls back to a generic
+// chat bubble emoji for anything unrecognized -- a real icon can be added
+// per-channel here the same way as WhatsApp's below once needed.
+//
+// WhatsApp's icon is a small inline SVG (a rounded green square with a
+// white phone-handset glyph, in WhatsApp's actual brand green #25D366) --
+// deliberately a clean redraw rather than a traced copy of the official
+// logo artwork, since a plain 💬 emoji (the old placeholder here) reads as
+// "generic chat", not specifically WhatsApp, which was the whole point
+// Anton flagged (20/07/2026). ----
+const CONTACT_TYPE_ICONS = {
+  whatsapp: '<svg class="qv-contact-svg" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">' +
+    '<rect x="1" y="1" width="22" height="22" rx="6" fill="#25D366"/>' +
+    '<path d="M8.6 6.4c.4-.4 1-.4 1.4.1l1.2 1.8c.3.4.3 1-.1 1.4l-.8.8c.6 1.3 1.7 2.4 3 3l.8-.8c.4-.4 1-.4 1.4-.1l1.8 1.2c.4.3.5 1 .1 1.4l-1 1.1c-.5.5-1.3.7-2 .5-2.6-.7-5.3-3.4-6-6-.2-.7 0-1.4.5-1.9z" fill="#fff"/>' +
+    '</svg>',
+  // Messenger's icon mirrors WhatsApp's shape (rounded square + simple
+  // white glyph) so the two read as a matched pair, using Messenger's
+  // actual brand blue #0084FF -- a plain speech-bubble glyph rather than
+  // a traced copy of Meta's lightning-bolt logo, same "clean redraw" logic
+  // as the WhatsApp icon above (added 20/07/2026 alongside Messenger
+  // contact-method support).
+  messenger: '<svg class="qv-contact-svg" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">' +
+    '<rect x="1" y="1" width="22" height="22" rx="6" fill="#0084FF"/>' +
+    '<path d="M12 6c-3.6 0-6.5 2.6-6.5 6 0 1.9 1 3.6 2.5 4.7v2.1l2.3-1.3c.5.2 1.1.2 1.7.2 3.6 0 6.5-2.6 6.5-6S15.6 6 12 6z" fill="#fff"/>' +
+    '</svg>'
+};
+function contactTypeIcon(type) {
+  return CONTACT_TYPE_ICONS[(type || '').toString().trim().toLowerCase()] || '💬';
+}
+
+function openQuickView() {
+  quickviewOpen = true;
+  quickviewSortColumn = null;
+  quickviewSortDirection = 'asc';
+  renderQuickViewModal();
+}
+
+function closeQuickView() {
+  quickviewOpen = false;
+  renderQuickViewModal();
+}
+
+// Called when a QuickView column header is clicked. Same column clicked
+// twice in a row flips direction; a different column starts fresh at
+// ascending.
+function handleQuickviewSort(column) {
+  if (quickviewSortColumn === column) {
+    quickviewSortDirection = (quickviewSortDirection === 'asc') ? 'desc' : 'asc';
+  } else {
+    quickviewSortColumn = column;
+    quickviewSortDirection = 'asc';
+  }
+  renderQuickViewModal();
+}
+
+// Strips a leading honorific (Mr./Mrs./Ms./Miss/Dr./Mx./Master) so
+// QuickView shows the person's actual name instead of "Mr." or "Miss."
+// on its own. Handles honorifics glued directly onto the name (e.g.
+// "Ms.Karina", as typed in some rows) as well as ones followed by a
+// space (e.g. "Mr. Ding"). Falls back to 'Unknown' the same way the raw
+// name does elsewhere on this page -- including when the only thing on
+// file IS an honorific with no actual name typed after it.
+const QUICKVIEW_HONORIFIC_RE = /^(mr|mrs|ms|miss|mister|dr|mx|master)\.?\s*/i;
+function quickviewDisplayName(fullName) {
+  const trimmed = (fullName || '').toString().trim();
+  if (!trimmed) return 'Unknown';
+  const stripped = trimmed.replace(QUICKVIEW_HONORIFIC_RE, '').trim();
+  return stripped || 'Unknown';
+}
+
+// Model year for a bike, from the same Bike Tax lookup (categoryRows)
+// used elsewhere on this page -- '' (not a number) when unknown, so
+// callers can tell "no year on file" apart from an actual value.
+function quickviewYearFor(bikeName) {
+  const match = categoryRows.find(cr => bikeNamesMatch(cr.bike, bikeName));
+  return match && match.modelYear ? match.modelYear : '';
+}
+
+// Compact "18 Jul" style date for the Rented column -- no weekday/year,
+// unlike formatDateDisplay elsewhere on this page, since two of these
+// have to fit side by side in one narrow table cell.
+function quickviewShortDate(str) {
+  const date = parseFlexibleDate(str);
+  if (!date) return str || '—';
+  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+// Minimal escaping for dropping a pasted URL into an href/attribute --
+// same characters Code.gs escapes when it builds the equivalent link for
+// the calendar event description (see deliveryLinkHtml there).
+function quickviewEscapeAttr(str) {
+  return (str || '').toString()
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;');
+}
+
+function quickviewModalHtml() {
+  if (!quickviewOpen) return '';
+
+  // Same "current renter" lookup the main bike list uses, so QuickView
+  // never disagrees with what's already shown on the page -- just a
+  // different, denser presentation of the same rented bikes.
+  const rentedRows = bikeNames
+    .map(name => ({ name, renter: findCurrentRenter(name) }))
+    .filter(row => !!row.renter);
+
+  // Soonest return date first; a bike with no parseable return date sorts
+  // to the end rather than disappearing. This is also exactly what the
+  // 'date' column sort (ascending) produces, so the default view and an
+  // explicit ascending Date sort are indistinguishable, as intended.
+  rentedRows.sort((a, b) => {
+    const da = parseFlexibleDate(a.renter.returnDate) || new Date(8640000000000000);
+    const db = parseFlexibleDate(b.renter.returnDate) || new Date(8640000000000000);
+    return da - db;
+  });
+
+  if (quickviewSortColumn) {
+    const dir = (quickviewSortDirection === 'desc') ? -1 : 1;
+    const collate = (x, y) => (x || '').localeCompare((y || ''), undefined, { sensitivity: 'base' });
+    if (quickviewSortColumn === 'bike') {
+      rentedRows.sort((a, b) => dir * collate(a.name, b.name));
+    } else if (quickviewSortColumn === 'renter') {
+      rentedRows.sort((a, b) => dir * collate(quickviewDisplayName(a.renter.name), quickviewDisplayName(b.renter.name)));
+    } else if (quickviewSortColumn === 'contact') {
+      rentedRows.sort((a, b) => dir * collate(a.renter.chatName, b.renter.chatName));
+    } else if (quickviewSortColumn === 'date' && dir === -1) {
+      // Ascending 'date' is already the list's natural order (sorted
+      // above); only reverse it for the descending case.
+      rentedRows.reverse();
+    }
+  }
+
+  const headHtml = '<tr>' + QUICKVIEW_COLUMNS.map(col => {
+    const isSorted = quickviewSortColumn === col.key;
+    const arrow = isSorted ? (quickviewSortDirection === 'desc' ? ' <span class="qv-sort-arrow">▼</span>' : ' <span class="qv-sort-arrow">▲</span>') : '';
+    return `<th class="qv-sort-th${isSorted ? ' qv-sorted' : ''}" data-qv-sort="${col.key}">${col.label}${arrow}</th>`;
+  }).join('') + '</tr>';
+
+  const bodyHtml = rentedRows.length
+    ? rentedRows.map(row => {
+        // Channel-aware: Messenger contacts get an m.me link + blue
+        // Messenger icon, everyone else keeps the original WhatsApp
+        // treatment (see renterContactChannel's comment for the fallback
+        // logic when contactMethod is set but no messengerId was captured).
+        // Link availability depends only on whether the resolved channel
+        // has something to link to (a usable WhatsApp number, or a
+        // Messenger username) -- NOT on whether a "chat name" happens to
+        // be on file too. Previously this was gated on row.renter.chatName,
+        // which silently hid the link for anyone with a Messenger username
+        // set but no WhatsApp-era "chat name" ever entered -- e.g.
+        // Christian Jay Verona, 20/07/2026 (see bikeCardHtml's identical
+        // fix/comment above -- same root cause, two render paths). Falls
+        // back to the generic "Chat" label when there's a link but no chat
+        // name to show next to it.
+        const waChannel = renterContactChannel(row.renter);
+        const waLink = waChannel === 'messenger' ? buildMessengerLink(row.renter.messengerId) : buildWhatsAppLink(row.renter.number);
+        const waLinkTitle = waChannel === 'messenger' ? 'Open Messenger chat' : 'Open WhatsApp chat';
+        const waLabel = row.renter.chatName || 'Chat';
+        const waIconHtml = (row.renter.chatName || waLink) ? `<span class="qv-contact-icon">${contactTypeIcon(waChannel)}</span>` : '';
+        const waHtml = (!row.renter.chatName && !waLink)
+          ? '<span class="qv-wa-none">—</span>'
+          : (waLink
+              ? `<a class="qv-wa-link" href="${waLink}" target="_blank" rel="noopener" title="${waLinkTitle}">${waIconHtml}${waLabel}</a>`
+              : `<span class="qv-wa-none">${waIconHtml}${row.renter.chatName}</span>`);
+        const year = quickviewYearFor(row.name);
+        const yearHtml = year ? `<div class="qv-year-sub">${year}</div>` : '';
+        const rentedRange = quickviewShortDate(row.renter.rentingDateFrom) + ' → ' + quickviewShortDate(row.renter.returnDate);
+        // Total paid + deposit on file -- tucked under the date range in
+        // this same Rented cell rather than their own columns, so the
+        // table stays 4 columns wide (see this modal's header comment).
+        const financeHtml = `<div class="qv-finance">💰 ${renterPaidDisplayHtml(row.renter)}</div><div class="qv-finance">🔒 ${renterDepositDisplayHtml(row.renter)}</div>`;
+        // Delivery-address link -- only shown when this booking actually
+        // has one on file (e.g. a walk-in pickup never does). Tucked under
+        // the chat name in the Contact cell (Anton, 20/07/2026) rather than
+        // its own column or under Rented, same space-saving treatment as
+        // everything else in this table. Given its own noticeably bigger
+        // top margin (.qv-delivery) and a scooter icon -- both stacked
+        // links looked near-identical before, easy to tap the wrong one.
+        const deliveryHtml = row.renter.deliveryLink
+          ? `<div class="qv-delivery"><a href="${quickviewEscapeAttr(row.renter.deliveryLink)}" target="_blank" rel="noopener"><span class="qv-contact-icon">🛵</span>Delivery</a></div>`
+          : '';
+        return `
+          <tr>
+            <td class="qv-bike">${row.name}${yearHtml}</td>
+            <td>${quickviewDisplayName(row.renter.name)}</td>
+            <td class="qv-date">${rentedRange}${financeHtml}</td>
+            <td>${waHtml}${deliveryHtml}</td>
+          </tr>
+        `;
+      }).join('')
+    : '';
+
+  const tableOrEmpty = rentedRows.length
+    ? `<div class="qv-table-wrap"><table class="qv-table"><thead>${headHtml}</thead><tbody>${bodyHtml}</tbody></table></div>`
+    : '<div class="qv-empty">No bikes are currently rented out.</div>';
+
+  // ---- Available bikes -- everything NOT currently rented (same "current
+  // renter" check the rest of this page uses), listed as a wrapping row of
+  // small name+year chips rather than a table -- one row per bike would
+  // make this section as tall as the fleet itself, and a 3rd table column
+  // set would widen the modal right back into the mobile-scrolling problem
+  // Paid/Deposit already hit once (see this modal's header comment). Bike
+  // name only, year in small text right after it (from the same Bike Tax
+  // lookup quickviewYearFor uses above) -- no other details, this is meant
+  // as a quick "what's free right now" glance, not a second data table.
+  const availableBikeNames = (bikeNames || []).filter(name => !findCurrentRenter(name));
+  const availableHtml = availableBikeNames.length
+    ? `<div class="qv-available">
+         <div class="qv-available-title">Available (${availableBikeNames.length})</div>
+         <div class="qv-available-list">${availableBikeNames.map(name => {
+           const year = quickviewYearFor(name);
+           return `<span class="qv-available-chip">${name}${year ? ` <span class="qv-available-year">${year}</span>` : ''}</span>`;
+         }).join('')}</div>
+       </div>`
+    : `<div class="qv-available"><div class="qv-available-title">Available</div><div class="qv-empty">No bikes are currently available.</div></div>`;
+
+  return `
+    <div class="modal-backdrop show" id="quickviewBackdrop">
+      <div class="modal-card qv-modal-card">
+        <h2 class="modal-title">QuickView — Due Back</h2>
+        ${tableOrEmpty}
+        ${availableHtml}
+        <div class="modal-actions">
+          <button class="bc-btn close-quickview" type="button">Close</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderQuickViewModal() {
+  const mount = document.getElementById('quickviewModalMount');
+  if (mount) mount.innerHTML = quickviewModalHtml();
+}
+
+function fallbackCopyText(text, done) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  try { document.execCommand('copy'); } catch (e) {}
+  document.body.removeChild(ta);
+  done();
+}
+
+function copyContactMessage(btn) {
+  const box = document.getElementById('contactMsgBox');
+  if (!box) return;
+  const text = box.textContent;
+  const done = () => {
+    btn.textContent = 'Copied!';
+    clearTimeout(contactCopyResetTimer);
+    contactCopyResetTimer = setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+    // Messenger can't be pre-filled (see contactModalHtml's notice above),
+    // so Copy doubles as "take me to the chat" for that channel only --
+    // window.open (not location change) so the modal/page stays put
+    // underneath the new tab, same as every other "open chat" link here.
+    if (contactChannel === 'messenger' && contactMessengerLinkBase) {
+      window.open(contactMessengerLinkBase, '_blank', 'noopener');
+    }
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(done).catch(() => fallbackCopyText(text, done));
+  } else {
+    fallbackCopyText(text, done);
+  }
+}
+
+function swapModalHtml() {
+  if (!swapModalRowNumber) return '';
+  const renter = (customerRows || []).find(r => r.rowNumber === swapModalRowNumber);
+  if (!renter) return '';
+
+  if (swapStep === 'confirm') {
+    return `
+      <div class="modal-backdrop show" id="swapBackdrop">
+        <div class="modal-card">
+          <h2 class="modal-title">Confirm Swap</h2>
+          <div class="swap-confirm-summary">
+            <p><b>${renter.bikeModel}</b> is being returned today for <b>฿${fmtMoney(swapDraft.returnAmount)}</b>.</p>
+            <p><b>${swapDraft.newBike}</b> is being rented from today until <b>${formatDateDisplay(renter.returnDate)}</b> for <b>฿${fmtMoney(swapDraft.newBikeAmount)}</b>.</p>
+            ${swapDraft.upgradeChecked && swapDraft.additionalAmount > 0 ? `<p>Plus an additional <b>฿${fmtMoney(swapDraft.additionalAmount)}</b> upgrade fee, paid by <b>${paidByDisplayName(swapDraft.additionalPaidBy)}</b> — logged as new income this month.</p>` : ''}
+          </div>
+          <div class="modal-actions">
+            <button class="bc-btn cancel-swap-confirm" type="button" ${swapSaving ? 'disabled' : ''}>Back</button>
+            <button class="bc-btn confirm-swap-final" type="button" ${swapSaving ? 'disabled' : ''}>${swapSaving ? 'Saving…' : 'Yes, confirm'}</button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="modal-backdrop show" id="swapBackdrop">
+      <div class="modal-card">
+        <h2 class="modal-title">Swap Bike</h2>
+
+        <div class="swap-section">
+          <div class="swap-section-label">Return</div>
+          <input type="text" class="swap-input" value="${renter.bikeModel}" disabled>
+          <label class="swap-field-label">Amount (฿)</label>
+          <input type="number" step="any" min="0" class="swap-input" id="swapReturnAmountInput" value="${swapDraft.returnAmount}">
+        </div>
+
+        <div class="swap-section">
+          <div class="swap-section-label">New Bike</div>
+          <div class="swap-field-wrap">
+            <input type="text" class="swap-input" id="swapNewBikeInput" value="${swapDraft.newBike}" placeholder="Type to search available bikes…" autocomplete="off">
+            <div class="ac-list" id="swapBikeAcList"></div>
+          </div>
+          <label class="swap-field-label">Amount (฿)</label>
+          <input type="number" step="any" min="0" class="swap-input" id="swapNewBikeAmountInput" value="${swapDraft.newBikeAmount}">
+
+          <div class="swap-checkbox-row">
+            <input type="checkbox" id="swapUpgradeCheckbox" ${swapDraft.upgradeChecked ? 'checked' : ''}>
+            <label for="swapUpgradeCheckbox">Upgrade / additional amount</label>
+          </div>
+          <div class="swap-upgrade-fields" id="swapUpgradeFields" style="${swapDraft.upgradeChecked ? '' : 'display:none;'}">
+            <label class="swap-field-label">Additional amount (฿)</label>
+            <input type="number" step="any" min="0" class="swap-input" id="swapAdditionalAmountInput" value="${swapDraft.additionalAmount || ''}">
+            <label class="swap-field-label">Paid by</label>
+            <select class="swap-input" id="swapAdditionalPaidByInput">
+              <option value="">Paid by…</option>
+              <option value="cash" ${swapDraft.additionalPaidBy === 'cash' ? 'selected' : ''}>Cash</option>
+              <option value="scan" ${swapDraft.additionalPaidBy === 'scan' ? 'selected' : ''}>QR Scan</option>
+              <option value="wise" ${swapDraft.additionalPaidBy === 'wise' ? 'selected' : ''}>Wise</option>
+              <option value="revolut" ${swapDraft.additionalPaidBy === 'revolut' ? 'selected' : ''}>Revolut</option>
+            </select>
+          </div>
+        </div>
+
+        ${swapError ? `<div class="swap-error">${swapError}</div>` : ''}
+
+        <div class="modal-actions">
+          <button class="bc-btn cancel-swap" type="button">Cancel</button>
+          <button class="bc-btn save-swap" type="button">Save</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderSwapModal() {
+  const mount = document.getElementById('swapModalMount');
+  if (mount) mount.innerHTML = swapModalHtml();
+}
+
+// New Bike autocomplete for the Swap modal -- same type-to-search pattern
+// as the top search box (openAc/closeAc above) and contract.html's
+// attachBikeModelAutocomplete, but written as delegated handlers rather
+// than a one-time attach: swapModalHtml() rebuilds #swapNewBikeInput from
+// scratch every renderSwapModal() call (e.g. on open/close, or after a
+// failed Save), so an element reference grabbed once at page load would
+// go stale. Options are recomputed from getAvailableBikeNames() on every
+// keystroke rather than reusing a value baked in at render time, so the
+// list can't go stale mid-edit either.
+function closeSwapAc() {
+  const list = document.getElementById('swapBikeAcList');
+  if (!list) return;
+  list.classList.remove('show');
+  list.innerHTML = '';
+  swapAcHiIndex = -1;
+}
+
+function openSwapAc(query) {
+  const input = document.getElementById('swapNewBikeInput');
+  const list = document.getElementById('swapBikeAcList');
+  if (!input || !list) return;
+  const renter = (customerRows || []).find(r => r.rowNumber === swapModalRowNumber);
+  if (!renter) return;
+  const available = getAvailableBikeNames(renter.bikeModel);
+  const options = available.filter(n => tokenMatch(n, query)).slice(0, 8);
+  if (!query || options.length === 0) { closeSwapAc(); return; }
+  list.innerHTML = options.map((v, i) =>
+    `<div class="ac-item" data-index="${i}">${highlight(v, query)}</div>`
+  ).join('');
+  list.classList.add('show');
+  swapAcHiIndex = -1;
+  Array.from(list.children).forEach((el, i) => {
+    el.addEventListener('mousedown', (e) => {
+      e.preventDefault(); // keep focus in the input instead of losing it to the list item
+      input.value = options[i];
+      closeSwapAc();
+    });
+  });
+  list._options = options;
+}
+
+document.addEventListener('input', (e) => {
+  if (e.target && e.target.id === 'swapNewBikeInput') openSwapAc(e.target.value.trim());
+});
+
+// 'focus' doesn't bubble, so delegation needs 'focusin' here (unlike the
+// top search box's own one-time addEventListener('focus', ...)).
+document.addEventListener('focusin', (e) => {
+  if (e.target && e.target.id === 'swapNewBikeInput') openSwapAc(e.target.value.trim());
+});
+
+document.addEventListener('keydown', (e) => {
+  if (!(e.target && e.target.id === 'swapNewBikeInput')) return;
+  const list = document.getElementById('swapBikeAcList');
+  if (!list) return;
+  const items = Array.from(list.children);
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    if (swapAcHiIndex >= 0 && list._options) e.target.value = list._options[swapAcHiIndex];
+    closeSwapAc();
+    return;
+  }
+  if (!items.length) return;
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    swapAcHiIndex = Math.min(swapAcHiIndex + 1, items.length - 1);
+    items.forEach((el, i) => el.classList.toggle('hi', i === swapAcHiIndex));
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    swapAcHiIndex = Math.max(swapAcHiIndex - 1, 0);
+    items.forEach((el, i) => el.classList.toggle('hi', i === swapAcHiIndex));
+  } else if (e.key === 'Escape') {
+    closeSwapAc();
+  }
+});
+
+document.addEventListener('click', (e) => {
+  const input = document.getElementById('swapNewBikeInput');
+  const list = document.getElementById('swapBikeAcList');
+  if (!input || !list) return;
+  if (!input.contains(e.target) && !list.contains(e.target)) closeSwapAc();
+});
+
+function attemptSwapSave() {
+  const renter = (customerRows || []).find(r => r.rowNumber === swapModalRowNumber);
+  if (!renter) { closeSwapModal(); return; }
+
+  const bikeInput = document.getElementById('swapNewBikeInput');
+  const returnInput = document.getElementById('swapReturnAmountInput');
+  const newBikeInput = document.getElementById('swapNewBikeAmountInput');
+  const upgradeCheckbox = document.getElementById('swapUpgradeCheckbox');
+  const addAmountInput = document.getElementById('swapAdditionalAmountInput');
+  const addPaidByInput = document.getElementById('swapAdditionalPaidByInput');
+  if (!bikeInput || !returnInput || !newBikeInput) return;
+
+  const typedBike = (bikeInput.value || '').trim();
+  const returnAmount = Number(returnInput.value);
+  const newBikeAmount = Number(newBikeInput.value);
+  const upgradeChecked = !!(upgradeCheckbox && upgradeCheckbox.checked);
+  const additionalAmountRaw = addAmountInput ? addAmountInput.value : '';
+  const additionalAmount = upgradeChecked ? Number(additionalAmountRaw) : 0;
+  const additionalPaidBy = upgradeChecked ? (addPaidByInput ? addPaidByInput.value : '') : '';
+
+  // Keep whatever the user typed, even if it turns out invalid below, so a
+  // failed Save doesn't wipe out their edits.
+  swapDraft = { newBike: typedBike, returnAmount, newBikeAmount, upgradeChecked, additionalAmount, additionalPaidBy };
+
+  const available = getAvailableBikeNames(renter.bikeModel);
+  const matchedBike = available.find(b => b.trim().toLowerCase() === typedBike.toLowerCase());
+
+  if (!typedBike || !matchedBike) {
+    swapError = 'Select a bike from the list of available bikes.';
+    renderSwapModal();
+    return;
+  }
+  if (returnInput.value === '' || newBikeInput.value === '' || isNaN(returnAmount) || isNaN(newBikeAmount) || returnAmount < 0 || newBikeAmount < 0) {
+    swapError = 'Enter valid amounts (0 or more) for both the return and new bike.';
+    renderSwapModal();
+    return;
+  }
+
+  const total = Number(renter.totalPrice) || 0;
+  const sum = returnAmount + newBikeAmount;
+  if (Math.abs(sum - total) > 0.01) {
+    swapError = `The two amounts must add up to the original total of ฿${fmtMoney(total)} — they currently add up to ฿${fmtMoney(sum)}.`;
+    renderSwapModal();
+    return;
+  }
+
+  // The upgrade/additional amount sits outside the balancing check above --
+  // it's new money on top, not a reallocation of what's already been paid.
+  if (upgradeChecked) {
+    if (additionalAmountRaw === '' || isNaN(additionalAmount) || additionalAmount <= 0) {
+      swapError = 'Enter a valid additional amount (more than 0), or untick the upgrade checkbox.';
+      renderSwapModal();
+      return;
+    }
+    if (!additionalPaidBy) {
+      swapError = 'Select how the additional amount was paid.';
+      renderSwapModal();
+      return;
+    }
+  }
+
+  // Normalize to the exact listed bike name/casing before sending to the server.
+  swapDraft.newBike = matchedBike;
+  swapError = '';
+  swapStep = 'confirm';
+  renderSwapModal();
+}
+
+function submitSwap() {
+  const renter = (customerRows || []).find(r => r.rowNumber === swapModalRowNumber);
+  if (!renter) { closeSwapModal(); return; }
+
+  swapSaving = true;
+  renderSwapModal();
+  setAllButtonsDisabled(true);
+
+  fetch(scriptUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({
+      action: 'swapBike',
+      rowNumber: swapModalRowNumber,
+      newBikeModel: swapDraft.newBike,
+      returnAmount: swapDraft.returnAmount,
+      newBikeAmount: swapDraft.newBikeAmount,
+      returnDate: todayIso(),
+      additionalAmount: swapDraft.upgradeChecked ? swapDraft.additionalAmount : 0,
+      additionalPaidBy: swapDraft.upgradeChecked ? swapDraft.additionalPaidBy : ''
+    })
+  })
+    .then(res => res.json())
+    .then(result => {
+      setAllButtonsDisabled(false);
+      if (!result.success) throw new Error(result.error || 'Could not save.');
+      // The swap touches two customer rows (this one closed out, plus a
+      // brand-new one for the new bike) and the bikes sheet -- simplest to
+      // just reload everything rather than try to patch the list in place.
+      if (result.warning) alert('Swapped, but: ' + result.warning);
+      closeSwapModal();
+      return loadData();
+    })
+    .catch(err => {
+      setAllButtonsDisabled(false);
+      swapSaving = false;
+      renderSwapModal();
+      alert('Could not complete the swap: ' + err.message);
+    });
+}
+
+document.addEventListener('click', (e) => {
+  const swapBtn = e.target.closest('.swap-btn');
+  if (swapBtn) {
+    openSwapModal(parseInt(swapBtn.dataset.row, 10));
+    return;
+  }
+  const cancelSwapBtn = e.target.closest('.cancel-swap');
+  if (cancelSwapBtn) {
+    closeSwapModal();
+    return;
+  }
+  const saveSwapBtn = e.target.closest('.save-swap');
+  if (saveSwapBtn) {
+    attemptSwapSave();
+    return;
+  }
+  const backSwapBtn = e.target.closest('.cancel-swap-confirm');
+  if (backSwapBtn) {
+    swapStep = 'edit';
+    swapError = '';
+    renderSwapModal();
+    return;
+  }
+  const confirmSwapBtn = e.target.closest('.confirm-swap-final');
+  if (confirmSwapBtn) {
+    submitSwap();
+    return;
+  }
+  const contactBtn = e.target.closest('.contact-btn');
+  if (contactBtn) {
+    openContactModal(parseInt(contactBtn.dataset.row, 10));
+    return;
+  }
+  const closeContactBtn = e.target.closest('.close-contact');
+  if (closeContactBtn) {
+    closeContactModal();
+    return;
+  }
+  const quickViewBtn = e.target.closest('#quickViewBtn');
+  if (quickViewBtn) {
+    openQuickView();
+    return;
+  }
+  const closeQuickviewBtn = e.target.closest('.close-quickview');
+  if (closeQuickviewBtn) {
+    closeQuickView();
+    return;
+  }
+  const quickviewSortTh = e.target.closest('.qv-sort-th');
+  if (quickviewSortTh) {
+    handleQuickviewSort(quickviewSortTh.dataset.qvSort);
+    return;
+  }
+  const copyContactBtn = e.target.closest('.copy-contact');
+  if (copyContactBtn) {
+    copyContactMessage(copyContactBtn);
+    return;
+  }
+});
+
+// Toggling the "Upgrade / additional amount" checkbox just shows/hides its
+// fields directly (no renderSwapModal() call) -- re-rendering the whole
+// modal here would wipe out anything already typed into the Return/New
+// Bike amount fields, since those only get folded into swapDraft when Save
+// is actually clicked. Direct show/hide keeps in-progress edits intact,
+// same approach as the Extend form's "paid from deposit" toggle elsewhere
+// on this page.
+document.addEventListener('change', (e) => {
+  if (e.target && e.target.id === 'swapUpgradeCheckbox') {
+    swapDraft.upgradeChecked = e.target.checked;
+    const fields = document.getElementById('swapUpgradeFields');
+    if (fields) fields.style.display = e.target.checked ? '' : 'none';
+  }
+});
+
+// The Contact Customer message box is contenteditable (see
+// contactModalHtml() above) so staff can tweak the wording before
+// sending -- this keeps the "Open WhatsApp chat" link's pre-filled text
+// in sync with whatever's actually in the box at click time, rather than
+// the wording from when the modal opened.
+document.addEventListener('input', (e) => {
+  if (!(e.target && e.target.id === 'contactMsgBox')) return;
+  if (!contactWaLinkBase) return; // no usable number -- link isn't shown at all
+  const link = document.querySelector('.contact-wa-link a');
+  if (!link) return;
+  link.href = contactWaLinkBase + '?text=' + encodeURIComponent(e.target.textContent);
+});
+
+// Close only on a genuine click on the backdrop itself -- not when the
+// mousedown started elsewhere (e.g. dragging to select text in one of the
+// amount fields) and the mouseup happens to land on the backdrop. The
+// backdrop element is recreated on every renderSwapModal() call, so this
+// listens on the (stable) mount container and checks e.target instead of
+// attaching directly to the backdrop -- same guard as accounts.html's
+// modal and bikephotos.html's lightbox, just delegated. See CLAUDE.md.
+const swapModalMount = document.getElementById('swapModalMount');
+swapModalMount.addEventListener('mousedown', (e) => {
+  swapMouseDownOnBackdrop = (e.target.id === 'swapBackdrop');
+});
+swapModalMount.addEventListener('click', (e) => {
+  if (e.target.id === 'swapBackdrop' && swapMouseDownOnBackdrop) closeSwapModal();
+  swapMouseDownOnBackdrop = false;
+});
+
+// Same guard as the Swap Bike modal above, for the Contact Customer
+// modal's backdrop -- see CLAUDE.md.
+const contactModalMount = document.getElementById('contactModalMount');
+contactModalMount.addEventListener('mousedown', (e) => {
+  contactMouseDownOnBackdrop = (e.target.id === 'contactBackdrop');
+});
+contactModalMount.addEventListener('click', (e) => {
+  if (e.target.id === 'contactBackdrop' && contactMouseDownOnBackdrop) closeContactModal();
+  contactMouseDownOnBackdrop = false;
+});
+
+// Same click-outside-to-close guard as the two modals above, for
+// QuickView's backdrop -- see CLAUDE.md.
+const quickviewModalMount = document.getElementById('quickviewModalMount');
+quickviewModalMount.addEventListener('mousedown', (e) => {
+  quickviewMouseDownOnBackdrop = (e.target.id === 'quickviewBackdrop');
+});
+quickviewModalMount.addEventListener('click', (e) => {
+  if (e.target.id === 'quickviewBackdrop' && quickviewMouseDownOnBackdrop) closeQuickView();
+  quickviewMouseDownOnBackdrop = false;
+});
+
+loadData();
+</script>
+
+
+<script>
+/* ---- Date-in-words labels (shared across all pages) ----
+   Every <input type="date"> gets a small red label right after it that
+   writes the selected date out in words -- e.g. "8 July 2026" -- so a
+   date like 08/07 can never be misread as August 7 (American style).
+   You still pick the date in the box exactly as before; this only
+   changes what's DISPLAYED, never what's saved to the sheet.
+   Handles date boxes created later (e.g. the Return picker on Bikes
+   Status) via a DOM observer, and values set by code (prefills,
+   defaults) via a light polling loop. */
+(function () {
+  var MONTHS = ['January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December'];
+
+  function dateWords(iso) {
+    var m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(iso || '');
+    if (!m) return '';
+    var monthIdx = parseInt(m[2], 10) - 1;
+    if (monthIdx < 0 || monthIdx > 11) return '';
+    return parseInt(m[3], 10) + ' ' + MONTHS[monthIdx] + ' ' + parseInt(m[1], 10);
+  }
+
+  function ensureLabel(inp) {
+    var el = inp.__dateWordsEl;
+    if (el && el.parentNode) return el;
+    el = document.createElement('span');
+    el.className = 'date-words-label';
+    el.style.cssText = 'display:inline-block;font-size:12.5px;font-weight:700;' +
+      'color:#C62828;margin-top:3px;margin-left:2px;line-height:1.25;white-space:nowrap;';
+    if (inp.nextSibling) {
+      inp.parentNode.insertBefore(el, inp.nextSibling);
+    } else {
+      inp.parentNode.appendChild(el);
+    }
+    inp.__dateWordsEl = el;
+    return el;
+  }
+
+  function refreshDateWordLabels() {
+    var inputs = document.querySelectorAll('input[type="date"]');
+    for (var i = 0; i < inputs.length; i++) {
+      var inp = inputs[i];
+      if (!inp.parentNode) continue;
+      var el = ensureLabel(inp);
+      var text = dateWords(inp.value);
+      if (el.textContent !== text) el.textContent = text;
+    }
+  }
+
+  // React immediately when the user picks/types a date.
+  document.addEventListener('change', function (e) {
+    if (e.target && e.target.type === 'date') refreshDateWordLabels();
+  }, true);
+  document.addEventListener('input', function (e) {
+    if (e.target && e.target.type === 'date') refreshDateWordLabels();
+  }, true);
+
+  // Catch date boxes that get created after page load (re-rendered lists,
+  // pop-up pickers). refreshDateWordLabels is idempotent, so the observer
+  // re-firing on its own label insertions settles immediately.
+  if (window.MutationObserver) {
+    new MutationObserver(refreshDateWordLabels)
+      .observe(document.documentElement, { childList: true, subtree: true });
+  }
+
+  // Catch values set by code (defaults, prefills from other pages), which
+  // fire no events. A few date boxes at 2 checks/second costs nothing.
+  setInterval(refreshDateWordLabels, 500);
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', refreshDateWordLabels);
+  } else {
+    refreshDateWordLabels();
+  }
+})();
+</script>
+
+</body>
+</html>

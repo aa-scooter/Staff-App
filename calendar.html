@@ -1,0 +1,887 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AA Scooters — Bike Returns Calendar</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="nav.js" defer></script>
+<style>
+  :root{
+    --sand:#F5EFE6;
+    --ink:#1A2421;
+    --petrol:#0F3D3E;
+    --petrol-light:#175A5B;
+    --cone:#FF6B35;
+    --card:#FFFFFF;
+    --line:#DED4C2;
+    --muted:#5A6663;
+  }
+  *{box-sizing:border-box;}
+  .hidden{ display:none; }
+  body{
+    margin:0;
+    background:var(--sand);
+    color:var(--ink);
+    font-family:'Inter',sans-serif;
+    min-height:100vh;
+  }
+  .page-head{
+    max-width:960px;
+    margin:0 auto;
+    padding:26px 16px 4px;
+    text-align:center;
+  }
+  .page-head h1{
+    font-family:'Barlow Condensed',sans-serif;
+    font-weight:700;
+    font-size:28px;
+    color:var(--petrol);
+    margin:0;
+  }
+  .page-head .sub{
+    color:var(--muted);
+    font-size:13px;
+    margin-top:6px;
+  }
+  main{
+    max-width:960px;
+    margin:0 auto;
+    padding:24px 16px 60px;
+  }
+  .cal-card{
+    background:var(--card);
+    border:1px solid var(--line);
+    border-radius:14px;
+    overflow:hidden;
+    box-shadow:0 6px 16px rgba(15,61,62,.06);
+  }
+  .cal-card iframe{
+    display:block;
+    width:100%;
+    height:680px;
+    border:0;
+  }
+  .cal-note{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    flex-wrap:wrap;
+    gap:8px;
+    margin-top:12px;
+    padding:0 2px;
+  }
+  .cal-note .hint{
+    font-size:12px;
+    color:var(--muted);
+  }
+  .cal-note a{
+    font-size:12.5px;
+    color:var(--petrol);
+    text-decoration:none;
+    font-weight:600;
+  }
+  .cal-note a:hover{ text-decoration:underline; }
+  @media (max-width:640px){
+    .cal-card iframe{ height:540px; }
+  }
+
+  /* ---- Add reminder / Reminders list buttons + modals ---- */
+  .reminder-btn-row{
+    margin-top:14px;
+    display:flex;
+    gap:10px;
+    flex-wrap:wrap;
+  }
+  .reminder-btn-row button{
+    width:auto;
+    padding:11px 18px;
+    border:none;
+    border-radius:9px;
+    background:var(--cone);
+    color:#fff;
+    font-family:'Barlow Condensed',sans-serif;
+    font-weight:700;
+    font-size:14.5px;
+    letter-spacing:.04em;
+    text-transform:uppercase;
+    cursor:pointer;
+    transition:transform .1s, background .15s;
+  }
+  .reminder-btn-row button:active{ transform:scale(.98); }
+  .reminder-btn-row button:disabled{ background:#C9B9A8; cursor:not-allowed; }
+  .reminder-btn-row button.secondary{
+    background:#fff;
+    color:var(--petrol);
+    border:1px solid var(--line);
+  }
+
+  .reminders-bulk-bar{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:10px;
+    margin-bottom:10px;
+    padding-bottom:10px;
+    border-bottom:1px solid var(--line);
+  }
+  .reminders-bulk-bar .rb-count{
+    font-size:12.5px;
+    color:var(--muted);
+  }
+  .reminders-bulk-bar button{
+    width:auto;
+    margin:0;
+    padding:8px 14px;
+    border:1px solid #F3C6C6;
+    border-radius:8px;
+    background:#FCEBEB;
+    color:#C53030;
+    font-family:'Barlow Condensed',sans-serif;
+    font-weight:700;
+    font-size:12.5px;
+    letter-spacing:.03em;
+    text-transform:uppercase;
+    cursor:pointer;
+  }
+  .reminders-bulk-bar button:disabled{ opacity:.5; cursor:not-allowed; }
+
+  .reminders-list{ margin-top:4px; }
+  .reminder-item{
+    display:flex;
+    align-items:flex-start;
+    gap:10px;
+    width:100%;
+    text-align:left;
+    background:#FBFAF7;
+    border:1px solid var(--line);
+    border-radius:10px;
+    padding:11px 13px;
+    margin-bottom:8px;
+    transition:background .12s, border-color .12s;
+    font-family:'Inter',sans-serif;
+    color:var(--ink);
+  }
+  .reminder-item:hover{ background:#F5EFE6; border-color:var(--petrol-light); }
+  .reminder-item .ri-check{
+    width:auto;
+    margin:3px 0 0;
+    flex:none;
+    accent-color:var(--cone);
+    cursor:pointer;
+  }
+  .reminder-item .ri-body{
+    flex:1;
+    min-width:0;
+    cursor:pointer;
+  }
+  .reminder-item .ri-when{
+    font-size:12px;
+    font-weight:600;
+    color:var(--petrol);
+    margin-bottom:3px;
+  }
+  .reminder-item .ri-text{
+    font-size:14px;
+    color:var(--ink);
+    white-space:pre-wrap;
+  }
+  .reminders-empty, .reminders-loading, .reminders-error{
+    font-size:13.5px;
+    color:var(--muted);
+    padding:10px 2px;
+  }
+  .reminders-error{ color:#C53030; }
+
+  label{
+    display:block;
+    font-size:12.5px;
+    font-weight:500;
+    color:var(--muted);
+    margin:14px 0 5px;
+  }
+  label:first-of-type{ margin-top:0; }
+  input, textarea{
+    width:100%;
+    padding:11px 12px;
+    border:1px solid var(--line);
+    border-radius:9px;
+    font-size:15px;
+    font-family:'Inter',sans-serif;
+    background:#FBFAF7;
+    color:var(--ink);
+    transition:border-color .15s;
+  }
+  input:focus, textarea:focus{
+    outline:none;
+    border-color:var(--petrol-light);
+    background:#fff;
+  }
+  textarea{ resize:vertical; min-height:70px; }
+  .row2{ display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .row2 > div{ min-width:0; }
+
+  .status{
+    margin-top:12px;
+    font-size:13.5px;
+    padding:10px 12px;
+    border-radius:9px;
+    display:none;
+  }
+  .status.ok{ display:block; background:#E8F5EE; color:#2F855A; border:1px solid #BEE3CE; }
+  .status.err{ display:block; background:#FCEBEB; color:#C53030; border:1px solid #F3C6C6; }
+
+  .modal-backdrop{
+    position:fixed; inset:0; background:rgba(26,36,33,.55);
+    display:none; align-items:center; justify-content:center;
+    z-index:100; padding:20px;
+  }
+  .modal-backdrop.show{ display:flex; }
+  .modal-card{
+    background:#fff; border-radius:14px; max-width:420px; width:100%;
+    max-height:80vh; overflow-y:auto; padding:18px;
+  }
+  .modal-head{
+    display:flex; align-items:center; justify-content:space-between;
+    margin-bottom:10px;
+  }
+  .modal-head h2{
+    font-family:'Barlow Condensed',sans-serif; font-size:15px; font-weight:600;
+    letter-spacing:.08em; text-transform:uppercase; color:var(--petrol); margin:0;
+  }
+  .modal-close{
+    width:auto; margin:0; padding:2px 8px; background:transparent;
+    color:var(--ink); font-size:22px; line-height:1; border:none; box-shadow:none;
+    cursor:pointer;
+  }
+  .modal-close:active{ transform:none; }
+  #reminderSaveBtn{
+    width:100%;
+    padding:14px;
+    border:none;
+    border-radius:10px;
+    background:var(--cone);
+    color:#fff;
+    font-family:'Barlow Condensed',sans-serif;
+    font-weight:700;
+    font-size:16px;
+    letter-spacing:.04em;
+    text-transform:uppercase;
+    cursor:pointer;
+    margin-top:16px;
+    transition:transform .1s, background .15s;
+  }
+  #reminderSaveBtn:active{ transform:scale(.98); }
+  #reminderSaveBtn:disabled{ background:#C9B9A8; cursor:not-allowed; }
+  #reminderCompleteBtn{
+    width:100%;
+    padding:12px;
+    border:1px solid #F3C6C6;
+    border-radius:10px;
+    background:#FCEBEB;
+    color:#C53030;
+    font-family:'Barlow Condensed',sans-serif;
+    font-weight:700;
+    font-size:14px;
+    letter-spacing:.04em;
+    text-transform:uppercase;
+    cursor:pointer;
+    margin-top:10px;
+    transition:transform .1s, background .15s;
+  }
+  #reminderCompleteBtn:active{ transform:scale(.98); }
+  #reminderCompleteBtn:disabled{ opacity:.6; cursor:not-allowed; }
+</style>
+</head>
+<body>
+
+<div id="topbar-mount"></div>
+
+<div class="page-head">
+  <h1>Bike Returns Calendar</h1>
+  <div class="sub">Every rented bike's due-back date &amp; time, synced automatically from the customer sheet</div>
+</div>
+
+<main>
+  <div class="cal-card">
+    <iframe
+      id="calendarIframe"
+      src="https://calendar.google.com/calendar/embed?src=aascooterchiangmai%40gmail.com&ctz=Asia%2FBangkok&mode=AGENDA&showTitle=0&showPrint=0&showTabs=1&showCalendars=0&showTz=0"
+      frameborder="0"
+      scrolling="no">
+    </iframe>
+  </div>
+  <div class="cal-note">
+    <span class="hint">This calendar is shared by link — anyone with the link can view it, no Google login needed.</span>
+    <a href="https://calendar.google.com/calendar/r?cid=aascooterchiangmai%40gmail.com" target="_blank" rel="noopener">Open in Google Calendar ↗</a>
+  </div>
+  <div class="reminder-btn-row">
+    <button type="button" id="addReminderBtn">+ Add reminder</button>
+    <button type="button" id="remindersListBtn" class="secondary">Reminders</button>
+  </div>
+  <div class="reminder-btn-row">
+    <button type="button" id="linksListBtn" class="secondary">Add/Change delivery/pickup link</button>
+  </div>
+</main>
+
+<!-- Add/Edit reminder modal -- creates or updates a plain 🔔 reminder event
+     directly on the shared calendar (not tied to any contract/customer
+     row, and not backed by any spreadsheet row -- reminders live only on
+     the calendar itself). Same modal serves both Add and Edit: when
+     currentReminderEventId is set (JS below), it's in Edit mode -- title
+     changes to "Edit reminder", the fields are prefilled, and a "Mark
+     completed" button appears (deletes the event outright -- no record is
+     kept anywhere once completed, by explicit choice). Click-outside-to-
+     close is guarded against mid-drag closes: only closes if BOTH the
+     mousedown and the click landed on the backdrop itself, per this
+     project's modal convention (see CLAUDE.md). -->
+<div class="modal-backdrop" id="reminderBackdrop">
+  <div class="modal-card" id="reminderCard">
+    <div class="modal-head">
+      <h2 id="reminderModalTitle">Add reminder</h2>
+      <button type="button" class="modal-close" id="reminderCloseBtn">&times;</button>
+    </div>
+    <form id="reminderForm">
+      <div class="row2">
+        <div>
+          <label for="reminderDate">Date</label>
+          <input id="reminderDate" type="date" required>
+        </div>
+        <div>
+          <label for="reminderTime">Time</label>
+          <input id="reminderTime" type="time" required>
+        </div>
+      </div>
+      <label for="reminderText">Reminder</label>
+      <textarea id="reminderText" placeholder="e.g. Follow up with customer X about oil change" required></textarea>
+      <button type="submit" id="reminderSaveBtn">Save reminder</button>
+      <button type="button" id="reminderCompleteBtn" class="hidden">Mark completed</button>
+      <div class="status" id="reminderStatusBox"></div>
+    </form>
+  </div>
+</div>
+
+<!-- Reminders list modal -- opened by the "Reminders" button. Reads the
+     list live from the calendar itself (action:'reminders', a GET that
+     searches for 🔔-titled events) every time it's opened, so it's always
+     current. Clicking a reminder's text closes this modal and reopens the
+     Add/Edit modal above in Edit mode for that one reminder. Ticking its
+     checkbox instead adds it to a multi-select, so several reminders can
+     be marked completed together via the bulk bar below, without opening
+     each one. Same click-outside-to-close guard as every other modal
+     here. -->
+<div class="modal-backdrop" id="remindersListBackdrop">
+  <div class="modal-card" id="remindersListCard">
+    <div class="modal-head">
+      <h2>Reminders</h2>
+      <button type="button" class="modal-close" id="remindersListCloseBtn">&times;</button>
+    </div>
+    <div class="reminders-bulk-bar hidden" id="remindersBulkBar">
+      <span class="rb-count" id="remindersBulkCount">0 selected</span>
+      <button type="button" id="remindersBulkCompleteBtn">Mark completed</button>
+    </div>
+    <div class="reminders-list" id="remindersListBox">
+      <div class="reminders-loading">Loading reminders…</div>
+    </div>
+  </div>
+</div>
+
+<!-- Delivery/pickup links list modal -- opened by "Add/Change delivery/
+     pickup link". Lists every customer whose calendar entry right now is
+     a delivery (🏨, Pending Contract rows with Deliver to hotel = Yes) or
+     a pickup/due-back (🛵, still-out customer rows), soonest date first.
+     Clicking one opens the link-entry modal below, prefilled with
+     whatever link is already set (if any). Same click-outside-to-close
+     guard as every other modal here. -->
+<div class="modal-backdrop" id="linksListBackdrop">
+  <div class="modal-card" id="linksListCard">
+    <div class="modal-head">
+      <h2>Delivery / pickup links</h2>
+      <button type="button" class="modal-close" id="linksListCloseBtn">&times;</button>
+    </div>
+    <div class="reminders-list" id="linksListBox">
+      <div class="reminders-loading">Loading…</div>
+    </div>
+  </div>
+</div>
+
+<!-- Link-entry modal -- paste/change the Google Maps link for one
+     delivery or pickup customer, opened from the list above. Saving
+     writes the link to the right sheet column for that customer (Contract
+     column X for deliveries, customer sheet column T for pickups) and
+     re-syncs that row's calendar event, exactly the same way the delivery
+     link already works from the Add/Edit Contract screen. Same click-
+     outside-to-close guard as every other modal here. -->
+<div class="modal-backdrop" id="linkEntryBackdrop">
+  <div class="modal-card" id="linkEntryCard">
+    <div class="modal-head">
+      <h2 id="linkEntryTitle">Delivery link</h2>
+      <button type="button" class="modal-close" id="linkEntryCloseBtn">&times;</button>
+    </div>
+    <form id="linkEntryForm">
+      <div class="ri-when" id="linkEntrySubtitle" style="margin-bottom:10px;"></div>
+      <label for="linkEntryInput">Google Maps link</label>
+      <input id="linkEntryInput" type="url" placeholder="Paste Google Maps link">
+      <button type="submit" id="linkEntrySaveBtn">Save link</button>
+      <div class="status" id="linkEntryStatusBox"></div>
+    </form>
+  </div>
+</div>
+
+<script>
+const scriptUrl = ''; // DISCONNECTED: this Vercel copy is intentionally not wired to the live backend (dev/testing only, see project CLAUDE.md)
+
+const addReminderBtn = document.getElementById('addReminderBtn');
+const reminderBackdrop = document.getElementById('reminderBackdrop');
+const reminderCloseBtn = document.getElementById('reminderCloseBtn');
+const reminderModalTitle = document.getElementById('reminderModalTitle');
+const reminderForm = document.getElementById('reminderForm');
+const reminderSaveBtn = document.getElementById('reminderSaveBtn');
+const reminderCompleteBtn = document.getElementById('reminderCompleteBtn');
+const reminderStatusBox = document.getElementById('reminderStatusBox');
+const reminderDateInput = document.getElementById('reminderDate');
+const reminderTimeInput = document.getElementById('reminderTime');
+const reminderTextInput = document.getElementById('reminderText');
+
+const remindersListBtn = document.getElementById('remindersListBtn');
+const remindersListBackdrop = document.getElementById('remindersListBackdrop');
+const remindersListCloseBtn = document.getElementById('remindersListCloseBtn');
+const remindersListBox = document.getElementById('remindersListBox');
+const remindersBulkBar = document.getElementById('remindersBulkBar');
+const remindersBulkCount = document.getElementById('remindersBulkCount');
+const remindersBulkCompleteBtn = document.getElementById('remindersBulkCompleteBtn');
+
+// eventIds currently ticked in the Reminders list, for the bulk "Mark
+// completed" action. Cleared every time the list is (re)loaded.
+let selectedReminderIds = new Set();
+
+const linksListBtn = document.getElementById('linksListBtn');
+const linksListBackdrop = document.getElementById('linksListBackdrop');
+const linksListCloseBtn = document.getElementById('linksListCloseBtn');
+const linksListBox = document.getElementById('linksListBox');
+
+const linkEntryBackdrop = document.getElementById('linkEntryBackdrop');
+const linkEntryCloseBtn = document.getElementById('linkEntryCloseBtn');
+const linkEntryForm = document.getElementById('linkEntryForm');
+const linkEntryTitle = document.getElementById('linkEntryTitle');
+const linkEntrySubtitle = document.getElementById('linkEntrySubtitle');
+const linkEntryInput = document.getElementById('linkEntryInput');
+const linkEntrySaveBtn = document.getElementById('linkEntrySaveBtn');
+const linkEntryStatusBox = document.getElementById('linkEntryStatusBox');
+
+// The entry ({type, rowNumber, name, bikeModel, displayDate, time, link})
+// currently open in the link-entry modal.
+let currentLinkEntry = null;
+
+function pad(n) { return String(n).padStart(2, '0'); }
+
+// Reloads just the embedded calendar box (not the whole page) after any
+// reminder is added, edited, or completed, so staff don't have to
+// remember to refresh manually. Note: this only guarantees you'll see a
+// change as soon as it's actually there -- Google's own calendar can
+// still take a minute or two to process a write on their end, so an
+// immediate refresh may briefly reload showing the same, not-yet-updated
+// view. Re-assigning src to itself is a reliable cross-browser way to
+// force an iframe to reload.
+const calendarIframe = document.getElementById('calendarIframe');
+function refreshCalendarIframe() {
+  if (!calendarIframe) return;
+  calendarIframe.src = calendarIframe.src;
+}
+
+// null = Add mode. Set to a reminder's eventId when the Add/Edit modal was
+// opened from the Reminders list, which switches the modal into Edit mode
+// (different title, prefilled fields, "Mark completed" button shown).
+let currentReminderEventId = null;
+
+// Pass an existing reminder ({eventId, date, time, text}) to open in Edit
+// mode, prefilled -- or call with no argument for Add mode, defaulted to
+// right now so staff usually only need to nudge the time forward.
+function openReminderModal(existing) {
+  reminderStatusBox.className = 'status';
+  reminderStatusBox.textContent = '';
+  reminderForm.reset();
+  // Reset both buttons back to their normal enabled/labeled state every
+  // time the modal opens -- otherwise a previous "Saving…"/"Completing…"
+  // that finished successfully (which only closes the modal, it doesn't
+  // reset the buttons) leaves them stuck disabled/relabeled the next time
+  // this modal is reopened for a different reminder.
+  reminderSaveBtn.disabled = false;
+  reminderSaveBtn.textContent = 'Save reminder';
+  reminderCompleteBtn.disabled = false;
+  reminderCompleteBtn.textContent = 'Mark completed';
+
+  if (existing) {
+    currentReminderEventId = existing.eventId;
+    reminderModalTitle.textContent = 'Edit reminder';
+    reminderDateInput.value = existing.date;
+    reminderTimeInput.value = existing.time;
+    reminderTextInput.value = existing.text;
+    reminderCompleteBtn.classList.remove('hidden');
+  } else {
+    currentReminderEventId = null;
+    reminderModalTitle.textContent = 'Add reminder';
+    const now = new Date();
+    reminderDateInput.value = now.getFullYear() + '-' + pad(now.getMonth() + 1) + '-' + pad(now.getDate());
+    reminderTimeInput.value = pad(now.getHours()) + ':' + pad(now.getMinutes());
+    reminderCompleteBtn.classList.add('hidden');
+  }
+
+  reminderBackdrop.classList.add('show');
+  reminderTextInput.focus();
+}
+function closeReminderModal() {
+  reminderBackdrop.classList.remove('show');
+}
+addReminderBtn.addEventListener('click', () => openReminderModal());
+reminderCloseBtn.addEventListener('click', closeReminderModal);
+
+// Click-outside-to-close, guarded against mid-drag closes: only close if
+// BOTH the mousedown and the click landed on the backdrop itself.
+let reminderMouseDownOnBackdrop = false;
+reminderBackdrop.addEventListener('mousedown', (e) => {
+  reminderMouseDownOnBackdrop = (e.target === reminderBackdrop);
+});
+reminderBackdrop.addEventListener('click', (e) => {
+  if (e.target === reminderBackdrop && reminderMouseDownOnBackdrop) closeReminderModal();
+  reminderMouseDownOnBackdrop = false;
+});
+
+reminderForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  reminderStatusBox.className = 'status';
+  reminderSaveBtn.disabled = true;
+  reminderCompleteBtn.disabled = true;
+  reminderSaveBtn.textContent = 'Saving…';
+
+  const payload = currentReminderEventId
+    ? {
+        action: 'editCalendarReminder',
+        eventId: currentReminderEventId,
+        date: reminderDateInput.value,
+        time: reminderTimeInput.value,
+        text: reminderTextInput.value.trim()
+      }
+    : {
+        action: 'addCalendarReminder',
+        date: reminderDateInput.value,
+        time: reminderTimeInput.value,
+        text: reminderTextInput.value.trim()
+      };
+
+  try {
+    const res = await fetch(scriptUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error || 'Unknown error');
+    reminderStatusBox.textContent = (currentReminderEventId ? 'Reminder updated.' : 'Reminder saved to the calendar.') +
+      ' The calendar above will refresh automatically (Google can still take a minute or two to catch up).';
+    reminderStatusBox.className = 'status ok';
+    reminderSaveBtn.textContent = 'Save reminder';
+    reminderSaveBtn.disabled = false;
+    reminderCompleteBtn.disabled = false;
+    refreshCalendarIframe();
+    setTimeout(closeReminderModal, 1400);
+  } catch (err) {
+    reminderStatusBox.textContent = 'Could not save the reminder: ' + err.message;
+    reminderStatusBox.className = 'status err';
+    reminderSaveBtn.disabled = false;
+    reminderCompleteBtn.disabled = false;
+    reminderSaveBtn.textContent = 'Save reminder';
+  }
+});
+
+// "Mark completed" -- only ever visible in Edit mode (currentReminderEventId
+// is set). Deletes the event outright, per explicit instruction that no
+// record needs to be kept anywhere once a reminder is done -- it just
+// disappears from the calendar.
+reminderCompleteBtn.addEventListener('click', async () => {
+  if (!currentReminderEventId) return;
+  reminderStatusBox.className = 'status';
+  reminderSaveBtn.disabled = true;
+  reminderCompleteBtn.disabled = true;
+  reminderCompleteBtn.textContent = 'Completing…';
+
+  try {
+    const res = await fetch(scriptUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ action: 'completeCalendarReminder', eventId: currentReminderEventId })
+    });
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error || 'Unknown error');
+    reminderStatusBox.textContent = 'Reminder marked completed and removed from the calendar.';
+    reminderStatusBox.className = 'status ok';
+    refreshCalendarIframe();
+    setTimeout(closeReminderModal, 900);
+  } catch (err) {
+    reminderStatusBox.textContent = 'Could not complete the reminder: ' + err.message;
+    reminderStatusBox.className = 'status err';
+    reminderSaveBtn.disabled = false;
+    reminderCompleteBtn.disabled = false;
+    reminderCompleteBtn.textContent = 'Mark completed';
+  }
+});
+
+/* ---------------- Reminders list ---------------- */
+
+function escapeHtml(s) {
+  return (s || '').toString()
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function openRemindersListModal() {
+  remindersListBackdrop.classList.add('show');
+  loadRemindersList();
+}
+function closeRemindersListModal() {
+  remindersListBackdrop.classList.remove('show');
+}
+remindersListBtn.addEventListener('click', openRemindersListModal);
+remindersListCloseBtn.addEventListener('click', closeRemindersListModal);
+
+let remindersMouseDownOnBackdrop = false;
+remindersListBackdrop.addEventListener('mousedown', (e) => {
+  remindersMouseDownOnBackdrop = (e.target === remindersListBackdrop);
+});
+remindersListBackdrop.addEventListener('click', (e) => {
+  if (e.target === remindersListBackdrop && remindersMouseDownOnBackdrop) closeRemindersListModal();
+  remindersMouseDownOnBackdrop = false;
+});
+
+async function loadRemindersList() {
+  selectedReminderIds = new Set();
+  refreshBulkBar();
+  remindersListBox.innerHTML = '<div class="reminders-loading">Loading reminders…</div>';
+  try {
+    const res = await fetch(scriptUrl + '?action=reminders');
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error || 'Could not load reminders');
+    renderRemindersList(data.reminders || []);
+  } catch (err) {
+    remindersListBox.innerHTML = '<div class="reminders-error">Could not load reminders: ' + escapeHtml(err.message) + '</div>';
+  }
+}
+
+function renderRemindersList(reminders) {
+  if (!reminders.length) {
+    remindersListBox.innerHTML = '<div class="reminders-empty">No reminders yet. Use "+ Add reminder" to create one.</div>';
+    remindersBulkBar.classList.add('hidden');
+    return;
+  }
+  remindersListBox.innerHTML = '';
+  reminders.forEach((r) => {
+    const item = document.createElement('div');
+    item.className = 'reminder-item';
+
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.className = 'ri-check';
+    checkbox.checked = selectedReminderIds.has(r.eventId);
+    checkbox.addEventListener('change', () => {
+      if (checkbox.checked) {
+        selectedReminderIds.add(r.eventId);
+      } else {
+        selectedReminderIds.delete(r.eventId);
+      }
+      refreshBulkBar();
+    });
+
+    const body = document.createElement('div');
+    body.className = 'ri-body';
+    body.innerHTML = '<div class="ri-when">' + escapeHtml(r.displayDate) + ' · ' + escapeHtml(r.time) + '</div>' +
+      '<div class="ri-text">' + escapeHtml(r.text) + '</div>';
+    // Clicking the reminder's own text/date opens it for full editing --
+    // ticking the checkbox (separate element, doesn't bubble into this)
+    // is only for the bulk "Mark completed" action below.
+    body.addEventListener('click', () => {
+      closeRemindersListModal();
+      openReminderModal(r);
+    });
+
+    item.appendChild(checkbox);
+    item.appendChild(body);
+    remindersListBox.appendChild(item);
+  });
+  refreshBulkBar();
+}
+
+function refreshBulkBar() {
+  const count = selectedReminderIds.size;
+  if (count === 0) {
+    remindersBulkBar.classList.add('hidden');
+    return;
+  }
+  remindersBulkBar.classList.remove('hidden');
+  remindersBulkCount.textContent = count + ' selected';
+  remindersBulkCompleteBtn.disabled = false;
+  remindersBulkCompleteBtn.textContent = 'Mark completed';
+}
+
+// Completes every ticked reminder in one go -- posts completeCalendarReminder
+// once per selected eventId (one at a time, so one failure doesn't abort
+// the rest), then reloads the list fresh. No record is kept for any of
+// them, same as completing one at a time from the edit modal.
+remindersBulkCompleteBtn.addEventListener('click', async () => {
+  const ids = Array.from(selectedReminderIds);
+  if (!ids.length) return;
+  remindersBulkCompleteBtn.disabled = true;
+
+  const failures = [];
+  for (let i = 0; i < ids.length; i++) {
+    remindersBulkCompleteBtn.textContent = 'Completing ' + (i + 1) + '/' + ids.length + '…';
+    try {
+      const res = await fetch(scriptUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({ action: 'completeCalendarReminder', eventId: ids[i] })
+      });
+      const data = await res.json();
+      if (!data.success) failures.push(data.error || 'Unknown error');
+    } catch (err) {
+      failures.push(err.message);
+    }
+  }
+
+  // Refresh the calendar box as long as at least one of the selected
+  // reminders actually completed -- no point reloading it if every single
+  // one failed.
+  if (failures.length < ids.length) refreshCalendarIframe();
+
+  await loadRemindersList();
+
+  if (failures.length) {
+    remindersListBox.insertAdjacentHTML('afterbegin',
+      '<div class="reminders-error">' + failures.length + ' reminder(s) could not be completed: ' +
+      escapeHtml(failures.join('; ')) + '</div>');
+  }
+});
+
+/* ---------------- Delivery / pickup links ---------------- */
+
+function openLinksListModal() {
+  linksListBackdrop.classList.add('show');
+  loadLinksList();
+}
+function closeLinksListModal() {
+  linksListBackdrop.classList.remove('show');
+}
+linksListBtn.addEventListener('click', openLinksListModal);
+linksListCloseBtn.addEventListener('click', closeLinksListModal);
+
+let linksMouseDownOnBackdrop = false;
+linksListBackdrop.addEventListener('mousedown', (e) => {
+  linksMouseDownOnBackdrop = (e.target === linksListBackdrop);
+});
+linksListBackdrop.addEventListener('click', (e) => {
+  if (e.target === linksListBackdrop && linksMouseDownOnBackdrop) closeLinksListModal();
+  linksMouseDownOnBackdrop = false;
+});
+
+async function loadLinksList() {
+  linksListBox.innerHTML = '<div class="reminders-loading">Loading…</div>';
+  try {
+    const res = await fetch(scriptUrl + '?action=deliveryPickupLinks');
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error || 'Could not load the list');
+    renderLinksList(data.entries || []);
+  } catch (err) {
+    linksListBox.innerHTML = '<div class="reminders-error">Could not load the list: ' + escapeHtml(err.message) + '</div>';
+  }
+}
+
+function renderLinksList(entries) {
+  if (!entries.length) {
+    linksListBox.innerHTML = '<div class="reminders-empty">No current deliveries or pickups/due-backs to attach a link to.</div>';
+    return;
+  }
+  linksListBox.innerHTML = '';
+  entries.forEach((r) => {
+    const icon = r.type === 'delivery' ? String.fromCodePoint(127976) : String.fromCodePoint(128690); // 🏨 / 🛵
+    const kindLabel = r.type === 'delivery' ? 'Delivery' : 'Pickup';
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'reminder-item';
+    item.style.display = 'block';
+    item.innerHTML = '<div class="ri-when">' + icon + ' ' + kindLabel + ' · ' + escapeHtml(r.displayDate) +
+        (r.time ? ' · ' + escapeHtml(r.time) : '') + '</div>' +
+      '<div class="ri-text">' + escapeHtml(r.bikeModel) + ' — ' + escapeHtml(r.name) +
+        (r.link ? ' <span style="color:#2F855A;">(link set)</span>' : ' <span style="color:var(--muted);">(no link yet)</span>') +
+      '</div>';
+    item.addEventListener('click', () => {
+      closeLinksListModal();
+      openLinkEntryModal(r);
+    });
+    linksListBox.appendChild(item);
+  });
+}
+
+function openLinkEntryModal(entry) {
+  currentLinkEntry = entry;
+  linkEntryStatusBox.className = 'status';
+  linkEntryStatusBox.textContent = '';
+  const icon = entry.type === 'delivery' ? String.fromCodePoint(127976) : String.fromCodePoint(128690);
+  linkEntryTitle.textContent = entry.type === 'delivery' ? 'Delivery link' : 'Pickup link';
+  linkEntrySubtitle.textContent = icon + ' ' + entry.bikeModel + ' — ' + entry.name +
+    ' · ' + entry.displayDate + (entry.time ? ' · ' + entry.time : '');
+  linkEntryInput.value = entry.link || '';
+  linkEntrySaveBtn.disabled = false;
+  linkEntrySaveBtn.textContent = 'Save link';
+  linkEntryBackdrop.classList.add('show');
+  linkEntryInput.focus();
+}
+function closeLinkEntryModal() {
+  linkEntryBackdrop.classList.remove('show');
+  currentLinkEntry = null;
+}
+linkEntryCloseBtn.addEventListener('click', closeLinkEntryModal);
+
+let linkEntryMouseDownOnBackdrop = false;
+linkEntryBackdrop.addEventListener('mousedown', (e) => {
+  linkEntryMouseDownOnBackdrop = (e.target === linkEntryBackdrop);
+});
+linkEntryBackdrop.addEventListener('click', (e) => {
+  if (e.target === linkEntryBackdrop && linkEntryMouseDownOnBackdrop) closeLinkEntryModal();
+  linkEntryMouseDownOnBackdrop = false;
+});
+
+linkEntryForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  if (!currentLinkEntry) return;
+  linkEntryStatusBox.className = 'status';
+  linkEntrySaveBtn.disabled = true;
+  linkEntrySaveBtn.textContent = 'Saving…';
+
+  try {
+    const res = await fetch(scriptUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({
+        action: 'setDeliveryPickupLink',
+        type: currentLinkEntry.type,
+        rowNumber: currentLinkEntry.rowNumber,
+        link: linkEntryInput.value.trim()
+      })
+    });
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error || 'Unknown error');
+    linkEntryStatusBox.textContent = 'Link saved. The calendar above will refresh automatically.';
+    linkEntryStatusBox.className = 'status ok';
+    refreshCalendarIframe();
+    setTimeout(closeLinkEntryModal, 1200);
+  } catch (err) {
+    linkEntryStatusBox.textContent = 'Could not save the link: ' + err.message;
+    linkEntryStatusBox.className = 'status err';
+    linkEntrySaveBtn.disabled = false;
+    linkEntrySaveBtn.textContent = 'Save link';
+  }
+});
+</script>
+
+</body>
+</html>
