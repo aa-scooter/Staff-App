@@ -573,11 +573,13 @@ const ACCOUNTS_MONTH_HAS_NOTES = { 6: true, 7: true };
 // (e.g. "July", "July_notes"), which now live year-scoped on Drive (see
 // lib/monthSheets.js / api/data/[year]/[sheet].js -- storage layout change,
 // 13/08/2026): a bare "July.json" would otherwise collide between years.
+// (See api/data/[sheet].js for why year is a query param here, not a nested
+// route -- Vercel's builder rejected the nested-route version outright.)
 const accountsJsonCache = {};
 function fetchSheetJson(sheetName, year) {
   const cacheKey = year ? `${year}/${sheetName}` : sheetName;
   const url = year
-    ? `/api/data/${encodeURIComponent(year)}/${encodeURIComponent(sheetName)}`
+    ? `/api/data/${encodeURIComponent(sheetName)}?year=${encodeURIComponent(year)}`
     : `/api/data/${encodeURIComponent(sheetName)}`;
   if (!accountsJsonCache[cacheKey]) {
     accountsJsonCache[cacheKey] = fetch(url).then(r => {
