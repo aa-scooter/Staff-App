@@ -324,6 +324,647 @@
 <script>
 const scriptUrl = ''; // DISCONNECTED: this Vercel copy is intentionally not wired to the live backend (dev/testing only, see project CLAUDE.md)
 
+// ================== JSON-backed data layer (ported 13/08/2026) ==================
+// Replaces the old fetch(scriptUrl + '?action=...') calls with reads off
+// the Drive-backed JSON API (see api/data/[sheet].js), doing the SAME work
+// Code.gs used to do server-side (getPartsData, the doGet default
+// customer-search branch, getDepositsData) in client JS instead -- same
+// approach accounts.html already uses. Everything BELOW this block (the
+// bike-name matching, due-date labels, extend/swap pricing, etc.) is
+// untouched -- only the functions that populate bikeNames/customerRows/
+// categoryRows/RATES, and the two "action=deposits" call sites further
+// down, are new.
+//
+// KNOWN GAP: getPartsData() used to detect "sold" bikes via strikethrough
+// FONT FORMATTING on the bike-name column (see Code.gs's getFontLines()
+// call) -- that's cosmetic formatting, not a data value, and the JSON
+// export (export_to_json.py) only captures cell VALUES, not formatting. So
+// __struck is hardcoded false here -- every bike in "Parts and Oil change"
+// shows up, including any that were struck-through/sold on the live sheet.
+// If Anton wants sold bikes hidden again, the real fix is an explicit
+// "sold" column on that sheet rather than trying to recover font state.
+const bikesJsonCache = {};
+function fetchSheetJson(sheetName, year) {
+  const cacheKey = year ? `${year}/${sheetName}` : sheetName;
+  const url = year
+    ? `/api/data/${encodeURIComponent(sheetName)}?year=${encodeURIComponent(year)}`
+    : `/api/data/${encodeURIComponent(sheetName)}`;
+  if (!bikesJsonCache[cacheKey]) {
+    bikesJsonCache[cacheKey] = fetch(url).then(r => {
+      if (r.status === 401) throw new Error('Signed out -- please refresh to sign in again.');
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    }).then(res => {
+      if (!res.success) throw new Error(res.error || 'Could not load data.');
+      return res.rows || [];
+    });
+  }
+  return bikesJsonCache[cacheKey];
+}
+
+// ---- Decodes the JSON export's string-tagged date/datetime/time encoding
+// (see export_to_json.py's docstring) back into a JS Date, or null. A plain
+// date is "YYYY-MM-DD" (10 chars); a datetime has a "T"; a time-only value
+// is "HH:MM:SS" (two colons, no dashes) -- these three shapes are mutually
+// exclusive by construction, matching Code.gs's own Date-instance check in
+// its cellToString helpers (values that were ALREADY a real Date on the
+// sheet side get formatted; anything else is left as plain text/number).
+function decodeSheetDate(val) {
+  if (val === null || val === undefined) return null;
+  if (typeof val !== 'string') return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(val)) {
+    const m = val.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  }
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(val)) {
+    const m = val.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/);
+    return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6]));
+  }
+  return null;
+}
+function pad2Json(n) { return String(n).padStart(2, '0'); }
+function formatDmyJson(date) {
+  if (!date) return '';
+  return pad2Json(date.getDate()) + '/' + pad2Json(date.getMonth() + 1) + '/' + date.getFullYear();
+}
+// Mirrors the doGet default branch's cellToString(key, val): dates/
+// datetimes -> dd/MM/yyyy, EXCEPT key 'returnTime' -> HH:mm (returnTime is
+// stored as a bare TIME value, "HH:MM:SS" -- no date part at all -- so it's
+// handled as its own case). Anything else -> String(val) or ''.
+function customerCellToString(key, val) {
+  if (val === null || val === undefined) return '';
+  if (typeof val === 'string' && key === 'returnTime' && /^\d{2}:\d{2}:\d{2}/.test(val)) {
+    return val.slice(0, 5); // "15:00:00" -> "15:00"
+  }
+  const d = decodeSheetDate(val);
+  if (d) return formatDmyJson(d);
+  return String(val);
+}
+// Mirrors getPartsData()'s cellToString(val) -- no key-based exception.
+function partsCellToString(val) {
+  if (val === null || val === undefined) return '';
+  const d = decodeSheetDate(val);
+  if (d) return formatDmyJson(d);
+  return String(val);
+}
+// Mirrors getDepositsData()'s local cellToString(val) -- same shape again.
+function depositsCellToString(val) {
+  if (val === null || val === undefined) return '';
+  const d = decodeSheetDate(val);
+  if (d) return formatDmyJson(d);
+  return String(val);
+}
+
+// ---- Contract-sheet lookup matching, ported from Code.gs (used ONLY for
+// matching a "customer" row back to its Contract row -- separate from, and
+// deliberately NOT unified with, this page's own bikeNamesMatch() further
+// below, which powers a different job: matching a bike NAME typed by staff
+// against the fleet list. Code.gs keeps these as two separate functions
+// too (bikeNamesMatchForTaxLookup vs. bikes.html's own copy) -- ported here
+// as two separate functions for the same reason, to avoid any behavior
+// drift from "helpfully" merging them. ----
+function normalizeNameForContractMatch(name) {
+  return (name || '').toString().toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+function normalizeBikeNameForTaxLookup(s) {
+  return (s || '').toString().toLowerCase().replace(/[()]/g, ' ').replace(/[^a-z0-9]+/g, ' ').trim().replace(/\s+/g, ' ');
+}
+function normalizeBikeNameCore(s) {
+  let t = (s || '').toString().toLowerCase();
+  t = t.replace(/\(\s*\d{2,4}\s*cc?\s*\)/gi, ' ');
+  t = t.replace(/\b\d{2,4}\s?cc\b/gi, ' ');
+  t = t.replace(/[()]/g, ' ');
+  t = t.replace(/\b(yamaha|honda|gpx)\b/gi, ' ');
+  t = t.replace(/[^a-z0-9]+/g, ' ').trim().replace(/\s+/g, ' ');
+  return t;
+}
+function bikeNamesMatchForTaxLookup(a, b) {
+  const na = normalizeBikeNameForTaxLookup(a);
+  const nb = normalizeBikeNameForTaxLookup(b);
+  if (na && nb) {
+    if (na === nb) return true;
+    const paddedA = ' ' + na + ' ', paddedB = ' ' + nb + ' ';
+    if (paddedA.indexOf(paddedB) !== -1 || paddedB.indexOf(paddedA) !== -1) return true;
+  }
+  const ca = normalizeBikeNameCore(a), cb = normalizeBikeNameCore(b);
+  if (!ca || !cb) return false;
+  if (ca === cb) return true;
+  const paddedCa = ' ' + ca + ' ', paddedCb = ' ' + cb + ' ';
+  return paddedCa.indexOf(paddedCb) !== -1 || paddedCb.indexOf(paddedCa) !== -1;
+}
+
+const HEADER_ROWS_B = 1;       // customer/Contract sheets: row 1 is the header
+const LEDGER_CONTACT_COL_B = 2; // column B -- ledger note lives on the Contact cell
+
+function buildContractChatNameLookup(contractRows2D) {
+  const rows = [];
+  for (let i = HEADER_ROWS_B; i < contractRows2D.length; i++) {
+    const r = contractRows2D[i];
+    rows.push({
+      rowNumber: i + 1,
+      name: normalizeNameForContractMatch(r[3]),
+      bikeModel: (r[6] || '').toString().trim(),
+      number: (r[2] || '').toString().trim(),
+      chatName: (r[25] || '').toString().trim(),
+      status: (r[16] || '').toString().trim().toLowerCase(),
+      totalPrice: r[11],
+      paidBy: (r[12] || '').toString().trim(),
+      deposit: (r[13] || '').toString().trim(),
+      depositAmount: r[14],
+      depositCurrency: (r[26] || '').toString().trim(),
+      deliveryLink: (r[23] || '').toString().trim(),
+      contact: (r[1] || '').toString().trim(),
+      messengerId: (r[35] || '').toString().trim()
+    });
+  }
+  return rows;
+}
+function buildContractLookupIndex(contractLookupRows) {
+  const index = {};
+  for (const row of contractLookupRows) {
+    if (!row.name) continue;
+    if (!index[row.name]) index[row.name] = [];
+    index[row.name].push(row);
+  }
+  return index;
+}
+function lookupContractInfoForCustomerRowIndexed(contractIndex, name, bikeModel) {
+  const result = { chatName: '', number: '', contactMethod: '', messengerId: '', financials: null, rowNumber: null };
+  const nameTarget = normalizeNameForContractMatch(name);
+  if (!nameTarget) return result;
+  const bikeTarget = (bikeModel || '').toString().trim();
+  const candidateRows = contractIndex[nameTarget];
+  if (!candidateRows || !candidateRows.length) return result;
+
+  let needChatName = true, needNumber = true, needContactMethod = true, needMessengerId = true, needRented = true;
+  for (let i = candidateRows.length - 1; i >= 0 && (needChatName || needNumber || needContactMethod || needMessengerId || needRented); i--) {
+    const row = candidateRows[i];
+    if (bikeTarget && row.bikeModel && !bikeNamesMatchForTaxLookup(row.bikeModel, bikeTarget)) continue;
+    if (needChatName && row.chatName) { result.chatName = row.chatName; needChatName = false; }
+    if (needNumber && row.number) { result.number = row.number; needNumber = false; }
+    if (needContactMethod && row.contact) { result.contactMethod = row.contact; needContactMethod = false; }
+    if (needMessengerId && row.messengerId) { result.messengerId = row.messengerId; needMessengerId = false; }
+    if (needRented && row.status === 'rented') {
+      result.financials = { totalPrice: row.totalPrice, paidBy: row.paidBy, deposit: row.deposit, depositAmount: row.depositAmount, depositCurrency: row.depositCurrency, deliveryLink: row.deliveryLink };
+      result.rowNumber = row.rowNumber;
+      needRented = false;
+    }
+  }
+  return result;
+}
+// Reads the "Total: N days, ฿X" line off the end of a ledger note -- see
+// appendLedgerEntry/parseLedgerTotal_ in Code.gs. Returns {days:0,amount:0}
+// for a blank/missing/malformed note (no ledger history yet).
+function parseLedgerTotal(noteText) {
+  const m = (noteText || '').toString().match(/Total:\s*([\d.]+)\s*days?,\s*฿\s*([\d,]+(?:\.\d+)?)\s*$/i);
+  if (!m) return { days: 0, amount: 0 };
+  return { days: Number(m[1]) || 0, amount: Number(m[2].replace(/,/g, '')) || 0 };
+}
+
+// ---- Ports the doGet default branch (customer-search) -- see Code.gs.
+// Returns the exact same { success, rows: [{...}] } shape the old bare
+// fetch(scriptUrl) call got back, so nothing downstream needs to change. ----
+async function getCustomerRowsFromJson() {
+  const [customerRows2D, contractRows2D, customerNotes] = await Promise.all([
+    fetchSheetJson('customer'),
+    fetchSheetJson('Contract'),
+    fetchSheetJson('customer_notes').catch(() => [])
+  ]);
+
+  const keys = ['timestamp', 'contact', 'name', 'nationality', 'passport', 'bikeModel',
+    'status', 'rentingDateFrom', 'returnDate', 'returnTime', 'deliverToHotel',
+    'totalPrice', 'paidBy', 'situation'];
+
+  const noteByRow = new Map();
+  (customerNotes || []).forEach(([r, c, t]) => { if (c === LEDGER_CONTACT_COL_B) noteByRow.set(r, t); });
+
+  const contractLookupRows = buildContractChatNameLookup(contractRows2D || []);
+  const contractLookupIndex = buildContractLookupIndex(contractLookupRows);
+
+  const dataRows = (customerRows2D || []).slice(HEADER_ROWS_B);
+  const rows = dataRows.map((row, i) => {
+    const obj = {};
+    keys.forEach((k, ki) => { obj[k] = customerCellToString(k, row[ki]); });
+    obj.confirmedReturnDate = customerCellToString('confirmedReturnDate', row[18]);
+
+    const contractInfo = lookupContractInfoForCustomerRowIndexed(contractLookupIndex, obj.name, obj.bikeModel);
+    obj.chatName = contractInfo.chatName;
+    obj.number = contractInfo.number;
+    obj.contactMethod = contractInfo.contactMethod;
+    obj.messengerId = contractInfo.messengerId;
+    const cf = contractInfo.financials;
+    obj.contractTotalPrice = cf ? customerCellToString('contractTotalPrice', cf.totalPrice) : '';
+    obj.contractPaidBy = cf ? (cf.paidBy || '') : '';
+    obj.deposit = cf ? (cf.deposit || '') : '';
+    obj.depositAmount = cf ? customerCellToString('depositAmount', cf.depositAmount) : '';
+    obj.depositCurrency = cf ? (cf.depositCurrency || '') : '';
+    obj.deliveryLink = cf ? (cf.deliveryLink || '') : '';
+    obj.pickupLink = (row[19] || '').toString().trim();
+    const sheetRow = HEADER_ROWS_B + i + 1;
+    obj.rowNumber = sheetRow;
+    const ledgerTotalForRow = parseLedgerTotal(noteByRow.get(sheetRow) || '');
+    obj.ledgerTotalDays = ledgerTotalForRow.days > 0 ? String(ledgerTotalForRow.days) : '';
+    return obj;
+  }).filter(r => r.name !== '');
+
+  return { success: true, rows };
+}
+
+// ---- Ports getBikeTaxCategories() -- header-text-based column lookup off
+// the "Bike Tax" sheet, so it keeps working if columns move. ----
+function getBikeTaxCategoriesFromJson(rows2D) {
+  try {
+    if (!rows2D || !rows2D.length) return [];
+    const headerRow = rows2D[0].map(h => (h || '').toString().trim().toLowerCase());
+    let bikeCol = headerRow.indexOf('bike model');
+    if (bikeCol === -1) bikeCol = headerRow.indexOf('bike');
+    const catCol = headerRow.indexOf('category');
+    if (bikeCol === -1 || catCol === -1) return [];
+
+    const makeCol = headerRow.indexOf('make');
+    const modelYearCol = headerRow.indexOf('model year');
+    const searchFrom = makeCol > -1 ? makeCol : 0;
+    const modelCol = headerRow.indexOf('model', searchFrom);
+    const ccCol = headerRow.indexOf('cc', searchFrom);
+    const keyCol = headerRow.indexOf('key', searchFrom);
+    let depositCol = headerRow.indexOf('deposit', searchFrom);
+    if (depositCol === -1) depositCol = headerRow.indexOf('deposit');
+    let boxCol = headerRow.indexOf('box', searchFrom);
+    if (boxCol === -1) boxCol = headerRow.indexOf('box');
+    let absCol = headerRow.indexOf('abs', searchFrom);
+    if (absCol === -1) absCol = headerRow.indexOf('abs');
+    let tractionCol = headerRow.indexOf('traction control', searchFrom);
+    if (tractionCol === -1) tractionCol = headerRow.indexOf('traction control');
+
+    let plateCol = -1;
+    for (let pc = 0; pc < headerRow.length; pc++) {
+      if (headerRow[pc].indexOf('plate') !== -1) { plateCol = pc; break; }
+    }
+
+    const rows = [];
+    for (let i = 1; i < rows2D.length; i++) {
+      const bike = (rows2D[i][bikeCol] || '').toString().trim();
+      if (!bike) continue;
+      const cat = (rows2D[i][catCol] || '').toString().trim();
+      const modelYearRaw = modelYearCol > -1 ? rows2D[i][modelYearCol] : '';
+      rows.push({
+        bike, category: cat,
+        modelYear: (modelYearRaw === '' || modelYearRaw === null || isNaN(Number(modelYearRaw))) ? '' : Number(modelYearRaw),
+        make: makeCol > -1 ? (rows2D[i][makeCol] || '').toString().trim() : '',
+        model: modelCol > -1 ? (rows2D[i][modelCol] || '').toString().trim() : '',
+        cc: ccCol > -1 ? (rows2D[i][ccCol] || '').toString().trim() : '',
+        key: keyCol > -1 ? (rows2D[i][keyCol] || '').toString().trim() : '',
+        deposit: depositCol > -1 ? (rows2D[i][depositCol] || '').toString().trim() : '',
+        box: boxCol > -1 ? (rows2D[i][boxCol] || '').toString().trim() : '',
+        abs: absCol > -1 ? (rows2D[i][absCol] || '').toString().trim() : '',
+        tractionControl: tractionCol > -1 ? (rows2D[i][tractionCol] || '').toString().trim() : '',
+        plate: plateCol > -1 ? (rows2D[i][plateCol] || '').toString().trim() : ''
+      });
+    }
+    return rows;
+  } catch (err) {
+    return [];
+  }
+}
+
+// ---- Ports readRatesPerDayTable_() -- fixed block, sheet rows 10-39
+// (1-indexed) == array indices 9-38, column A = day number, B-G = the 6
+// category rates in CATEGORY_DEFS order. ----
+function readRatesPerDayTableFromJson(rows2D) {
+  try {
+    if (!rows2D || rows2D.length < 39) {
+      throw new Error('The "rates per day" sheet does not have the expected 30-day block at rows 10-39.');
+    }
+    const block = rows2D.slice(9, 39);
+    const rates = {};
+    for (let i = 0; i < block.length; i++) {
+      const row = block[i];
+      const day = Number(row[0]);
+      if (!day || isNaN(day)) continue;
+      const perCategory = [];
+      for (let c = 1; c <= 6; c++) {
+        const raw = row[c];
+        const v = (raw === '' || raw === null || raw === undefined) ? NaN : Number(raw);
+        perCategory.push(isNaN(v) ? null : v);
+      }
+      rates[day] = perCategory;
+    }
+    let completeDays = 0;
+    for (let d = 1; d <= 30; d++) {
+      if (rates[d] && rates[d].every(v => v !== null)) completeDays++;
+    }
+    if (completeDays < 25) {
+      throw new Error('The "rates per day" sheet doesn\'t look like the expected 30-day rate table (only ' + completeDays + ' of 30 days read cleanly) -- check it hasn\'t been moved, renamed, or restructured.');
+    }
+    return { rates, warning: null };
+  } catch (err) {
+    return { rates: null, warning: err.message };
+  }
+}
+
+// ---- Ports getPartsData() -- see the KNOWN GAP note at the top of this
+// block re: __struck always being false. ----
+async function getPartsDataFromJson() {
+  const [partsRows2D, bikeTaxRows2D, ratesRows2D] = await Promise.all([
+    fetchSheetJson('Parts_and_Oil_change'),
+    fetchSheetJson('Bike_Tax'),
+    fetchSheetJson('rates_per_day')
+  ]);
+
+  const rawHeaders = partsRows2D[0] || [];
+  const headers = rawHeaders.map((h, i) => {
+    const key = (h || '').toString().trim();
+    return key || ('Column ' + (i + 1));
+  });
+  const rows = partsRows2D.slice(1).map(row => {
+    const obj = {};
+    headers.forEach((h, i2) => { obj[h] = partsCellToString(row[i2]); });
+    obj.__struck = false; // see KNOWN GAP note above
+    return obj;
+  }).filter(r => (r[headers[0]] || '').toString().trim() !== '');
+
+  const categoryRows = getBikeTaxCategoriesFromJson(bikeTaxRows2D);
+  const ratesResult = readRatesPerDayTableFromJson(ratesRows2D);
+
+  return { success: true, headers, rows, categoryRows, rates: ratesResult.rates, ratesWarning: ratesResult.warning };
+}
+
+// ---- Ports getDepositsData() -- always the CURRENT calendar month, same
+// as the original (no month picker on this feature). Reused DEPOSIT_
+// CATEGORIES / exact month names instead of Code.gs's findMonthSheetFuzzy:
+// that fuzzy matching existed to tolerate a hand-typo'd sheet TAB name; now
+// that we own the JSON filenames directly (see lib/monthSheets.js on the
+// backend) there's nothing that can drift, so exact names are enough. ----
+const DEPOSIT_CATEGORIES_B = [
+  { key: 'bank', label: 'Bank', header: 'deposit scan', dateCol: 15, amountCol: 16, nameCol: 17 },
+  { key: 'wise', label: 'Wise', header: 'deposit wise', dateCol: 18, amountCol: 19, nameCol: 20 },
+  { key: 'revolut', label: 'Revolut', header: 'deposit revolut', dateCol: 22, amountCol: 23, nameCol: 24 }
+];
+const DEPOSITS_MONTH_NAMES = ['January', 'February', 'march', 'april', 'may', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December'];
+
+async function getDepositsDataFromJson() {
+  const now = new Date();
+  const currentMonthIndex = now.getMonth();
+  const monthName = DEPOSITS_MONTH_NAMES[currentMonthIndex];
+  const year = now.getFullYear();
+
+  try {
+    const monthRows2D = await fetchSheetJson(monthName, year);
+    if (!monthRows2D) {
+      return { success: false, error: 'No sheet found matching "' + monthName + '" -- could not load this month\'s deposits.' };
+    }
+
+    function norm(s) { return (s || '').toString().trim().toLowerCase(); }
+    function cell(row, col) {
+      const r = monthRows2D[row - 1];
+      return r ? r[col - 1] : undefined;
+    }
+
+    const deposits = [];
+    const warnings = [];
+    const maxRow = monthRows2D.length;
+
+    DEPOSIT_CATEGORIES_B.forEach(cat => {
+      const headerRaw = cell(1, cat.dateCol);
+      if (norm(headerRaw) !== cat.header) {
+        warnings.push('"' + monthName + '" sheet: expected "' + cat.header + '" in column ' + cat.dateCol + ', row 1 but found "' + (headerRaw || '(blank)') + '" -- skipped this section, please go have a look.');
+        return;
+      }
+      for (let row = 2; row <= maxRow; row++) {
+        const dateRaw = cell(row, cat.dateCol);
+        if (norm(dateRaw) === 'total') break;
+        const amtRaw = cell(row, cat.amountCol);
+        const nameRaw = cell(row, cat.nameCol);
+        const dateEmpty = (dateRaw === '' || dateRaw === null || dateRaw === undefined);
+        const amtEmpty = (amtRaw === '' || amtRaw === null || amtRaw === undefined);
+        const nameEmpty = (nameRaw === '' || nameRaw === null || nameRaw === undefined);
+        if (dateEmpty && amtEmpty && nameEmpty) continue;
+        deposits.push({
+          row, category: cat.key, categoryLabel: cat.label,
+          date: depositsCellToString(dateRaw),
+          amount: (amtEmpty || isNaN(Number(amtRaw))) ? '' : Number(amtRaw),
+          name: (nameRaw || '').toString().trim()
+        });
+      }
+    });
+
+    const summary = {};
+    DEPOSIT_CATEGORIES_B.forEach(cat => {
+      const entry = {};
+      const totalLabelRaw = cell(15, cat.dateCol);
+      if (norm(totalLabelRaw).indexOf('total') === 0) {
+        const v = cell(15, cat.amountCol);
+        entry.total = { label: depositsCellToString(totalLabelRaw), value: (v === null || v === undefined || v === '') ? '' : Number(v).toLocaleString('en-US', { maximumFractionDigits: 2 }) };
+      } else {
+        warnings.push('"' + monthName + '" sheet: expected a "total" label at column ' + cat.dateCol + ', row 15 for ' + cat.label + ' but found "' + (totalLabelRaw || '(blank)') + '" -- ' + cat.label + ' total not shown.');
+      }
+      if (cat.key !== 'bank') {
+        const rtLabelRaw = cell(16, cat.dateCol);
+        if (norm(rtLabelRaw).indexOf('total') === 0) {
+          const v = cell(16, cat.amountCol);
+          entry.runningTotal = { label: depositsCellToString(rtLabelRaw), value: (v === null || v === undefined || v === '') ? '' : Number(v).toLocaleString('en-US', { maximumFractionDigits: 2 }) };
+        } else {
+          warnings.push('"' + monthName + '" sheet: expected a running-total label at column ' + cat.dateCol + ', row 16 for ' + cat.label + ' but found "' + (rtLabelRaw || '(blank)') + '" -- ' + cat.label + ' running total not shown.');
+        }
+      }
+      summary[cat.key] = entry;
+    });
+
+    return { success: true, monthIndex: currentMonthIndex, month: monthName, sheetName: monthName, deposits, summary, warnings };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+}
+// ================== JSON-backed WRITE actions (ported 13/08/2026) ==================
+// Generic read-modify-write plumbing on top of POST /api/data/<sheet> (see
+// api/data/[sheet].js) -- fetch the whole sheet + its modifiedTime, mutate
+// the specific row(s) a Code.gs action used to touch, POST the whole sheet
+// back with that modifiedTime as the optimistic-lock guard (a 409 means
+// someone else saved in between -- surfaced as a normal error, same as any
+// other save failure, rather than silently overwriting).
+//
+// SCOPE OF WHAT'S PORTED SO FAR -- only the two simplest, fully
+// self-contained write actions are wired up right now:
+//   - markReturned (a normal "Return", not an early return)
+//   - updateReturnPickup ("Adjust Pickup")
+// Both only ever touch a single customer row (plus a best-effort Contract-
+// sheet mirror) with no ledger-note math, no deposit/cash/bikes-sheet
+// cascades, and no multi-step sequencing -- the lowest-risk write actions
+// on this page to get right unattended. earlyReturnBike, extendBike
+// (short), swapBike, returnDeposit, and the long-extension
+// closeBikeForExtend+intake pair are DELIBERATELY NOT ported yet -- those
+// involve real money math (ledger running totals, deposit deductions,
+// Contract total-price sync, bikes-sheet formula-growth, cash/income
+// logging) that deserves a live test pass with Anton watching rather than
+// being pushed through unattended. Clicking those still hits the old
+// (empty) scriptUrl and fails cleanly with an alert -- nothing is silently
+// half-done. See the project's own task list for what's still open.
+//
+// Google Calendar sync (syncCalendarForCustomerRow in Code.gs) is
+// intentionally NOT ported for either action below -- calendar cutover is
+// explicitly last on this project's plan (see CLAUDE.md), so neither of
+// these writes touches the shared bike-returns calendar right now.
+
+async function fetchSheetWithMeta(sheetName, year) {
+  const url = year
+    ? `/api/data/${encodeURIComponent(sheetName)}?year=${encodeURIComponent(year)}`
+    : `/api/data/${encodeURIComponent(sheetName)}`;
+  const r = await fetch(url);
+  if (r.status === 401) throw new Error('Signed out -- please refresh to sign in again.');
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  const res = await r.json();
+  if (!res.success) throw new Error(res.error || 'Could not load data.');
+  return { rows: res.rows || [], modifiedTime: res.modifiedTime || null };
+}
+
+async function writeSheetJson(sheetName, rows, expectedModifiedTime, year) {
+  const url = year
+    ? `/api/data/${encodeURIComponent(sheetName)}?year=${encodeURIComponent(year)}`
+    : `/api/data/${encodeURIComponent(sheetName)}`;
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ rows, expectedModifiedTime })
+  });
+  const res = await r.json().catch(() => ({}));
+  if (r.status === 409) {
+    throw new Error(res.error || 'This record was changed by someone else in the meantime -- please reload and try again.');
+  }
+  if (!r.ok || !res.success) throw new Error(res.error || ('HTTP ' + r.status));
+  // fetchSheetJson (used by getCustomerRowsFromJson/getPartsDataFromJson/
+  // getDepositsDataFromJson above) caches per sheet+year for what was
+  // originally meant to be "the lifetime of one page load" -- fine for a
+  // read-only page like accounts.html, but wrong here: without this,
+  // anything that re-reads this sheet after a successful write (e.g. a
+  // later loadData() call on this same page load) would silently get back
+  // the STALE pre-write snapshot instead of what was just saved. Found by
+  // testing markReturned's write-then-readback round trip before shipping
+  // -- see the write-action tests.
+  const cacheKey = year ? `${year}/${sheetName}` : sheetName;
+  delete bikesJsonCache[cacheKey];
+  return res; // { success, sheet, year, fileId, modifiedTime }
+}
+
+// "YYYY-MM-DD" (<input type=date>) -> the same "YYYY-MM-DDTHH:MM:SS"
+// midnight-datetime string encoding export_to_json.py uses for a plain
+// date value (see decodeSheetDate above) -- so a value THIS code writes
+// reads back identically to one written by the original xlsx export.
+function isoDateInputToSheetValue(isoDate) {
+  const m = String(isoDate || '').trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return null;
+  return `${m[1]}-${m[2]}-${m[3]}T00:00:00`;
+}
+// "HH:MM" (a <input type=time>'s value) -> "HH:MM:SS" -- the bare TIME
+// encoding export_to_json.py uses for a time-only cell (e.g. returnTime).
+function hhmmToSheetTimeValue(hhmm) {
+  const m = String(hhmm || '').trim().match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return null;
+  return `${pad2Json(m[1])}:${m[2]}:00`;
+}
+
+// ---- Ports markMatchingContractAsReturned / markMatchingContractAsRented
+// (Code.gs) into one shared helper -- bottom-up name+bike match against
+// whichever status the caller is flipping FROM. Best-effort: callers wrap
+// this in try/catch, same as Code.gs does, so a miss here never undoes the
+// customer-row write that already succeeded. ----
+async function flipMatchingContractStatus(name, bikeModel, fromStatusLower, toStatus) {
+  const { rows, modifiedTime } = await fetchSheetWithMeta('Contract');
+  const nameTarget = normalizeNameForContractMatch(name);
+  const bikeTarget = (bikeModel || '').toString().trim();
+  if (!nameTarget) return { found: false };
+  for (let i = rows.length - 1; i >= HEADER_ROWS_B; i--) {
+    const rowName = normalizeNameForContractMatch(rows[i][3]);
+    const rowBike = (rows[i][6] || '').toString().trim();
+    const rowStatus = (rows[i][16] || '').toString().trim().toLowerCase();
+    if (rowStatus !== fromStatusLower) continue;
+    if (rowName !== nameTarget) continue;
+    if (bikeTarget && rowBike && !bikeNamesMatchForTaxLookup(rowBike, bikeTarget)) continue;
+    const newRows = rows.map(r => r.slice());
+    newRows[i][16] = toStatus;
+    await writeSheetJson('Contract', newRows, modifiedTime);
+    return { found: true, row: i + 1 };
+  }
+  return { found: false };
+}
+
+// ---- Best-effort mirror of a delivery link onto the matching Contract
+// row -- ports the relevant part of updateReturnPickup (Code.gs). Bottom-up
+// name+bike match, no status restriction (mirrors any matching row,
+// whichever is most recent). ----
+async function mirrorDeliveryLinkToContract(name, bikeModel, deliveryLink) {
+  const { rows, modifiedTime } = await fetchSheetWithMeta('Contract');
+  const nameTarget = normalizeNameForContractMatch(name);
+  const bikeTarget = (bikeModel || '').toString().trim();
+  if (!nameTarget) return { found: false };
+  for (let i = rows.length - 1; i >= HEADER_ROWS_B; i--) {
+    const rowName = normalizeNameForContractMatch(rows[i][3]);
+    const rowBike = (rows[i][6] || '').toString().trim();
+    if (rowName !== nameTarget) continue;
+    if (bikeTarget && rowBike && !bikeNamesMatchForTaxLookup(rowBike, bikeTarget)) continue;
+    const newRows = rows.map(r => r.slice());
+    newRows[i][23] = deliveryLink; // X deliveryLink
+    await writeSheetJson('Contract', newRows, modifiedTime);
+    return { found: true, row: i + 1 };
+  }
+  return { found: false };
+}
+
+// ---- Ports markBikeReturned(data) (Code.gs) for a normal (non-early)
+// return: col I returnDate, col N situation="Returned". ----
+async function performMarkReturned(rowNumber, isoDate) {
+  const { rows, modifiedTime } = await fetchSheetWithMeta('customer');
+  const idx = rowNumber - 1; // sheet row 1 = header = array index 0
+  if (!rows[idx]) throw new Error('Could not find row ' + rowNumber + ' on the customer sheet -- it may have moved. Please reload and try again.');
+  const newRows = rows.map(r => r.slice());
+  newRows[idx][8] = isoDateInputToSheetValue(isoDate); // I returnDate
+  newRows[idx][13] = 'Returned';                        // N situation
+  const nameForContract = newRows[idx][2], bikeForContract = newRows[idx][5];
+
+  const writeResult = await writeSheetJson('customer', newRows, modifiedTime);
+
+  let warning = null;
+  try {
+    await flipMatchingContractStatus(nameForContract, bikeForContract, 'rented', 'Returned');
+  } catch (err) {
+    warning = 'Bike marked returned, but the matching Contract record could not be updated automatically: ' + err.message;
+  }
+  return { success: true, warning, modifiedTime: writeResult.modifiedTime };
+}
+
+// ---- Ports updateReturnPickup(data) (Code.gs): col J returnTime, col S
+// confirmedReturnDate, col R timeConfirmed=true, and (only when a
+// deliveryLink was actually passed -- even '' counts, an explicit clear)
+// col T pickupLink plus a best-effort Contract-row mirror. Deliberately
+// does NOT touch col I (the real due date) -- see Code.gs's own comment. ----
+async function performUpdateReturnPickup(rowNumber, isoDate, hhmm, deliveryLink) {
+  const { rows, modifiedTime } = await fetchSheetWithMeta('customer');
+  const idx = rowNumber - 1;
+  if (!rows[idx]) throw new Error('Could not find row ' + rowNumber + ' on the customer sheet -- it may have moved. Please reload and try again.');
+  const newRows = rows.map(r => r.slice());
+  newRows[idx][9] = hhmmToSheetTimeValue(hhmm);          // J returnTime
+  newRows[idx][18] = isoDateInputToSheetValue(isoDate);   // S confirmedReturnDate
+  newRows[idx][17] = true;                                 // R timeConfirmed
+  const deliveryLinkProvided = deliveryLink !== undefined && deliveryLink !== null;
+  if (deliveryLinkProvided) newRows[idx][19] = deliveryLink; // T pickupLink
+  const nameForContract = newRows[idx][2], bikeForContract = newRows[idx][5];
+
+  const writeResult = await writeSheetJson('customer', newRows, modifiedTime);
+
+  let warning = null;
+  if (deliveryLinkProvided) {
+    try {
+      await mirrorDeliveryLinkToContract(nameForContract, bikeForContract, deliveryLink);
+    } catch (err) {
+      warning = 'Saved, but could not mirror the delivery link onto the matching Contract record: ' + err.message;
+    }
+  }
+  return { success: true, warning, modifiedTime: writeResult.modifiedTime };
+}
+// ================== end JSON-backed WRITE actions ==================
+
+// ================== end JSON-backed data layer ==================
+
 let bikeNames = [];    // list of bike name strings, alphabetically sorted
 let customerRows = null;
 let categoryRows = []; // bike -> category text, from the Bike Tax tab (for auto-pricing extensions)
@@ -349,8 +990,8 @@ function loadData() {
   if (quickViewBtn) quickViewBtn.disabled = true;
 
   return Promise.all([
-    fetch(scriptUrl + '?action=parts').then(res => res.json()),
-    fetch(scriptUrl).then(res => res.json()).catch(err => ({ success: false, error: err.message }))
+    getPartsDataFromJson(),
+    getCustomerRowsFromJson().catch(err => ({ success: false, error: err.message }))
   ])
     .then(([partsResult, customerResult]) => {
       if (!partsResult.success) throw new Error(partsResult.error || 'Could not load bikes');
@@ -1911,7 +2552,7 @@ async function initReturnDepositLookup(rowNumber) {
 
   let res;
   try {
-    res = await fetch(scriptUrl + '?action=deposits').then(r => r.json());
+    res = await getDepositsDataFromJson();
   } catch (err) {
     res = null;
   }
@@ -2107,7 +2748,7 @@ async function populateExtendDepositSelect(rowNumber, categoryKey) {
   select.innerHTML = '<option value="">Loading…</option>';
   select.disabled = true;
   try {
-    const res = await fetch(scriptUrl + '?action=deposits').then(r => r.json());
+    const res = await getDepositsDataFromJson();
     // The row may have been collapsed/re-rendered while this fetch was in
     // flight (extend cancelled, another row opened) -- bail out quietly.
     if (openExtendRowNumber !== rowNumber || !document.getElementById('extendDepositSelect-' + rowNumber)) return;
@@ -2217,12 +2858,20 @@ function confirmReturn(rowNumber, isoDate, depositMatch, deductionAmount, reason
     ? { action: 'earlyReturnBike', rowNumber: rowNumber, returnDate: isoDate, refundAmount: refundAmount, refundPaidBy: refundPaidBy }
     : { action: 'markReturned', rowNumber: rowNumber, returnDate: isoDate };
 
-  fetch(scriptUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify(body)
-  })
-    .then(res => res.json())
+  // earlyReturnBike (refund math + ledger/Contract/bikes-sheet cascade)
+  // isn't ported yet -- see the JSON-backed WRITE actions block's scope
+  // note above -- so that path still goes through the old (disconnected)
+  // scriptUrl and fails cleanly below rather than silently doing the wrong
+  // thing. A plain return (markReturned) is fully ported.
+  const writePromise = isEarlyReturn
+    ? fetch(scriptUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify(body)
+      }).then(res => res.json())
+    : performMarkReturned(rowNumber, isoDate);
+
+  writePromise
     .then(result => {
       clearTimeout(stageTimer);
       setAllButtonsDisabled(false);
@@ -2336,12 +2985,7 @@ function confirmEditTime(rowNumber, isoDate, hhmm, deliveryLink) {
   setAllButtonsDisabled(true);
   const stageTimer = setTimeout(() => { savingEditTimeStage = 'saving'; render(); setAllButtonsDisabled(true); }, 500);
 
-  fetch(scriptUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify({ action: 'updateReturnPickup', rowNumber: rowNumber, returnDate: isoDate, returnTime: hhmm, deliveryLink: deliveryLink })
-  })
-    .then(res => res.json())
+  performUpdateReturnPickup(rowNumber, isoDate, hhmm, deliveryLink)
     .then(result => {
       clearTimeout(stageTimer);
       setAllButtonsDisabled(false);

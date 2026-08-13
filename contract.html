@@ -939,6 +939,361 @@
 
 <script>
 const scriptUrl = ''; // DISCONNECTED: this Vercel copy is intentionally not wired to the live backend (dev/testing only, see project CLAUDE.md)
+
+// ================== JSON-backed data layer (ported 13/08/2026) ==================
+// Replaces this page's three fetch(scriptUrl + '?action=...') READS
+// (contracts, parts, bikeRentalStatus) with reads off the Drive-backed
+// JSON API (see api/data/[sheet].js) -- same approach used for
+// accounts.html and bikes.html. Everything BELOW this block (rendering,
+// search, the Add-contract form, document/checklist/photo actions) is
+// untouched for now -- ONLY these three reads are ported this pass. See
+// the big comment above the write-action call sites further down for why
+// this page's WRITE actions (addContractEntry, editContractEntry,
+// cancelContractEntry, and everything involving generating/finding an
+// actual contract/checklist/receipt document or a passport photo) are
+// deliberately NOT ported yet.
+//
+// KNOWN GAP (same as bikes.html): "sold" bike detection via strikethrough
+// font formatting has no JSON equivalent -- __struck is hardcoded false
+// below, so soldBikeNameSet will always come back empty until Anton adds
+// an explicit "sold" column on the Parts and Oil change sheet.
+const contractJsonCache = {};
+function fetchSheetJson(sheetName, year) {
+  const cacheKey = year ? `${year}/${sheetName}` : sheetName;
+  const url = year
+    ? `/api/data/${encodeURIComponent(sheetName)}?year=${encodeURIComponent(year)}`
+    : `/api/data/${encodeURIComponent(sheetName)}`;
+  if (!contractJsonCache[cacheKey]) {
+    contractJsonCache[cacheKey] = fetch(url).then(r => {
+      if (r.status === 401) throw new Error('Signed out -- please refresh to sign in again.');
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    }).then(res => {
+      if (!res.success) throw new Error(res.error || 'Could not load data.');
+      return res.rows || [];
+    });
+  }
+  return contractJsonCache[cacheKey];
+}
+
+// ---- Decodes the JSON export's string-tagged date/datetime/time encoding
+// (see export_to_json.py's docstring) back into a JS Date, or null -- same
+// as bikes.html's identical helper (duplicated here, single-file page). ----
+function decodeSheetDate(val) {
+  if (val === null || val === undefined) return null;
+  if (typeof val !== 'string') return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(val)) {
+    const m = val.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  }
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(val)) {
+    const m = val.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/);
+    return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6]));
+  }
+  return null;
+}
+function pad2Json(n) { return String(n).padStart(2, '0'); }
+function formatDmyJson(date) {
+  if (!date) return '';
+  return pad2Json(date.getDate()) + '/' + pad2Json(date.getMonth() + 1) + '/' + date.getFullYear();
+}
+// Mirrors getContractRows()'s local cellToString(key, val): dates/datetimes
+// -> dd/MM/yyyy, EXCEPT 'returnTime'/'deliveryTime' (bare TIME values,
+// "HH:MM:SS") -> HH:mm.
+function contractCellToString(key, val) {
+  if (val === null || val === undefined) return '';
+  if (typeof val === 'string' && (key === 'returnTime' || key === 'deliveryTime') && /^\d{2}:\d{2}:\d{2}/.test(val)) {
+    return val.slice(0, 5);
+  }
+  const d = decodeSheetDate(val);
+  if (d) return formatDmyJson(d);
+  return String(val);
+}
+// Mirrors the doGet default branch's cellToString(key, val) (the "customer"
+// sheet) -- only 'returnTime' gets the HH:mm treatment there.
+function customerCellToString(key, val) {
+  if (val === null || val === undefined) return '';
+  if (typeof val === 'string' && key === 'returnTime' && /^\d{2}:\d{2}:\d{2}/.test(val)) {
+    return val.slice(0, 5);
+  }
+  const d = decodeSheetDate(val);
+  if (d) return formatDmyJson(d);
+  return String(val);
+}
+// Mirrors getPartsData()'s local cellToString(val) -- no key-based exception.
+function partsCellToString(val) {
+  if (val === null || val === undefined) return '';
+  const d = decodeSheetDate(val);
+  if (d) return formatDmyJson(d);
+  return String(val);
+}
+
+const HEADER_ROWS_B = 1;        // customer/Contract sheets: row 1 is the header
+const LEDGER_CONTACT_COL_B = 2; // column B -- both the ledger-total note (customer sheet) and the "Deal" flag (Contract sheet) live on this same column
+
+// ---- Contract-sheet lookup matching, ported from Code.gs -- used ONLY to
+// enrich getBikeRentalStatusFromJson's "currently rented" entries with a
+// phone number / contact method / messenger id off the matching Contract
+// row. Deliberately kept separate from getBikeRentalStatusFromJson's OWN
+// bike-name matcher further down (which matches a bike NAME against the
+// fleet list, a different job) -- Code.gs keeps these apart too, same
+// convention already followed in bikes.html. ----
+function normalizeNameForContractMatch(name) {
+  return (name || '').toString().toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+function normalizeBikeNameForTaxLookup(s) {
+  return (s || '').toString().toLowerCase().replace(/[()]/g, ' ').replace(/[^a-z0-9]+/g, ' ').trim().replace(/\s+/g, ' ');
+}
+function normalizeBikeNameCore(s) {
+  let t = (s || '').toString().toLowerCase();
+  t = t.replace(/\(\s*\d{2,4}\s*cc?\s*\)/gi, ' ');
+  t = t.replace(/\b\d{2,4}\s?cc\b/gi, ' ');
+  t = t.replace(/[()]/g, ' ');
+  t = t.replace(/\b(yamaha|honda|gpx)\b/gi, ' ');
+  t = t.replace(/[^a-z0-9]+/g, ' ').trim().replace(/\s+/g, ' ');
+  return t;
+}
+function bikeNamesMatchForTaxLookup(a, b) {
+  const na = normalizeBikeNameForTaxLookup(a);
+  const nb = normalizeBikeNameForTaxLookup(b);
+  if (na && nb) {
+    if (na === nb) return true;
+    const paddedA = ' ' + na + ' ', paddedB = ' ' + nb + ' ';
+    if (paddedA.indexOf(paddedB) !== -1 || paddedB.indexOf(paddedA) !== -1) return true;
+  }
+  const ca = normalizeBikeNameCore(a), cb = normalizeBikeNameCore(b);
+  if (!ca || !cb) return false;
+  if (ca === cb) return true;
+  const paddedCa = ' ' + ca + ' ', paddedCb = ' ' + cb + ' ';
+  return paddedCa.indexOf(paddedCb) !== -1 || paddedCb.indexOf(paddedCa) !== -1;
+}
+function buildContractChatNameLookup(contractRows2D) {
+  const rows = [];
+  for (let i = HEADER_ROWS_B; i < contractRows2D.length; i++) {
+    const r = contractRows2D[i];
+    rows.push({
+      rowNumber: i + 1,
+      name: normalizeNameForContractMatch(r[3]),
+      bikeModel: (r[6] || '').toString().trim(),
+      number: (r[2] || '').toString().trim(),
+      chatName: (r[25] || '').toString().trim(),
+      status: (r[16] || '').toString().trim().toLowerCase(),
+      totalPrice: r[11],
+      paidBy: (r[12] || '').toString().trim(),
+      deposit: (r[13] || '').toString().trim(),
+      depositAmount: r[14],
+      depositCurrency: (r[26] || '').toString().trim(),
+      deliveryLink: (r[23] || '').toString().trim(),
+      contact: (r[1] || '').toString().trim(),
+      messengerId: (r[35] || '').toString().trim()
+    });
+  }
+  return rows;
+}
+function buildContractLookupIndex(contractLookupRows) {
+  const index = {};
+  for (const row of contractLookupRows) {
+    if (!row.name) continue;
+    if (!index[row.name]) index[row.name] = [];
+    index[row.name].push(row);
+  }
+  return index;
+}
+function lookupContractInfoForCustomerRowIndexed(contractIndex, name, bikeModel) {
+  const result = { chatName: '', number: '', contactMethod: '', messengerId: '', financials: null, rowNumber: null };
+  const nameTarget = normalizeNameForContractMatch(name);
+  if (!nameTarget) return result;
+  const bikeTarget = (bikeModel || '').toString().trim();
+  const candidateRows = contractIndex[nameTarget];
+  if (!candidateRows || !candidateRows.length) return result;
+
+  let needChatName = true, needNumber = true, needContactMethod = true, needMessengerId = true, needRented = true;
+  for (let i = candidateRows.length - 1; i >= 0 && (needChatName || needNumber || needContactMethod || needMessengerId || needRented); i--) {
+    const row = candidateRows[i];
+    if (bikeTarget && row.bikeModel && !bikeNamesMatchForTaxLookup(row.bikeModel, bikeTarget)) continue;
+    if (needChatName && row.chatName) { result.chatName = row.chatName; needChatName = false; }
+    if (needNumber && row.number) { result.number = row.number; needNumber = false; }
+    if (needContactMethod && row.contact) { result.contactMethod = row.contact; needContactMethod = false; }
+    if (needMessengerId && row.messengerId) { result.messengerId = row.messengerId; needMessengerId = false; }
+    if (needRented && row.status === 'rented') {
+      result.financials = { totalPrice: row.totalPrice, paidBy: row.paidBy, deposit: row.deposit, depositAmount: row.depositAmount, depositCurrency: row.depositCurrency, deliveryLink: row.deliveryLink };
+      result.rowNumber = row.rowNumber;
+      needRented = false;
+    }
+  }
+  return result;
+}
+
+// ---- Ports getContractRows() -- the Search tab's data source. Returns the
+// exact same { success, rows: [{...}] } shape the old
+// fetch(scriptUrl + '?action=contracts') call got back. ----
+async function getContractRowsFromJson() {
+  const [contractRows2D, contractNotes] = await Promise.all([
+    fetchSheetJson('Contract'),
+    fetchSheetJson('Contract_notes').catch(() => [])
+  ]);
+  const keys = ['date', 'contact', 'number', 'name', 'nationality', 'passport', 'bikeModel',
+    'rentingDateFrom', 'returnDate', 'returnTime', 'deliverToHotel',
+    'totalPrice', 'paidBy', 'deposit', 'depositAmount', 'deliveryFee', 'status',
+    'contractDocUrl', 'contractPdfUrl', 'passportPhotoUrl', 'receiptPdfUrl',
+    'deliveryTime', 'calendarEventId', 'deliveryLink', 'checklistPdfUrl', 'chatName',
+    'depositCurrency',
+    'helmetHalfSizeQty', 'helmetFullSizeS', 'helmetFullSizeM', 'helmetFullSizeL', 'helmetFullSizeXL',
+    'helmetKidsQty', 'helmetFullFaceQty', 'helmetNone', 'messengerId'];
+
+  // isDeal lives as a NOTE on column B (contact), same "deal" text
+  // convention as Code.gs -- see the sidecar-notes comment on
+  // LEDGER_CONTACT_COL_B above.
+  const noteByRow = new Map();
+  (contractNotes || []).forEach(([r, c, t]) => { if (c === LEDGER_CONTACT_COL_B) noteByRow.set(r, t); });
+
+  const dataRows = (contractRows2D || []).slice(HEADER_ROWS_B);
+  const rows = dataRows.map((row, i) => {
+    const obj = {};
+    keys.forEach((k, ki) => { obj[k] = contractCellToString(k, row[ki]); });
+    const sheetRow = HEADER_ROWS_B + i + 1;
+    obj.rowNumber = sheetRow;
+    const noteText = (noteByRow.get(sheetRow) || '').toString().trim().toLowerCase();
+    obj.isDeal = noteText === 'deal' ? 'TRUE' : '';
+    return obj;
+  }).filter(r => r.name !== '');
+
+  return { success: true, rows };
+}
+
+// ---- Ports the bike-list part of getPartsData() -- the Add form's
+// "Bike model" dropdown source. See the KNOWN GAP note at the top of this
+// block re: __struck always being false. ----
+async function getPartsBikeNamesFromJson() {
+  const partsRows2D = await fetchSheetJson('Parts_and_Oil_change');
+  const rawHeaders = partsRows2D[0] || [];
+  const headers = rawHeaders.map((h, i) => {
+    const key = (h || '').toString().trim();
+    return key || ('Column ' + (i + 1));
+  });
+  const rows = partsRows2D.slice(1).map(row => {
+    const obj = {};
+    headers.forEach((h, i2) => { obj[h] = partsCellToString(row[i2]); });
+    obj.__struck = false; // KNOWN GAP -- see comment above
+    return obj;
+  }).filter(r => (r[headers[0]] || '').toString().trim() !== '');
+  return { success: true, headers, rows };
+}
+
+// ---- Ports getBikeRentalStatus() -- the "currently rented" map the Add
+// form uses to avoid over-offering an already-rented bike. ----
+async function getBikeRentalStatusFromJson() {
+  const [partsRows2D, customerRows2D, contractRows2D] = await Promise.all([
+    fetchSheetJson('Parts_and_Oil_change'),
+    fetchSheetJson('customer'),
+    fetchSheetJson('Contract')
+  ]);
+
+  // ---- Master bike list: column A of Parts and Oil change, from row 2
+  // until the first blank cell -- mirrors findLastBikeRow(sheet,1,[]) in
+  // Code.gs (no stopKeywords on this particular call, so only a truly
+  // blank cell ends the list). ----
+  const bikeNames = [];
+  for (let i = 1; i < (partsRows2D || []).length; i++) {
+    const name = (partsRows2D[i][0] || '').toString().trim();
+    if (!name) break;
+    bikeNames.push(name);
+  }
+  bikeNames.sort((a, b) => a.localeCompare(b));
+
+  const customerKeys = ['timestamp', 'contact', 'name', 'nationality', 'passport', 'bikeModel',
+    'status', 'rentingDateFrom', 'returnDate', 'returnTime', 'deliverToHotel',
+    'totalPrice', 'paidBy', 'situation'];
+  const customerRows = [];
+  for (let ri = HEADER_ROWS_B; ri < (customerRows2D || []).length; ri++) {
+    const row = customerRows2D[ri];
+    const custName = (row[2] || '').toString().trim();
+    if (!custName) continue;
+    const obj = {};
+    customerKeys.forEach((k, ki) => { obj[k] = customerCellToString(k, row[ki]); });
+    obj.rowNumber = ri + 1;
+    customerRows.push(obj);
+  }
+
+  const contractLookupRows = buildContractChatNameLookup(contractRows2D || []);
+  const contractLookupIndex = buildContractLookupIndex(contractLookupRows);
+
+  // ---- Matching helpers -- ported verbatim from Code.gs's
+  // getBikeRentalStatus (a THIRD, deliberately separate fuzzy bike-name
+  // matcher from bikeNamesMatchForTaxLookup above -- Code.gs keeps these
+  // apart, so this does too). ----
+  const RENTAL_DISTINGUISHING_SUFFIXES = {
+    'one': 1, 'two': 1, 'three': 1, 'four': 1, 'five': 1, 'six': 1, 'seven': 1, 'eight': 1, 'nine': 1, 'ten': 1,
+    'i': 1, 'ii': 1, 'iii': 1, 'iv': 1, 'v': 1, 'vi': 1, 'vii': 1, 'viii': 1, 'ix': 1, 'x': 1,
+    '1': 1, '2': 1, '3': 1, '4': 1, '5': 1, '6': 1, '7': 1, '8': 1, '9': 1, '10': 1
+  };
+  function normalizeBikeNameForRentalMatch_(s) {
+    return (s || '').toString().toLowerCase().replace(/\([^)]*\)/g, ' ').replace(/[^a-z0-9]+/g, ' ').trim().replace(/\s+/g, ' ');
+  }
+  function bikeNamesMatchForRental_(a, b) {
+    const na = normalizeBikeNameForRentalMatch_(a);
+    const nb = normalizeBikeNameForRentalMatch_(b);
+    if (!na || !nb) return false;
+    if (na === nb) return true;
+    const ta = na.split(' '), tb = nb.split(' ');
+    const shorter = ta.length <= tb.length ? ta : tb;
+    const longer = ta.length <= tb.length ? tb : ta;
+    let isPrefix = true;
+    for (let i = 0; i < shorter.length; i++) { if (shorter[i] !== longer[i]) { isPrefix = false; break; } }
+    if (isPrefix) {
+      const extra = longer.slice(shorter.length);
+      for (let j = 0; j < extra.length; j++) { if (RENTAL_DISTINGUISHING_SUFFIXES[extra[j]]) return false; }
+      return true;
+    }
+    return na.indexOf(nb) !== -1 || nb.indexOf(na) !== -1;
+  }
+  function isRentedSituation_(situation) {
+    const s = (situation || '').toString().trim().toLowerCase();
+    return s !== 'returned';
+  }
+
+  const rented = {};
+  bikeNames.forEach(name => {
+    const candidates = [];
+    for (let ci = 0; ci < customerRows.length; ci++) {
+      const r = customerRows[ci];
+      if (bikeNamesMatchForRental_(r.bikeModel, name) && isRentedSituation_(r.situation)) {
+        candidates.push({ r, idx: ci });
+      }
+    }
+    if (!candidates.length) return;
+    candidates.sort((a, b) => b.idx - a.idx);
+    const winner = candidates[0].r;
+    const winnerContractInfo = lookupContractInfoForCustomerRowIndexed(contractLookupIndex, winner.name, winner.bikeModel);
+    rented[name] = {
+      name: winner.name,
+      contact: winner.contact,
+      number: winnerContractInfo.number,
+      contactMethod: winnerContractInfo.contactMethod,
+      messengerId: winnerContractInfo.messengerId,
+      bikeModel: winner.bikeModel,
+      rentingDateFrom: winner.rentingDateFrom,
+      returnDate: winner.returnDate,
+      rowNumber: winner.rowNumber
+    };
+  });
+
+  return { success: true, bikeNames, rented };
+}
+// ================== end JSON-backed data layer (reads only) ==================
+// WRITE actions on this page (Create contract, Cancel, Regenerate/Find
+// contract & checklist documents, passport photo upload/find, AI-assisted
+// passport/WhatsApp reads, file sharing) are DELIBERATELY NOT ported in
+// this pass -- see the message to Anton (13/08/2026) about the Sheet/
+// Drive-JSON split-brain risk this whole migration has to manage. On top
+// of that risk, most of these specific actions (contract/checklist/receipt
+// document generation, passport photo storage) are Google Docs/Drive
+// document operations, not plain row writes -- this Vercel backend has no
+// Docs-API integration at all yet, so porting them is a materially bigger
+// project than the row-level writes done for bikes.html, not just "port
+// the same JS a second time." Every write on this page still goes through
+// the old (disconnected) scriptUrl and fails cleanly with an alert.
+
 let sessionCount = 0;
 
 const form = document.getElementById('intakeForm');
@@ -2916,8 +3271,7 @@ function setLoadStatus(msg) {
 function loadRows() {
   if (rowsPromise) return rowsPromise;
   setLoadStatus('Loading records…');
-  rowsPromise = fetch(scriptUrl + '?action=contracts')
-    .then(res => res.json())
+  rowsPromise = getContractRowsFromJson()
     .then(data => {
       if (!data.success) throw new Error(data.error || 'Could not load data');
       sheetRows = data.rows;
@@ -2965,8 +3319,7 @@ document.getElementById('pageGateRetry').addEventListener('click', () => {
 function loadBikeNames() {
   if (bikeNamesPromise) return bikeNamesPromise;
   setBikeModelLoadStatus('Loading bikes…');
-  bikeNamesPromise = fetch(scriptUrl + '?action=parts')
-    .then(res => res.json())
+  bikeNamesPromise = getPartsBikeNamesFromJson()
     .then(data => {
       if (!data.success) throw new Error(data.error || 'Could not load bike list');
       const bikeHeader = data.headers[0];
@@ -3015,8 +3368,7 @@ let rentedBikes = {}; // bike name -> { name, contact, number, ... } for current
 let rentedBikesPromise = null;
 function loadRentedBikes() {
   if (rentedBikesPromise) return rentedBikesPromise;
-  rentedBikesPromise = fetch(scriptUrl + '?action=bikeRentalStatus')
-    .then(res => res.json())
+  rentedBikesPromise = getBikeRentalStatusFromJson()
     .then(data => {
       rentedBikes = (data && data.success && data.rented) ? data.rented : {};
       return rentedBikes;
