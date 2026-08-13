@@ -10,6 +10,16 @@
 // Global (year-independent) sheets are UNAFFECTED by this route -- they
 // keep using the flat /api/data/<sheet> route (api/data/[sheet].js), which
 // reads directly from the app folder root.
+//
+// NOTE on the filename: this dynamic segment is named [monthSheet], NOT
+// [sheet], even though api/data/[sheet].js also has a dynamic segment for
+// (conceptually) the same idea -- Vercel's plain (non-framework) api/
+// function builder requires every [param] name to be unique across the
+// WHOLE api/ tree, not just within one folder. Reusing [sheet] here failed
+// the build with "Two or more files have conflicting paths or names" even
+// though the two routes are at different path depths and don't actually
+// overlap. Confirmed via a live failed deployment, 13/08/2026 -- this is
+// Vercel's own file-system-routing constraint, not a bug in this code.
 const { withDrive } = require('../../../lib/apiAuth');
 const { readJsonFile, ensureAppFolder, ensureYearFolder } = require('../../../lib/googleDrive');
 
@@ -22,13 +32,13 @@ module.exports = withDrive(async function handler(req, res, { drive, folderId })
   }
 
   const url = new URL(req.url, 'https://' + (req.headers.host || 'localhost'));
-  // Vercel's [year]/[sheet].js dynamic route puts the matched segments on
-  // req.query.year / req.query.sheet in the Node runtime; fall back to
-  // parsing the path directly so this also works when invoked in a plain
+  // Vercel's [year]/[monthSheet].js dynamic route puts the matched segments
+  // on req.query.year / req.query.monthSheet in the Node runtime; fall back
+  // to parsing the path directly so this also works when invoked in a plain
   // Node test harness (mirrors api/data/[sheet].js's fallback).
   const pathParts = url.pathname.split('/').filter(Boolean);
   const yearParam = (req.query && req.query.year) || pathParts[pathParts.length - 2];
-  const sheetParam = (req.query && req.query.sheet) || pathParts[pathParts.length - 1];
+  const sheetParam = (req.query && req.query.monthSheet) || pathParts[pathParts.length - 1];
 
   const year = decodeURIComponent(yearParam || '').trim();
   const sheet = decodeURIComponent(sheetParam || '').trim();
