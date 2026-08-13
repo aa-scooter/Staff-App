@@ -971,6 +971,12 @@ function fetchSheetJson(sheetName, year) {
     }).then(res => {
       if (!res.success) throw new Error(res.error || 'Could not load data.');
       return res.rows || [];
+    }).catch(err => {
+      // A cached PROMISE stays truthy whether it resolved or rejected --
+      // clear the entry on failure so the next call actually retries
+      // instead of replaying the same stale failure forever.
+      delete contractJsonCache[cacheKey];
+      throw err;
     });
   }
   return contractJsonCache[cacheKey];
@@ -993,6 +999,15 @@ function decodeSheetDate(val) {
   return null;
 }
 function pad2Json(n) { return String(n).padStart(2, '0'); }
+function columnLetterJson(col) {
+  let letter = '';
+  while (col > 0) {
+    const rem = (col - 1) % 26;
+    letter = String.fromCharCode(65 + rem) + letter;
+    col = Math.floor((col - 1) / 26);
+  }
+  return letter;
+}
 function formatDmyJson(date) {
   if (!date) return '';
   return pad2Json(date.getDate()) + '/' + pad2Json(date.getMonth() + 1) + '/' + date.getFullYear();
@@ -1169,7 +1184,7 @@ async function getPartsBikeNamesFromJson() {
   const rawHeaders = partsRows2D[0] || [];
   const headers = rawHeaders.map((h, i) => {
     const key = (h || '').toString().trim();
-    return key || ('Column ' + (i + 1));
+    return key || ('Column ' + columnLetterJson(i + 1));
   });
   const rows = partsRows2D.slice(1).map(row => {
     const obj = {};
@@ -1281,18 +1296,291 @@ async function getBikeRentalStatusFromJson() {
   return { success: true, bikeNames, rented };
 }
 // ================== end JSON-backed data layer (reads only) ==================
-// WRITE actions on this page (Create contract, Cancel, Regenerate/Find
-// contract & checklist documents, passport photo upload/find, AI-assisted
-// passport/WhatsApp reads, file sharing) are DELIBERATELY NOT ported in
-// this pass -- see the message to Anton (13/08/2026) about the Sheet/
-// Drive-JSON split-brain risk this whole migration has to manage. On top
-// of that risk, most of these specific actions (contract/checklist/receipt
-// document generation, passport photo storage) are Google Docs/Drive
-// document operations, not plain row writes -- this Vercel backend has no
-// Docs-API integration at all yet, so porting them is a materially bigger
-// project than the row-level writes done for bikes.html, not just "port
-// the same JS a second time." Every write on this page still goes through
-// the old (disconnected) scriptUrl and fails cleanly with an alert.
+// ================== WRITE layer: addContract / editContract / cancelContract ==================
+// Ports Code.gs's addContractEntry/editContractEntry/cancelContractEntry --
+// the Contract-sheet row writes only. Everything else on this page
+// (Regenerate/Find contract & checklist documents, passport photo upload/
+// find, AI-assisted passport/WhatsApp reads, file sharing) is still
+// DELIBERATELY NOT ported -- those are Google Docs/Drive document
+// operations, not plain row writes, and this Vercel backend has no Docs-
+// API integration yet. Specifically NOT ported as part of THIS pass either
+// (each needs its own dedicated infrastructure -- see this project's
+// three-tier deferral convention used throughout the other pages):
+//  - Delivery-calendar sync (syncDeliveryCalendarForContractRow) -- out of
+//    scope until Anton's isolated test calendar exists (see the project
+//    plan). Code.gs itself treats a calendar failure as non-fatal
+//    (wrapped, warning-only), so skipping it here is the same "already
+//    degraded gracefully" path, not a new risk -- add/edit/cancel all
+//    still fully succeed without one.
+//  - editContractEntry's SECOND exception: a security-deposit-method
+//    change (the "Deposit" field, not "Paid by") syncing the Scan/Wise/
+//    Revolut ledger tables on the current month's sheet -- best-effort
+//    reconciliation-by-name+amount-matching, the same "shares missing
+//    cascading financial-write infrastructure" category as accounts.html's
+//    deposit actions and deposits.html's deduct actions. A warning is
+//    returned when this would have applied, so staff know to check by hand.
+//  - addContractEntry's bundled passport-photo upload
+//    (passportPhotoBase64/passportPhotoMimeType) -- needs real Drive-API
+//    integration, same gap as bikephotos.html. A photo chosen on the Add
+//    form is silently NOT uploaded; a warning is returned instead so staff
+//    aren't misled into thinking it was saved.
+//  - Server-side duplicate-submission guard
+//    (guardAgainstDuplicateSubmission_, a script-properties-backed dedup
+//    cache) -- there's no server-side action endpoint left to hold that
+//    state in this whole-sheet-replace architecture. The client already
+//    disables its Save/Create button for the duration of the request (see
+//    setAllButtonsDisabled/editSubmitBtn.disabled), which covers the
+//    double-click case that guard mainly existed for.
+//
+// Column layout matches getContractRowsFromJson's own `keys` array above
+// exactly (index i <-> column i+1) -- kept in sync deliberately so a
+// change to one is a reminder to check the other.
+const CONTRACT_KEYS_B = ['date', 'contact', 'number', 'name', 'nationality', 'passport', 'bikeModel',
+  'rentingDateFrom', 'returnDate', 'returnTime', 'deliverToHotel',
+  'totalPrice', 'paidBy', 'deposit', 'depositAmount', 'deliveryFee', 'status',
+  'contractDocUrl', 'contractPdfUrl', 'passportPhotoUrl', 'receiptPdfUrl',
+  'deliveryTime', 'calendarEventId', 'deliveryLink', 'checklistPdfUrl', 'chatName',
+  'depositCurrency',
+  'helmetHalfSizeQty', 'helmetFullSizeS', 'helmetFullSizeM', 'helmetFullSizeL', 'helmetFullSizeXL',
+  'helmetKidsQty', 'helmetFullFaceQty', 'helmetNone', 'messengerId'];
+
+async function fetchSheetWithMeta(sheetName, year) {
+  const url = year
+    ? `/api/data/${encodeURIComponent(sheetName)}?year=${encodeURIComponent(year)}`
+    : `/api/data/${encodeURIComponent(sheetName)}`;
+  const r = await fetch(url);
+  if (r.status === 401) throw new Error('Signed out -- please refresh to sign in again.');
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  const res = await r.json();
+  if (!res.success) throw new Error(res.error || 'Could not load data.');
+  return { rows: res.rows || [], modifiedTime: res.modifiedTime || null };
+}
+async function writeSheetJson(sheetName, rows, expectedModifiedTime, year) {
+  const url = year
+    ? `/api/data/${encodeURIComponent(sheetName)}?year=${encodeURIComponent(year)}`
+    : `/api/data/${encodeURIComponent(sheetName)}`;
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ rows, expectedModifiedTime })
+  });
+  const res = await r.json().catch(() => ({}));
+  if (r.status === 409) {
+    throw new Error(res.error || 'This record was changed by someone else in the meantime -- please reload and try again.');
+  }
+  if (!r.ok || !res.success) throw new Error(res.error || ('HTTP ' + r.status));
+  const cacheKey = year ? `${year}/${sheetName}` : sheetName;
+  delete contractJsonCache[cacheKey];
+  return res;
+}
+
+// Same "ISO date input -> ISO-datetime-at-midnight sheet value" convention
+// add-bikes.html's editBikeFromJson uses (isoDateInputToSheetValue) --
+// decodeSheetDate (above) parses this straight back into the same
+// calendar date.
+function isoDateInputToContractValue(isoDate) {
+  const m = String(isoDate || '').trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return '';
+  return `${m[1]}-${m[2]}-${m[3]}T00:00:00`;
+}
+// HTML time input gives "HH:MM" -- the sheet stores a bare "HH:MM:SS"
+// time-of-day string (see contractCellToString's returnTime/deliveryTime
+// special case above).
+function timeInputToContractValue(hhmm) {
+  const m = String(hhmm || '').trim().match(/^(\d{2}):(\d{2})$/);
+  if (!m) return '';
+  return `${m[1]}:${m[2]}:00`;
+}
+function isoYmdNowB() {
+  const d = new Date();
+  return d.getFullYear() + '-' + pad2Json(d.getMonth() + 1) + '-' + pad2Json(d.getDate());
+}
+
+// Builds the 16-value [contact..status] block shared by both addContract's
+// new row (columns B..Q) and editContract's row overwrite (same columns)
+// -- mirrors Code.gs's own shared field derivation between the two. Skips
+// the "force Plain Text first" dance addContractEntry/editContractEntry do
+// for the number/passport cells: that's a live-Sheets auto-type-detection
+// workaround this JSON store has no equivalent risk for (a JSON string is
+// always just a string), so it isn't needed here.
+function buildContractCoreFieldsB(data, statusValue) {
+  const bikeModel = (data.bikeModel || '').toString().trim();
+  const depositMethod = (data.deposit || '').toString().trim();
+  const depositNeedsAmount = depositMethod !== '' && depositMethod.toLowerCase() !== 'passport';
+  const depositAmount = depositNeedsAmount ? (data.depositAmount || '') : '';
+  const deliveryFee = data.deliveryFeeApplies ? (data.deliveryFee || '') : '';
+  return [
+    data.contact || '',
+    data.number || '',
+    data.name || '',
+    data.nationality || '',
+    data.passport || '',
+    bikeModel,
+    isoDateInputToContractValue(data.rentingDateFrom),
+    isoDateInputToContractValue(data.returnDate),
+    timeInputToContractValue(data.returnTime),
+    data.deliverToHotel || '',
+    data.totalPrice || '',
+    data.paidBy || '',
+    depositMethod,
+    depositAmount,
+    deliveryFee,
+    statusValue
+  ];
+}
+// Builds the 11-value [chatName..messengerId] block (columns Z..AJ),
+// shared by add and edit exactly as Code.gs shares it (both write all 11
+// unconditionally, in full, every time).
+function buildContractTailFieldsB(data) {
+  const isDelivery = (data.deliverToHotel || '').toString().trim().toLowerCase() === 'yes';
+  return {
+    deliveryTime: isDelivery ? timeInputToContractValue(data.returnTime) : '',
+    deliveryLink: isDelivery ? (data.deliveryLink || '') : '',
+    chatName: data.chatName || '',
+    depositCurrency: data.depositCurrency || '',
+    helmets: [
+      data.helmetHalfSizeQty || 0, data.helmetFullSizeS || 0, data.helmetFullSizeM || 0,
+      data.helmetFullSizeL || 0, data.helmetFullSizeXL || 0, data.helmetKidsQty || 0,
+      data.helmetFullFaceQty || 0, data.helmetNone ? 'TRUE' : ''
+    ],
+    // Note: Code.gs's extractFacebookUsername_ parses either a bare
+    // username or a full profile URL out of this field -- not replicated
+    // here; passed through as-is (the form itself only ever sends a plain
+    // username in normal use, same field either way).
+    messengerId: (data.messengerId || '').toString().trim()
+  };
+}
+
+// ---- Deal flag: a NOTE on column B (contact), not a cell value -- see
+// getContractRowsFromJson's comment on LEDGER_CONTACT_COL_B / the
+// Contract_notes sidecar. Reads the sidecar, finds this row's existing
+// note (if any), and only writes back if the desired end state actually
+// differs -- avoids a pointless POST (and modifiedTime bump) on every
+// single save. ----
+async function syncContractDealNoteB(rowNumber, wantDeal) {
+  const { rows: noteRows, modifiedTime } = await fetchSheetWithMeta('Contract_notes');
+  const existing = (noteRows || []).find(n => n[0] === rowNumber && n[1] === 2);
+  const existingText = existing ? (existing[2] || '') : '';
+  const wantText = wantDeal ? 'Deal' : '';
+  if (existingText === wantText) return;
+  const filtered = (noteRows || []).filter(n => !(n[0] === rowNumber && n[1] === 2));
+  if (wantDeal) filtered.push([rowNumber, 2, 'Deal']);
+  await writeSheetJson('Contract_notes', filtered, modifiedTime);
+}
+
+// ---- action:'addContract' equivalent. data: see the Add form's payload
+// (form.addEventListener('submit', ...) further down). ----
+async function addContractFromJson(data) {
+  const name = (data.name || '').toString().trim();
+  if (!name) throw new Error('Name is required.');
+  const { rows, modifiedTime } = await fetchSheetWithMeta('Contract');
+  const newRows = (rows || []).map(r => r.slice());
+  if (!newRows.length) newRows.push(CONTRACT_KEYS_B.map(k => k === 'date' ? 'Date' : ''));
+
+  const core = buildContractCoreFieldsB(data, 'Pending');
+  const tail = buildContractTailFieldsB(data);
+  const newRow = new Array(CONTRACT_KEYS_B.length).fill('');
+  newRow[0] = isoDateInputToContractValue(isoYmdNowB());
+  for (let i = 0; i < core.length; i++) newRow[1 + i] = core[i]; // columns B..Q (1..16)
+  // Columns R..U (17..20, contractDocUrl/contractPdfUrl/passportPhotoUrl/
+  // receiptPdfUrl) and W (22, calendarEventId) stay blank -- Doc/PDF/photo
+  // generation and calendar sync are both deferred, see the comment above.
+  newRow[21] = tail.deliveryTime;
+  newRow[23] = tail.deliveryLink;
+  newRow[25] = tail.chatName;
+  newRow[26] = tail.depositCurrency;
+  for (let i = 0; i < tail.helmets.length; i++) newRow[27 + i] = tail.helmets[i];
+  newRow[35] = tail.messengerId;
+  newRows.push(newRow);
+  const newRowNumber = newRows.length; // 1-indexed sheet row number == array length right after the push
+
+  const warnings = [];
+  if (data.passportPhotoBase64) {
+    warnings.push('Passport photo was NOT uploaded -- this dev copy has no Drive-API integration yet. Please attach it the old way for now, or re-upload once photo support is ported.');
+  }
+
+  await writeSheetJson('Contract', newRows, modifiedTime);
+
+  if (data.isDeal) {
+    try {
+      await syncContractDealNoteB(newRowNumber, true);
+    } catch (noteErr) {
+      warnings.push('Deal flag note: ' + noteErr.message);
+    }
+  }
+
+  const responsePayload = { success: true, row: newRowNumber };
+  if (warnings.length) responsePayload.warning = warnings.join(' ');
+  return responsePayload;
+}
+
+// ---- action:'editContract' equivalent. data: see the Edit form's payload
+// (editForm.addEventListener('submit', ...) further down) -- includes
+// rowNumber, the Contract sheet's actual 1-indexed row number. ----
+async function editContractFromJson(data) {
+  const rowNumber = Math.round(Number(data.rowNumber));
+  if (!rowNumber || rowNumber < 2) throw new Error('Invalid contract row number.');
+  const { rows, modifiedTime } = await fetchSheetWithMeta('Contract');
+  if (!rows || rowNumber > rows.length) throw new Error('That contract row no longer exists on the sheet.');
+  const newRows = rows.map(r => r.slice());
+  const editedRow = newRows[rowNumber - 1].slice();
+  while (editedRow.length < CONTRACT_KEYS_B.length) editedRow.push('');
+
+  const status = (data.status || '').toString().trim() || 'Pending';
+  const core = buildContractCoreFieldsB(data, status);
+  const tail = buildContractTailFieldsB(data);
+  for (let i = 0; i < core.length; i++) editedRow[1 + i] = core[i]; // columns B..Q (1..16) -- column A (date) is left untouched, matching Code.gs
+  // Columns R..U (17..20) and W (22) stay whatever they already were --
+  // editContractEntry never touches these either (see the comment above).
+  editedRow[21] = tail.deliveryTime;
+  editedRow[23] = tail.deliveryLink;
+  editedRow[25] = tail.chatName;
+  editedRow[26] = tail.depositCurrency;
+  for (let i = 0; i < tail.helmets.length; i++) editedRow[27 + i] = tail.helmets[i];
+  editedRow[35] = tail.messengerId;
+  newRows[rowNumber - 1] = editedRow;
+
+  await writeSheetJson('Contract', newRows, modifiedTime);
+
+  const warnings = [];
+  const oldDepositLower = (data.originalDeposit || '').toString().trim().toLowerCase();
+  const newDepositLower = (data.deposit || '').toString().trim().toLowerCase();
+  if (oldDepositLower !== newDepositLower) {
+    warnings.push('Security deposit method changed (' + (data.originalDeposit || '(none)') + ' -> ' + (data.deposit || '(none)') +
+      '), but the Scan/Wise/Revolut ledger on the current month\'s sheet was NOT updated to match -- that reconciliation is not ported yet. Please adjust it by hand if needed.');
+  }
+
+  try {
+    await syncContractDealNoteB(rowNumber, !!data.isDeal);
+  } catch (noteErr) {
+    warnings.push('Deal flag note: ' + noteErr.message);
+  }
+
+  const responsePayload = { success: true, row: rowNumber };
+  if (warnings.length) responsePayload.warning = warnings.join(' ');
+  return responsePayload;
+}
+
+// ---- action:'cancelContract' equivalent. data: { rowNumber }. ----
+async function cancelContractFromJson(data) {
+  const rowNumber = Math.round(Number(data.rowNumber));
+  if (!rowNumber || rowNumber < 2) throw new Error('Invalid contract row number.');
+  const { rows, modifiedTime } = await fetchSheetWithMeta('Contract');
+  if (!rows || rowNumber > rows.length) throw new Error('That contract row no longer exists on the sheet.');
+  const currentStatus = (rows[rowNumber - 1][16] || '').toString().trim().toLowerCase();
+  if (currentStatus !== 'pending') {
+    throw new Error('This contract is no longer Pending (current status: "' +
+      (currentStatus || '(blank)') + '") -- it may have already been actioned. Refresh the list and try again.');
+  }
+  const newRows = rows.map(r => r.slice());
+  const editedRow = newRows[rowNumber - 1].slice();
+  while (editedRow.length < 17) editedRow.push('');
+  editedRow[16] = 'Canceled';
+  newRows[rowNumber - 1] = editedRow;
+  await writeSheetJson('Contract', newRows, modifiedTime);
+  return { success: true, row: rowNumber };
+}
+// ================== end WRITE layer ==================
 
 let sessionCount = 0;
 
@@ -1862,12 +2150,7 @@ async function doCancel() {
   if (backBtn) backBtn.disabled = true;
   confirmStatusBox.className = 'status';
   try {
-    const res = await fetch(scriptUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({ action: 'cancelContract', rowNumber: r.rowNumber })
-    });
-    const data = await res.json();
+    const data = await cancelContractFromJson({ rowNumber: r.rowNumber }); // DISCONNECTED: writes to the static data/ JSON export instead of the live scriptUrl (see project CLAUDE.md)
     if (!data.success) throw new Error(data.error || 'Unknown error');
     confirmStatusBox.textContent = 'Contract canceled.';
     confirmStatusBox.className = 'status ok';
@@ -2931,12 +3214,7 @@ editForm.addEventListener('submit', async (e) => {
   };
 
   try {
-    const res = await fetch(scriptUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify(payload)
-    });
-    const data = await res.json();
+    const data = await editContractFromJson(payload); // DISCONNECTED: writes to the static data/ JSON export instead of the live scriptUrl (see project CLAUDE.md)
     if (!data.success) throw new Error(data.error || 'Unknown error');
     editStatusBox.textContent = data.warning ? ('Saved, but: ' + data.warning) : 'Contract updated.';
     editStatusBox.className = data.warning ? 'status warn' : 'status ok';
@@ -3192,12 +3470,7 @@ form.addEventListener('submit', async (e) => {
 
   startSaveProgress();
   try {
-    const res = await fetch(scriptUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify(payload)
-    });
-    const data = await res.json();
+    const data = await addContractFromJson(payload); // DISCONNECTED: writes to the static data/ JSON export instead of the live scriptUrl (see project CLAUDE.md)
     stopSaveProgress();
     if (data.success) {
       const docLinkHtml = data.contractPdfUrl
