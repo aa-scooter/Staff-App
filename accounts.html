@@ -1119,6 +1119,107 @@ function findBikesSheetMonthColIdxB(headerRow, monthName) {
 // rows sharing the same header/month columns: an INCOME block starting at
 // row 2 (array idx 1, the default) and an EXPENSE block starting at row 52
 // (array idx 51). sectionStartIdx below is that 0-indexed array offset.
+const BIKES_EXPENSE_SECTION_START_IDX_B = 51;
+// A bike's income row and its expense row always sit exactly this many
+// array rows apart (BIKES_EXPENSE_SECTION_START_IDX_B - 1, the income
+// block's own start idx) -- mirrors the fixed +50 row offset the original
+// spreadsheet's formulas hard-coded directly into cell references (e.g.
+// Zoomer X's income row 46 "expenses" column literally read "=P96", not a
+// bike-name lookup). See recomputeBikeRowTotalsB below.
+const BIKES_EXPENSE_SECTION_ROW_OFFSET_B = 50;
+
+function findBikesHeaderColIdxB(headerRow, label) {
+  const target = label.toString().trim().toLowerCase();
+  for (let c = 0; c < headerRow.length; c++) {
+    const h = (headerRow[c] || '').toString().trim().toLowerCase();
+    if (h === target) return c;
+  }
+  return -1;
+}
+
+// Ported 14/08/2026 to fix a real bug: adding/editing an expense or income
+// entry split onto a bike updated that bike's single month cell on the
+// "bikes" sheet but left Expenses/Profit/Net profit frozen on bike-
+// income.html, because those columns used to be LIVE FORMULAS in the real
+// spreadsheet (confirmed against a formula-intact copy Anton supplied --
+// see PROGRESS.md "Reference materials", 2026-08-14) that auto-recalculated
+// whenever the underlying month cells changed:
+//   expense row's  total (P)      = SUM of that row's own month cells B:O
+//     e.g. Zoomer X's expense row 96: "=SUM(B96:O96)"
+//   income row's   total (P)      = SUM of that row's own month cells C:O
+//     e.g. Zoomer X's income row 46: "=sum(C46:O46)"
+//   income row's   expenses (Q)   = expense row's total (P), 50 rows down
+//     e.g. Zoomer X's income row 46: "=P96"
+//   income row's   profit (R)     = income row's total (P) - expenses (Q)
+//     e.g. "=P46-Q46"
+//   income row's   net profit (S) = profit (R) - cost (B)
+//     e.g. "=R46-B46"
+// The JSON model has no formula engine, so this cascade has to be done
+// explicitly every time either row's month cells change. Mutates `rows`
+// in place (both the income row and the expense row) -- caller still owns
+// writing it back. Throws (does not mutate `rows`) if the expected paired
+// row can't be found/matched or a required header is missing, so the
+// caller can surface that as a non-fatal warning without losing the
+// underlying month-cell write that already happened.
+function recomputeBikeRowTotalsB(rows, header, incomeRowIdx, expenseRowIdx, bikeNameTrimmed) {
+  const incomeRow = rows[incomeRowIdx];
+  const expenseRow = rows[expenseRowIdx];
+  if (!incomeRow || !expenseRow) {
+    throw new Error('expected a paired row at array index ' + incomeRowIdx + '/' + expenseRowIdx + ' but one does not exist');
+  }
+  const incomeName = (incomeRow[0] || '').toString().trim();
+  const expenseName = (expenseRow[0] || '').toString().trim();
+  if (!bikeNamesMatchForRentalLogB(incomeName, bikeNameTrimmed) || !bikeNamesMatchForRentalLogB(expenseName, bikeNameTrimmed)) {
+    throw new Error('expected the paired row to also be "' + bikeNameTrimmed + '" but found "' + incomeName + '" / "' + expenseName + '"');
+  }
+
+  const totalCol = findBikesHeaderColIdxB(header, 'total');
+  const expensesCol = findBikesHeaderColIdxB(header, 'expenses');
+  const profitCol = findBikesHeaderColIdxB(header, 'profit');
+  const netProfitCol = findBikesHeaderColIdxB(header, 'net profit');
+  const costCol = findBikesHeaderColIdxB(header, 'cost');
+  const missing = [];
+  if (totalCol === -1) missing.push('total');
+  if (expensesCol === -1) missing.push('expenses');
+  if (profitCol === -1) missing.push('profit');
+  if (netProfitCol === -1) missing.push('net profit');
+  if (costCol === -1) missing.push('cost');
+  if (missing.length) throw new Error('could not find the "' + missing.join('", "') + '" column header(s) on the "bikes" sheet');
+
+  // Column 2 ("C", the year-baseline col) through column 14 ("O", dec) --
+  // matches the SUM ranges in the real formulas above exactly.
+  const MONTHS_LAST_COL_B = 14;
+  function sumMonths(row, startCol) {
+    let s = 0;
+    for (let c = startCol; c <= MONTHS_LAST_COL_B; c++) {
+      const v = row[c];
+      const n = Number(v);
+      if (v !== '' && v !== null && v !== undefined && !isNaN(n)) s += n;
+    }
+    return s;
+  }
+
+  const newIncomeRow = incomeRow.slice();
+  const newExpenseRow = expenseRow.slice();
+  const maxCol = Math.max(totalCol, expensesCol, profitCol, netProfitCol, costCol);
+  while (newIncomeRow.length <= maxCol) newIncomeRow.push('');
+  while (newExpenseRow.length <= totalCol) newExpenseRow.push('');
+
+  const expenseTotal = sumMonths(newExpenseRow, 1);  // expense row: SUM(B:O), matches "=SUM(B96:O96)"
+  const incomeTotal = sumMonths(newIncomeRow, 2);    // income row: SUM(C:O), matches "=sum(C46:O46)"
+  const cost = Number(newIncomeRow[costCol]) || 0;
+  const profit = incomeTotal - expenseTotal;
+
+  newExpenseRow[totalCol] = expenseTotal;
+  newIncomeRow[totalCol] = incomeTotal;
+  newIncomeRow[expensesCol] = expenseTotal;
+  newIncomeRow[profitCol] = profit;
+  newIncomeRow[netProfitCol] = profit - cost;
+
+  rows[incomeRowIdx] = newIncomeRow;
+  rows[expenseRowIdx] = newExpenseRow;
+}
+
 async function addRentalAmountToBikesSheetFromJson(bikeModel, rawAmount, monthName, sectionStartIdx) {
   const amount = Number(rawAmount);
   if (rawAmount === '' || rawAmount === null || rawAmount === undefined || isNaN(amount) || amount === 0) return;
@@ -1145,7 +1246,24 @@ async function addRentalAmountToBikesSheetFromJson(bikeModel, rawAmount, monthNa
   const current = Number(targetRow[colIdx]);
   targetRow[colIdx] = (isNaN(current) ? 0 : current) + amount;
   newRows[rowIdx] = targetRow;
+
+  // Recompute the income/expenses/profit/net-profit cascade for this bike
+  // (see recomputeBikeRowTotalsB above). Best-effort: if it can't be done
+  // (unexpected sheet shape), the month-cell write above still happens and
+  // still gets saved -- we just surface a warning afterward rather than
+  // losing that write entirely.
+  const isExpenseSection = startIdx === BIKES_EXPENSE_SECTION_START_IDX_B;
+  const incomeRowIdx = isExpenseSection ? (rowIdx - BIKES_EXPENSE_SECTION_ROW_OFFSET_B) : rowIdx;
+  const expenseRowIdx = isExpenseSection ? rowIdx : (rowIdx + BIKES_EXPENSE_SECTION_ROW_OFFSET_B);
+  let cascadeWarning = null;
+  try {
+    recomputeBikeRowTotalsB(newRows, header, incomeRowIdx, expenseRowIdx, bikeNameTrimmed);
+  } catch (e) {
+    cascadeWarning = 'Totals cascade (expenses/profit/net profit) NOT recalculated for "' + bikeNameTrimmed + '": ' + e.message;
+  }
+
   await writeSheetJson('bikes', newRows, modifiedTime);
+  if (cascadeWarning) throw new Error(cascadeWarning);
 }
 
 // Wise/Revolut running deposit total (L11/M11 wise, L12/M12 revolut on

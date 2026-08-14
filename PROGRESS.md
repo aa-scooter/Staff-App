@@ -6,14 +6,125 @@ update its row below in the same commit. This exists because work on this
 project gets picked up across multiple Claude sessions/accounts with no
 shared memory between them — this file is the handoff.
 
-## ⚠️ ACTION NEEDED RIGHT NOW (check this first, before anything else)
+## ✅ RESOLVED (2026-08-14, later session) — pricing.html push confirmed landed
 
-As of this update, **`pricing.html` and this `PROGRESS.md` file are sitting
-on Anton's Mac, written to disk, but NOT YET COMMITTED TO GIT** — Anton ran
-out of weekly usage on this account before he could run the commands below.
-The very first thing a new session should do is run `git status` in
-`/Users/anton/AA-Scooters-Project Database/vercel-site` on the Mac (via the
-device bridge) to check whether these commands have been run yet:
+The commit/push described below (`f879031`, "Push completed pricing.html
+live-rate refresh that never actually landed") **is confirmed committed AND
+pushed** — verified via `git status` (clean), `git show --stat f879031`
+(shows exactly `PROGRESS.md` + `pricing.html` changed), and the
+`refs/remotes/origin/main` reflog on the Mac showing `update by push` at
+that same commit hash, matching local `HEAD` exactly. Nothing left to do
+here. Leaving the original text below for the historical record, but a new
+session does NOT need to re-run anything in it.
+
+## ✅ DONE, tested, awaiting Anton's push — bike income/expense summary
+## columns don't recalculate after a JSON-model write (2026-08-14)
+
+**Bug reported by Anton:** added a test expense on accounts.html (split
+onto bike "Zoomer X", ฿3,180, dated 14/08/2026), it saved fine and shows in
+the ledger list, but bike-income.html's Zoomer X row (Expenses/Profit/Net
+profit) never changed.
+
+**Root cause, confirmed against both Code.gs and a real formula-intact copy
+of the original spreadsheet (see "Reference materials" below):** the
+"bikes" sheet has two blocks of rows per bike — an INCOME block (starting
+row 2) and an EXPENSE block (same bike, offset exactly +50 rows, i.e.
+`BIKES_EXPENSE_SECTION_START_ROW = 52`). In the original spreadsheet these
+were formula-linked:
+- Expense-block row's `total` column (P) = `SUM` of that row's own month
+  cells (e.g. `=SUM(B96:O96)` for Zoomer X's expense row 96).
+- Income-block row's `expenses` column (Q) = `=P` of the matching
+  expense-block row 50 rows down (e.g. Zoomer X income row 46's `Q46 =
+  =P96`).
+- Income-block row's `profit` column (R) = `=P-Q` (income total minus
+  expenses).
+- Income-block row's `net profit` column (S) = `=R-B` (profit minus cost).
+- Income-block row's own `total` column (P) = `SUM` of ITS OWN month cells
+  too (e.g. `=SUM(C46:O46)`) — so this same problem also applies on the
+  INCOME side, not just expenses: adding income via `addRentalAmountToBikes
+  SheetFromJson(..., sectionStartIdx=1)` has the identical gap.
+
+The JSON port's `addRentalAmountToBikesSheetFromJson()` (accounts.html,
+~line 1122) only ever writes the ONE month cell being changed. Because the
+JSON model has no formula engine, nothing recalculates the four downstream
+columns (expense-row `total`, income-row `expenses`/`profit`/`net profit`)
+afterward — so they stay frozen at whatever they were the moment the JSON
+was last exported, regardless of how many expenses/income entries get
+added or edited after that. This affects every caller of
+`addRentalAmountToBikesSheetFromJson` across accounts.html (add/edit/delete
+expense, add/edit/delete income, bike splits on both).
+
+**Fix implemented and tested (2026-08-14):** `addRentalAmountToBikesSheetFromJson()`
+(accounts.html, ~line 1122) now recomputes the full cascade after every
+month-cell write -- new helper `recomputeBikeRowTotalsB()` re-derives the
+expense row's `total` (sum of its own month cells), then the income row's
+`total`/`expenses`/`profit`/`net profit` from that, mirroring the real
+formulas exactly (see "Reference materials" below). Both rows get written
+back together in the same `writeSheetJson('bikes', ...)` call the function
+already made, so this didn't add a second round-trip.
+
+Two new constants added alongside it: `BIKES_EXPENSE_SECTION_START_IDX_B`
+(=51, the array index of `BIKES_EXPENSE_SECTION_START_ROW`) and
+`BIKES_EXPENSE_SECTION_ROW_OFFSET_B` (=50, the fixed row gap between a
+bike's income row and its expense row -- confirmed against real data for
+three different bikes, and matches the xlsx's hard-coded cell references
+like `=P96` exactly).
+
+Failure handling: if the header labels or the paired row can't be found/
+matched (defensive -- shouldn't happen with real data, but the sheet could
+theoretically get out of sync), the cascade recompute is skipped and a
+clear warning is thrown AFTER the base month-cell write already succeeded
+-- so a structural surprise degrades to "the raw number saved, but the
+summary columns need a manual look" rather than losing the write entirely
+or silently displaying wrong numbers.
+
+**Tested** via a Node vm harness (`/tmp/work/bikes_cascade_test.js` in that
+session's cloud sandbox -- won't persist to a new session, see the /tmp/
+note at the bottom of this file) running the real extracted function source
+against real exported `bikes.json` data (not a re-typed copy). 7/7 passed:
+add-expense split (Anton's exact repro: Zoomer X, ฿3,180, August) cascades
+correctly; add-income also cascades its own total/profit/net-profit;
+negative deltas (used by editExpense/deleteExpense to remove an old amount
+before applying a new one) cascade correctly too; an unknown bike name
+still throws before any write, unchanged from before; a broken row-pairing
+falls back to the base write + warning instead of crashing or losing data;
+a missing "profit" header does the same; a zero/blank amount remains a
+true no-op.
+
+**Not yet covered by this fix, flagged for later:** this only recomputes
+totals when `addRentalAmountToBikesSheetFromJson` itself runs (i.e. any
+income/expense add/edit/delete that touches a bike split). If Anton ever
+finds another path that edits the "bikes" sheet's month cells directly
+without going through that function, it would need the same treatment --
+but a full-file grep on 2026-08-14 confirms `writeSheetJson('bikes', ...)`
+only appears at this one call site in accounts.html, so there's currently
+nothing else to check.
+
+## Reference materials (ground truth for how the original app behaved)
+
+- **`Code.gs`** (project root on the Mac) — the actual Apps Script backend
+  that ran against the real Sheets for years. Still the reference for
+  business logic/control flow.
+- **`AA Scooter Account 2026.xlsx`** (project root on the Mac, added
+  2026-08-14) — a real, formula-intact copy of the original spreadsheet
+  Anton supplied specifically as a reference for reconstructing exactly how
+  cross-sheet/cross-column calculations (like the bikes-sheet cascade
+  above) used to work, since the live JSON export has no formulas at all —
+  just the last-computed static values. When a ported JSON write doesn't
+  seem to "flow through" the way the old live spreadsheet did, open this
+  file (`data_only=False` in openpyxl to see formulas, not just cached
+  values) and check the relevant sheet/column before guessing.
+
+## ⚠️ ACTION NEEDED (historical, already resolved above) — pricing.html
+## commit/push
+
+As of the original writing below, **`pricing.html` and this `PROGRESS.md`
+file were sitting on Anton's Mac, written to disk, but NOT YET COMMITTED TO
+GIT** — Anton ran out of weekly usage on this account before he could run
+the commands below. The very first thing a new session should do is run
+`git status` in `/Users/anton/AA-Scooters-Project Database/vercel-site` on
+the Mac (via the device bridge) to check whether these commands have been
+run yet:
 
 ```
 cd "/Users/anton/AA-Scooters-Project Database/vercel-site"
@@ -66,7 +177,7 @@ confirms it landed.
 | Page | Reads (JSON) | Writes (JSON) | Notes |
 |---|---|---|---|
 | bikes.html | Done | Done | markReturned/updateReturnPickup, short-extension, swapBike, earlyReturnBike, returnDeposit, long-extension (30+ day) all ported+tested. `fetch(scriptUrl` sweep: 0 real calls (2 comment mentions only). |
-| accounts.html | Done | Done | addExpense/editExpense/deleteExpense/addIncome/editIncome/deleteIncome/transferToBank, plus expense-type persistence + bulkSetExpenseType. New design decision made unilaterally: expense type is now stored as a notes-sidecar marker on column E (`EXPENSE_TYPE_NOTE_COL_B`) since real cell colors have no JSON equivalent — **not explicitly approved by Anton, flagged for review.** `fetch(scriptUrl` sweep: 0 real calls. |
+| accounts.html | Done | Done | addExpense/editExpense/deleteExpense/addIncome/editIncome/deleteIncome/transferToBank, plus expense-type persistence + bulkSetExpenseType. New design decision made unilaterally: expense type is now stored as a notes-sidecar marker on column E (`EXPENSE_TYPE_NOTE_COL_B`) since real cell colors have no JSON equivalent — **not explicitly approved by Anton, flagged for review.** `fetch(scriptUrl` sweep: 0 real calls. **2026-08-14 fix:** bike-sheet income/expenses/profit/net-profit cascade now recomputed on every bike-split write (see "DONE, tested, awaiting Anton's push" section above) — was previously frozen at JSON-export time. |
 | contract.html | Done | Done (Create/Edit/Cancel) | Drive-file actions (findContractDocument, uploadPassportPhoto, generateReceipt, generateChecklist, getFilesForShare, regenerateContract) still hit the old scriptUrl by design — these need a live Drive/PDF backend regardless of the JSON migration, not in scope for this effort. 13 real calls remain, all confirmed Drive-file ops. |
 | customers.html | Done | Done (intake) | Customer-intake write cascade ported, shared with contract.html's doRent path. `fetch(scriptUrl` sweep (2026-08-14): 0 real calls (2 comment mentions only) — the "2 sites not yet audited" note from before was stale, there's nothing left here. |
 | deposits.html | Done | Done | deductDeposit/deductCashDeposit AND addDeposit/editDeposit/deleteDeposit (`addDepositEntryJson`/`editDepositEntryJson`/`deleteDepositEntryJson`) are ALL already ported and already committed+pushed (commit `1dba35c`, whose message only mentioned deductDeposit/deductCashDeposit — misleading, but the diff shows all five). **Confirmed via `fetch(scriptUrl` sweep (2026-08-14): 0 real calls left, and md5 of the container's copy matches the Mac's committed copy exactly.** This row was wrongly marked "Partial" before — no work was actually needed here. |
