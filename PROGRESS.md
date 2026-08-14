@@ -69,15 +69,61 @@ running the cascade twice in a row is idempotent; a corrupted/missing
 summary label throws instead of silently writing wrong numbers. Full-file
 `node --check` also passes.
 
-**Not yet done — same bug, other files:** `bikes.html`, `contract.html`,
-`customers.html` each have their own copies of `appendMonthlyIncomeRowFromJson`/
-`appendCashSheetRowFromJson`/`processDepositForPaymentFromJson` (writing
-income/cash/deposit rows through rentals, not just accounts.html's manual
-entry form), and `deposits.html` has its own add/edit/delete deposit-entry
-functions — all of these feed the exact same frozen summary chain and need
-the identical cascade call ported in, per the no-shared-JS convention
-(each file gets its own copy of the function, not an import). This is the
-direct next step, same task, not yet started as of this entry.
+**UPDATE (same session, later) — ported to every other write path too.**
+Anton's own reasoning nailed the right architecture: no matter which page
+triggers a write, the money only ever lands in the monthly account sheet
+and/or the cash sheet, so the "recompute after every write, not just when
+Accounts happens to be open" approach is correct — the underlying data
+should always be self-consistent, not just correct-when-someone-looks. The
+gap was that bikes.html/contract.html/customers.html/deposits.html each
+have their OWN separate, copy-pasted write functions (no shared JS between
+pages, by design), so accounts.html's fix didn't cover them automatically.
+Ported the identical `recomputeCashSheetTotalsB`/`recomputeMonthlySummaryCascadeB`
+block into all four remaining files, plus a `recomputeCurrentMonthSummaryCascadeB()`
+convenience wrapper in each (every write on these pages is always to the
+CURRENT month, unlike accounts.html's user-selectable month), and called it
+after every write that touches the monthly sheet or cash sheet:
+
+- **bikes.html** (11 call sites): `appendMonthlyIncomeRowFromJson`,
+  `appendCashSheetRowFromJson`, `processDepositForPaymentFromJson`,
+  `appendSwapUpgradeIncomeRowFromJson`, `appendEarlyReturnRefundIncomeRowFromJson`,
+  `appendCashExpenseRowFromJson`, `writeDepositTransferIncomeRowFromJson`,
+  `writeDepositTransferExpenseRowFromJson`, `logSecurityDepositFromJson`,
+  and both inline write blocks inside `returnDepositFromJson` (clearing a
+  deposit entry, logging the deduction income). Tested via a vm harness
+  simulating a bike-swap upgrade charge against real August/cash data:
+  income/bank move correctly, wrapper never throws even with a corrupted
+  summary row. 8/8 passing.
+- **contract.html** and **customers.html** (4 call sites each):
+  `appendMonthlyIncomeRowFromJson`, `appendCashSheetRowFromJson`,
+  `processDepositForPaymentFromJson`, `logSecurityDepositFromJson`. Tested
+  identically (simulated rental income write, cash-sheet recompute,
+  best-effort error swallowing) against real data for both files. 10/10
+  passing combined.
+- **deposits.html** (6 call sites): `addDepositEntryJson`,
+  `editDepositEntryJson`, `deleteDepositEntryJson`,
+  `processDepositForPaymentFromJson`, `consumeDepositFromJson`,
+  `appendIncomeRowFromJson`. This page owns the actual deposit-log P15/
+  S15/W15/S16/W16 totals (audit item #2), so it got the most targeted
+  test: adding a Wise deposit correctly moves S15/S16 but correctly
+  LEAVES M6 ("bank") unchanged (confirmed against the real workbook
+  formula: `M6 = (K145+M2)-(M3-M4)+P15-M11-M12` only references P15, not
+  S15/W15 — Wise/Revolut's actual contribution to Bank comes through the
+  separately-live M11/M12 running totals, not this log); adding a Bank/
+  scan deposit DOES correctly move M6 (the one deposit-log input M6
+  actually has); clearing/deducting a deposit correctly moves P15 back
+  down, not just up. 11/11 passing. `deductDepositEntryFromJson`/
+  `deductCashDepositFromJson` didn't need their own call — the former
+  already routes through `consumeDepositFromJson`/`appendIncomeRowFromJson`/
+  `processDepositForPaymentFromJson` (all three now fixed), and the latter
+  only ever writes to the Contract sheet (never monthly/cash, per Anton's
+  own "we don't record cash there" design note), correctly out of scope.
+
+Every file's full inline `<script>` block passes `node --check` after the
+change. **This closes out audit items #1 and #2 completely** — every
+known write path that can move money now keeps the Bank/cash/deposit
+summary chain self-consistent, regardless of which page the write came
+from.
 
 ## ✅ RESOLVED (2026-08-14, later session) — pricing.html push confirmed landed
 
@@ -238,9 +284,10 @@ prioritized before any code changes.
    the cash sheet) -- this is Anton's originally-described concern
    exactly. Three sheets, one shared recompute-after-write pattern
    (same shape as the bikes-sheet fix, just chained further).
-   **accounts.html DONE 2026-08-14 (see section near the top of this
-   file) -- bikes.html/contract.html/customers.html/deposits.html still
-   need the identical fix, not started yet.**
+   **DONE 2026-08-14, all five files** (accounts.html, bikes.html,
+   contract.html, customers.html, deposits.html — see sections near the
+   top of this file). Every write path that can move money now recomputes
+   the Bank/cash/deposit summary chain.
 3. **Bike Tax staleness on EDIT** (not just add, which was already known)
    -- add-bikes.html's `editBikeFromJson`; low severity today (nothing
    reads it back yet) but corrects a misleading existing code comment.
@@ -346,11 +393,11 @@ confirms it landed.
 
 | Page | Reads (JSON) | Writes (JSON) | Notes |
 |---|---|---|---|
-| bikes.html | Done | Done | markReturned/updateReturnPickup, short-extension, swapBike, earlyReturnBike, returnDeposit, long-extension (30+ day) all ported+tested. `fetch(scriptUrl` sweep: 0 real calls (2 comment mentions only). |
+| bikes.html | Done | Done | markReturned/updateReturnPickup, short-extension, swapBike, earlyReturnBike, returnDeposit, long-extension (30+ day) all ported+tested. `fetch(scriptUrl` sweep: 0 real calls (2 comment mentions only). **2026-08-14 fix:** Bank/cash/deposit summary cascade (see "DONE, tested, awaiting Anton's push" section near top) now recomputed after all 11 of this page's write points that touch the monthly or cash sheet — was previously frozen at JSON-export time. |
 | accounts.html | Done | Done | addExpense/editExpense/deleteExpense/addIncome/editIncome/deleteIncome/transferToBank, plus expense-type persistence + bulkSetExpenseType. New design decision made unilaterally: expense type is now stored as a notes-sidecar marker on column E (`EXPENSE_TYPE_NOTE_COL_B`) since real cell colors have no JSON equivalent — **not explicitly approved by Anton, flagged for review.** `fetch(scriptUrl` sweep: 0 real calls. **2026-08-14 fix 1:** bike-sheet income/expenses/profit/net-profit cascade now recomputed on every bike-split write (see "DONE, tested, awaiting Anton's push" section above) — was previously frozen at JSON-export time. **2026-08-14 fix 2:** Add/Edit Expense/Income modal now requires Date/description/Amount/Payment method before saving (previously saved silently with any of these left blank — confirmed via the live production app + Code.gs that this was never actually enforced anywhere, not a migration regression, but Anton wants it enforced going forward). **2026-08-14 fix 3:** the whole "Bank"/cash/deposit summary-strip chain now recomputes after every add/edit/delete expense/income and after `transferToBankFromJson` (see "DONE, tested, awaiting Anton's push" section near the top of this file) — was previously frozen at JSON-export time, confirmed live by Anton via a ฿10,000 Bank expense that didn't move any total. |
-| contract.html | Done | Done (Create/Edit/Cancel) | Drive-file actions (findContractDocument, uploadPassportPhoto, generateReceipt, generateChecklist, getFilesForShare, regenerateContract) still hit the old scriptUrl by design — these need a live Drive/PDF backend regardless of the JSON migration, not in scope for this effort. 13 real calls remain, all confirmed Drive-file ops. |
-| customers.html | Done | Done (intake) | Customer-intake write cascade ported, shared with contract.html's doRent path. `fetch(scriptUrl` sweep (2026-08-14): 0 real calls (2 comment mentions only) — the "2 sites not yet audited" note from before was stale, there's nothing left here. |
-| deposits.html | Done | Done | deductDeposit/deductCashDeposit AND addDeposit/editDeposit/deleteDeposit (`addDepositEntryJson`/`editDepositEntryJson`/`deleteDepositEntryJson`) are ALL already ported and already committed+pushed (commit `1dba35c`, whose message only mentioned deductDeposit/deductCashDeposit — misleading, but the diff shows all five). **Confirmed via `fetch(scriptUrl` sweep (2026-08-14): 0 real calls left, and md5 of the container's copy matches the Mac's committed copy exactly.** This row was wrongly marked "Partial" before — no work was actually needed here. |
+| contract.html | Done | Done (Create/Edit/Cancel) | Drive-file actions (findContractDocument, uploadPassportPhoto, generateReceipt, generateChecklist, getFilesForShare, regenerateContract) still hit the old scriptUrl by design — these need a live Drive/PDF backend regardless of the JSON migration, not in scope for this effort. 13 real calls remain, all confirmed Drive-file ops. **2026-08-14 fix:** Bank/cash/deposit summary cascade now recomputed after all 4 of this page's write points that touch the monthly or cash sheet. |
+| customers.html | Done | Done (intake) | Customer-intake write cascade ported, shared with contract.html's doRent path. `fetch(scriptUrl` sweep (2026-08-14): 0 real calls (2 comment mentions only) — the "2 sites not yet audited" note from before was stale, there's nothing left here. **2026-08-14 fix:** Bank/cash/deposit summary cascade now recomputed after all 4 of this page's write points that touch the monthly or cash sheet. |
+| deposits.html | Done | Done | deductDeposit/deductCashDeposit AND addDeposit/editDeposit/deleteDeposit (`addDepositEntryJson`/`editDepositEntryJson`/`deleteDepositEntryJson`) are ALL already ported and already committed+pushed (commit `1dba35c`, whose message only mentioned deductDeposit/deductCashDeposit — misleading, but the diff shows all five). **Confirmed via `fetch(scriptUrl` sweep (2026-08-14): 0 real calls left, and md5 of the container's copy matches the Mac's committed copy exactly.** This row was wrongly marked "Partial" before — no work was actually needed here. **2026-08-14 fix:** Bank/cash/deposit summary cascade (including the P15/S15/W15/S16/W16 deposit-log totals this page itself owns — audit item #2) now recomputed after all 6 of this page's write points. |
 | add-bikes.html | Done | Done | editBike/addBike/sellBike/unsellBike all ported+tested (see git log `f1b170c`). `fetch(scriptUrl` sweep: 0 real calls. Two purely cosmetic, documented gaps remain (nothing downstream reads either back): sold-row strikethrough styling, and Bike Tax's Status/day-count (G/H) columns for a newly-added bike. |
 | available-bikes.html | Done | n/a (read-only page) | |
 | bike-income.html | Done | n/a (read-only page) | |
