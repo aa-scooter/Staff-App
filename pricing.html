@@ -575,6 +575,79 @@ function isValidRatesTable(r) {
 
 const scriptUrl = ''; // DISCONNECTED: this Vercel copy is intentionally not wired to the live backend (dev/testing only, see project CLAUDE.md)
 
+// ================== JSON-backed data layer (ported 13/08/2026) ==================
+// This page has exactly one read (action=rates) and no writes at all --
+// see the comment below on why this fetch is additive/best-effort rather
+// than required. Same rates-table port already used by bikes.html/
+// customers.html/parts.html.
+const pricingJsonCache = {};
+function fetchSheetJson(sheetName, year) {
+  const cacheKey = year ? `${year}/${sheetName}` : sheetName;
+  const url = year
+    ? `/api/data/${encodeURIComponent(sheetName)}?year=${encodeURIComponent(year)}`
+    : `/api/data/${encodeURIComponent(sheetName)}`;
+  if (!pricingJsonCache[cacheKey]) {
+    pricingJsonCache[cacheKey] = fetch(url).then(r => {
+      if (r.status === 401) throw new Error('Signed out -- please refresh to sign in again.');
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    }).then(res => {
+      if (!res.success) throw new Error(res.error || 'Could not load data.');
+      return res.rows || [];
+    }).catch(err => {
+      delete pricingJsonCache[cacheKey];
+      throw err;
+    });
+  }
+  return pricingJsonCache[cacheKey];
+}
+// ---- Ports readRatesPerDayTable_() -- fixed block, sheet rows 10-39
+// (1-indexed) == array indices 9-38, column A = day number, B-G = the 6
+// category rates in CATEGORY_DEFS order. ----
+function readRatesPerDayTableFromJson(rows2D) {
+  try {
+    if (!rows2D || rows2D.length < 39) {
+      throw new Error('The "rates per day" sheet does not have the expected 30-day block at rows 10-39.');
+    }
+    const block = rows2D.slice(9, 39);
+    const rates = {};
+    for (let i = 0; i < block.length; i++) {
+      const row = block[i];
+      const day = Number(row[0]);
+      if (!day || isNaN(day)) continue;
+      const perCategory = [];
+      for (let c = 1; c <= 6; c++) {
+        const raw = row[c];
+        const v = (raw === '' || raw === null || raw === undefined) ? NaN : Number(raw);
+        perCategory.push(isNaN(v) ? null : v);
+      }
+      rates[day] = perCategory;
+    }
+    let completeDays = 0;
+    for (let d = 1; d <= 30; d++) {
+      if (rates[d] && rates[d].every(v => v !== null)) completeDays++;
+    }
+    if (completeDays < 25) {
+      throw new Error('The "rates per day" sheet doesn\'t look like the expected 30-day rate table (only ' + completeDays + ' of 30 days read cleanly) -- check it hasn\'t been moved, renamed, or restructured.');
+    }
+    return { rates, warning: null };
+  } catch (err) {
+    return { rates: null, warning: err.message };
+  }
+}
+// ---- Ports getRatesData(). ----
+async function getRatesDataFromJson() {
+  try {
+    const ratesRows2D = await fetchSheetJson('rates_per_day');
+    const result = readRatesPerDayTableFromJson(ratesRows2D);
+    if (result.warning) return { success: false, error: result.warning };
+    return { success: true, rates: result.rates };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+}
+// ================== end JSON-backed data layer ==================
+
 // This page is the one place in the app that used to make NO backend call
 // at all -- purely static/offline by design (it's an installable PWA, see
 // the service-worker registration at the bottom of this file), which is
@@ -586,8 +659,7 @@ const scriptUrl = ''; // DISCONNECTED: this Vercel copy is intentionally not wir
 // calculator, just possibly with a stale price on some day/category combos.
 function loadLiveRates() {
   const statusEl = document.getElementById('ratesStatus');
-  fetch(scriptUrl + '?action=rates')
-    .then(res => res.json())
+  getRatesDataFromJson()
     .then(res => {
       if (res && res.success && isValidRatesTable(res.rates)) {
         RATES = res.rates;
