@@ -1581,6 +1581,450 @@ async function cancelContractFromJson(data) {
   return { success: true, row: rowNumber };
 }
 // ================== end WRITE layer ==================
+// ================== WRITE layer 2: customer intake (doRent) ==================
+// Ports Code.gs's doPost default branch -- the SAME write customers.html's
+// own Add form uses (this page's doRent() sends the exact same payload
+// shape, just sourced from the confirmed Pending record instead of a
+// typed-in form -- see doRent's own comment above). Duplicated here in
+// full rather than shared, per this project's per-file convention (no
+// shared JS across pages). See customers.html's own copy of this same
+// block for the full design rationale and the list of what's deliberately
+// NOT ported (calendar sync, paid-from-deposit draw-down, the server-side
+// duplicate-submission guard, and Code.gs's live-Sheets-specific
+// re-read-and-verify pass) -- identical reasoning applies here.
+// Reuses this page's own isoDateInputToContractValue/timeInputToContractValue/
+// fetchSheetWithMeta/writeSheetJson/isoYmdNowB/normalizeNameForContractMatch/
+// bikeNamesMatchForTaxLookup (all already defined above) instead of
+// redeclaring near-duplicates under different names.
+
+function stripBikeNameBracketsB2(s) {
+  return (s || '').toString().replace(/[()]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+function parseLedgerTotal(noteText) {
+  const m = (noteText || '').toString().match(/Total:\s*([\d.]+)\s*days?,\s*฿\s*([\d,]+(?:\.\d+)?)\s*$/i);
+  if (!m) return { days: 0, amount: 0 };
+  return { days: Number(m[1]) || 0, amount: Number(m[2].replace(/,/g, '')) || 0 };
+}
+function formatMoneyForLedgerB(n) {
+  const num = Number(n) || 0;
+  return num.toLocaleString('en-US', { maximumFractionDigits: 2 });
+}
+function stripLedgerTotalLineB(noteText) {
+  return (noteText || '').toString().replace(/\n?Total:[^\n]*$/i, '').replace(/\n+$/, '');
+}
+function stripAllTrailingParensAndDealB(contact) {
+  let result = (contact || '').toString().trim();
+  let prev;
+  do {
+    prev = result;
+    result = result.replace(/\s*\([^()]*\)(?:\s*Deal)?\s*$/i, '').replace(/\s*Deal\s*$/i, '').trim();
+  } while (result !== prev);
+  return result;
+}
+function buildRentalIncomeTextB(data, dayCount) {
+  const bikeName = (data.bikeModel || '').toString().trim();
+  const isExtendSource = (data.source || '').toString().trim().toLowerCase() === 'extend';
+  const verb = isExtendSource ? 'extend' : 'rent';
+  let text = bikeName;
+  text += (dayCount !== null && dayCount !== undefined && !isNaN(dayCount))
+    ? (' ' + verb + ' ' + dayCount + (dayCount === 1 ? ' day' : ' days'))
+    : (' ' + verb);
+  return text;
+}
+function findFullyEmptyRowIdxJson(rows2D, startRowIdx, cols) {
+  for (let i = startRowIdx; i < rows2D.length; i++) {
+    const row = rows2D[i] || [];
+    let allBlank = true;
+    for (const c of cols) {
+      const v = row[c - 1];
+      if (v !== '' && v !== null && v !== undefined) { allBlank = false; break; }
+    }
+    if (allBlank) return i;
+  }
+  return rows2D.length;
+}
+
+// FIFTH bike-name matcher in this codebase (see add-bikes.html's comment
+// on the four others) -- mirrors Code.gs's bikeNamesMatchForRentalLog,
+// used only for finding a bike's row on the "bikes" sheet from this write.
+function normalizeBikeNameForRentalLogB(s) {
+  return (s || '').toString().toLowerCase().replace(/[()]/g, ' ').replace(/[^a-z0-9]+/g, ' ').trim().replace(/\s+/g, ' ');
+}
+const RENTAL_LOG_DISTINGUISHING_SUFFIXES_B = {
+  one: 1, two: 1, three: 1, four: 1, five: 1, six: 1, seven: 1, eight: 1, nine: 1, ten: 1,
+  i: 1, ii: 1, iii: 1, iv: 1, v: 1, vi: 1, vii: 1, viii: 1, ix: 1, x: 1,
+  '1': 1, '2': 1, '3': 1, '4': 1, '5': 1, '6': 1, '7': 1, '8': 1, '9': 1, '10': 1
+};
+function bikeNamesMatchForRentalLogB(a, b) {
+  const na = normalizeBikeNameForRentalLogB(a), nb = normalizeBikeNameForRentalLogB(b);
+  if (!na || !nb) return false;
+  if (na === nb) return true;
+  const ta = na.split(' '), tb = nb.split(' ');
+  const shorter = ta.length <= tb.length ? ta : tb;
+  const longer = ta.length <= tb.length ? tb : ta;
+  let isPrefix = true;
+  for (let i = 0; i < shorter.length; i++) { if (shorter[i] !== longer[i]) { isPrefix = false; break; } }
+  if (isPrefix) {
+    const extra = longer.slice(shorter.length);
+    for (let j = 0; j < extra.length; j++) { if (RENTAL_LOG_DISTINGUISHING_SUFFIXES_B[extra[j]]) return false; }
+    return true;
+  }
+  // KNOWN QUIRK (inherited from Code.gs, not introduced by this port): see
+  // customers.html's identical comment on this same fallback -- a garbled
+  // bike name containing "total" as a raw prefix can wrongly match the
+  // income table's own "total" label row.
+  return na.indexOf(nb) !== -1 || nb.indexOf(na) !== -1;
+}
+function findBikesSheetMonthColIdxB(headerRow, monthName) {
+  const targetShort = monthName.toString().trim().toLowerCase().slice(0, 3);
+  for (let c = 0; c < headerRow.length; c++) {
+    const h = (headerRow[c] || '').toString().trim().toLowerCase();
+    if (h && h.slice(0, 3) === targetShort) return c;
+  }
+  return -1;
+}
+const DEPOSIT_CATEGORIES_B = [
+  { key: 'bank', label: 'Bank', header: 'deposit scan', dateCol: 15, amountCol: 16, nameCol: 17 },
+  { key: 'wise', label: 'Wise', header: 'deposit wise', dateCol: 18, amountCol: 19, nameCol: 20 },
+  { key: 'revolut', label: 'Revolut', header: 'deposit revolut', dateCol: 22, amountCol: 23, nameCol: 24 }
+];
+const DEPOSITS_MONTH_NAMES = ['January', 'February', 'march', 'april', 'may', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December'];
+
+async function appendLedgerEntryFromJson(rowNumber, bikeModel, fromDmy, toDmy, lineDays, lineAmount, deltaDays, deltaAmount, previousNoteText, isDeal) {
+  const { rows: noteRows, modifiedTime: noteModifiedTime } = await fetchSheetWithMeta('customer_notes');
+  const existingNoteEntry = (noteRows || []).find(n => n[0] === rowNumber && n[1] === LEDGER_CONTACT_COL_B);
+  const seedNote = (previousNoteText !== null && previousNoteText !== undefined)
+    ? previousNoteText
+    : (existingNoteEntry ? (existingNoteEntry[2] || '') : '');
+  const priorTotal = parseLedgerTotal(seedNote);
+  const body = stripLedgerTotalLineB(seedNote);
+  const safeDays = Number(lineDays) || 0;
+  const line = (bikeModel || 'Bike') + ' — ' + fromDmy + ' to ' + toDmy +
+    ' (' + safeDays + (safeDays === 1 ? ' day' : ' days') + ') — ฿' + formatMoneyForLedgerB(lineAmount);
+  const newTotalDays = priorTotal.days + (Number(deltaDays) || 0);
+  const newTotalAmount = priorTotal.amount + (Number(deltaAmount) || 0);
+  const targetNote = (body ? body + '\n' : '') + line + '\n' + 'Total: ' + newTotalDays + ' days, ฿' + formatMoneyForLedgerB(newTotalAmount);
+
+  const newNoteRows = (noteRows || []).filter(n => !(n[0] === rowNumber && n[1] === LEDGER_CONTACT_COL_B));
+  newNoteRows.push([rowNumber, LEDGER_CONTACT_COL_B, targetNote]);
+  await writeSheetJson('customer_notes', newNoteRows, noteModifiedTime);
+
+  const { rows: custRows, modifiedTime: custModifiedTime } = await fetchSheetWithMeta('customer');
+  const newCustRows = custRows.map(r => r.slice());
+  const targetRow = newCustRows[rowNumber - 1];
+  while (targetRow.length <= LEDGER_CONTACT_COL_B - 1) targetRow.push('');
+  const currentContact = (targetRow[LEDGER_CONTACT_COL_B - 1] || '').toString();
+  const baseContact = stripAllTrailingParensAndDealB(currentContact);
+  const targetBracket = ' (฿' + formatMoneyForLedgerB(newTotalAmount) + ', ' + newTotalDays + ' days)';
+  const targetContact = baseContact + targetBracket + (isDeal ? ' Deal' : '');
+  targetRow[LEDGER_CONTACT_COL_B - 1] = targetContact;
+  await writeSheetJson('customer', newCustRows, custModifiedTime);
+
+  return { totalDays: newTotalDays, totalAmount: newTotalAmount };
+}
+async function appendMonthlyIncomeRowFromJson(data, dayCount) {
+  const now = new Date();
+  const monthName = DEPOSITS_MONTH_NAMES[now.getMonth()];
+  const year = now.getFullYear();
+  const { rows, modifiedTime } = await fetchSheetWithMeta(monthName, year);
+  if (!rows || !rows.length) {
+    throw new Error('no tab named "' + monthName + '" was found, so this entry was NOT logged on the monthly income sheet.');
+  }
+  const newRows = rows.map(r => r.slice());
+  const targetIdx = findFullyEmptyRowIdxJson(newRows, 1, [6, 7, 8, 9, 10]);
+  while (newRows.length <= targetIdx) newRows.push([]);
+  const row = newRows[targetIdx].slice();
+  while (row.length < 10) row.push('');
+  const incomeText = buildRentalIncomeTextB(data, dayCount);
+  const paidByRaw = (data.paidBy || '').toString().trim().toLowerCase();
+  const paidDisplay = paidByRaw === 'scan' ? 'QR scan' : paidByRaw;
+  const amountValue = (data.totalPrice !== '' && data.totalPrice !== undefined && !isNaN(Number(data.totalPrice))) ? Number(data.totalPrice) : '';
+  row[5] = isoDateInputToContractValue(isoYmdNowB());
+  row[6] = incomeText;
+  row[7] = data.name || '';
+  row[8] = amountValue;
+  row[9] = paidDisplay;
+  newRows[targetIdx] = row;
+  await writeSheetJson(monthName, newRows, modifiedTime, year);
+}
+async function appendCashSheetRowFromJson(incomeText, rawAmount) {
+  const { rows, modifiedTime } = await fetchSheetWithMeta('cash');
+  if (!rows || !rows.length) {
+    throw new Error('no tab named "cash" was found, so this entry was NOT logged on the cash sheet.');
+  }
+  const newRows = rows.map(r => r.slice());
+  const targetIdx = findFullyEmptyRowIdxJson(newRows, 1, [1, 2, 3]);
+  while (newRows.length <= targetIdx) newRows.push([]);
+  const row = newRows[targetIdx].slice();
+  while (row.length < 3) row.push('');
+  const amountValue = (rawAmount !== '' && rawAmount !== undefined && rawAmount !== null && !isNaN(Number(rawAmount))) ? Number(rawAmount) : '';
+  row[0] = isoDateInputToContractValue(isoYmdNowB());
+  row[1] = incomeText;
+  row[2] = amountValue;
+  newRows[targetIdx] = row;
+  await writeSheetJson('cash', newRows, modifiedTime);
+}
+async function addRentalAmountToBikesSheetFromJson(bikeModel, rawAmount) {
+  const amount = Number(rawAmount);
+  if (rawAmount === '' || rawAmount === null || rawAmount === undefined || isNaN(amount) || amount === 0) return;
+  const bikeNameTrimmed = (bikeModel || '').toString().trim();
+  if (!bikeNameTrimmed) throw new Error('No bike name given -- bike monthly total was NOT updated.');
+  const { rows, modifiedTime } = await fetchSheetWithMeta('bikes');
+  const header = rows[0] || [];
+  let rowIdx = -1;
+  for (let i = 1; i < rows.length; i++) {
+    const name = (rows[i][0] || '').toString().trim();
+    if (name && bikeNamesMatchForRentalLogB(name, bikeNameTrimmed)) { rowIdx = i; break; }
+  }
+  if (rowIdx === -1) {
+    throw new Error('Could not find a row for "' + bikeNameTrimmed + '" on the "bikes" sheet -- its monthly total was NOT updated.');
+  }
+  const now = new Date();
+  const monthName = DEPOSITS_MONTH_NAMES[now.getMonth()];
+  const colIdx = findBikesSheetMonthColIdxB(header, monthName);
+  if (colIdx === -1) {
+    throw new Error('Could not find a "' + monthName + '" column on the "bikes" sheet -- "' + bikeNameTrimmed + '"\'s monthly total was NOT updated.');
+  }
+  const newRows = rows.map(r => r.slice());
+  const targetRow = newRows[rowIdx].slice();
+  while (targetRow.length <= colIdx) targetRow.push('');
+  const current = Number(targetRow[colIdx]);
+  targetRow[colIdx] = (isNaN(current) ? 0 : current) + amount;
+  newRows[rowIdx] = targetRow;
+  await writeSheetJson('bikes', newRows, modifiedTime);
+}
+async function processDepositForPaymentFromJson(paidByLower, rawAmount) {
+  const now = new Date();
+  const monthName = DEPOSITS_MONTH_NAMES[now.getMonth()];
+  const year = now.getFullYear();
+  const { rows, modifiedTime } = await fetchSheetWithMeta(monthName, year);
+  if (!rows || !rows.length) throw new Error('No sheet found for the current month -- could not update the ' + paidByLower + ' deposit total.');
+  const expectedRow = paidByLower === 'wise' ? 11 : 12;
+  const expectedLabel = paidByLower === 'wise' ? 'wise(less deposit)' : 'revolut(less deposit)';
+  const norm = s => (s || '').toString().trim().toLowerCase();
+  let rowIdx = -1;
+  if (rows[expectedRow - 1] && norm(rows[expectedRow - 1][11]) === expectedLabel) rowIdx = expectedRow - 1;
+  else { for (let i = 0; i < rows.length; i++) { if (rows[i] && norm(rows[i][11]) === expectedLabel) { rowIdx = i; break; } } }
+  if (rowIdx === -1) throw new Error('Could not find a "' + expectedLabel + '" row in column L of the "' + monthName + '" sheet -- the ' + paidByLower + ' deposit total was NOT updated.');
+  const newRows = rows.map(r => r.slice());
+  const targetRow = newRows[rowIdx].slice();
+  while (targetRow.length < 13) targetRow.push('');
+  const current = Number(targetRow[12]);
+  const delta = Number(rawAmount) || 0;
+  targetRow[12] = (isNaN(current) ? 0 : current) + delta;
+  newRows[rowIdx] = targetRow;
+  await writeSheetJson(monthName, newRows, modifiedTime, year);
+}
+async function logSecurityDepositFromJson(methodLower, rawAmount, customerName) {
+  const categoryKey = methodLower === 'scan' ? 'bank' : methodLower;
+  const cat = DEPOSIT_CATEGORIES_B.find(c => c.key === categoryKey);
+  if (!cat) return;
+  const now = new Date();
+  const monthName = DEPOSITS_MONTH_NAMES[now.getMonth()];
+  const year = now.getFullYear();
+  const { rows, modifiedTime } = await fetchSheetWithMeta(monthName, year);
+  if (!rows || !rows.length) throw new Error('No sheet found for the current month -- could not log the ' + methodLower + ' deposit.');
+  let targetIdx = -1;
+  for (let i = 1; i < rows.length; i++) {
+    const row = rows[i] || [];
+    const dateRaw = row[cat.dateCol - 1];
+    const dateLabel = (dateRaw || '').toString().trim().toLowerCase();
+    if (dateLabel === 'total') break;
+    const amtRaw = row[cat.amountCol - 1];
+    const nameRaw = row[cat.nameCol - 1];
+    const dateEmpty = dateRaw === '' || dateRaw === null || dateRaw === undefined;
+    const amtEmpty = amtRaw === '' || amtRaw === null || amtRaw === undefined;
+    const nameEmpty = nameRaw === '' || nameRaw === null || nameRaw === undefined;
+    if (dateEmpty && amtEmpty && nameEmpty) { targetIdx = i; break; }
+  }
+  if (targetIdx === -1) {
+    throw new Error('Could not find a free row above the totals row in the ' + methodLower + ' deposit section of "' + monthName + '" -- the deposit was NOT logged.');
+  }
+  const newRows = rows.map(r => r.slice());
+  const row = newRows[targetIdx].slice();
+  const maxCol = Math.max(cat.dateCol, cat.amountCol, cat.nameCol);
+  while (row.length < maxCol) row.push('');
+  row[cat.dateCol - 1] = isoDateInputToContractValue(isoYmdNowB());
+  row[cat.amountCol - 1] = (Number(rawAmount) || rawAmount || '');
+  row[cat.nameCol - 1] = customerName || '';
+  newRows[targetIdx] = row;
+  await writeSheetJson(monthName, newRows, modifiedTime, year);
+}
+async function markMatchingContractAsRentedFromJson(name, bikeModel) {
+  const { rows, modifiedTime } = await fetchSheetWithMeta('Contract');
+  if (!rows || rows.length < 2) return { found: false };
+  const nameTarget = normalizeNameForContractMatch(name);
+  const bikeTarget = (bikeModel || '').toString().trim();
+  if (!nameTarget) return { found: false };
+  for (let i = rows.length - 1; i >= 1; i--) {
+    const rowName = normalizeNameForContractMatch(rows[i][3]);
+    const rowBike = (rows[i][6] || '').toString().trim();
+    const rowStatus = (rows[i][16] || '').toString().trim().toLowerCase();
+    if (rowStatus !== 'pending') continue;
+    if (rowName !== nameTarget) continue;
+    if (bikeTarget && rowBike && !bikeNamesMatchForTaxLookup(rowBike, bikeTarget)) continue;
+    const newRows = rows.map(r => r.slice());
+    const row = newRows[i].slice();
+    while (row.length < 17) row.push('');
+    row[16] = 'Rented';
+    newRows[i] = row;
+    await writeSheetJson('Contract', newRows, modifiedTime);
+    return { found: true, row: i + 1 };
+  }
+  return { found: false };
+}
+async function findRentedContractRowForBackfillFromJson(name, bikeModel) {
+  const { rows } = await fetchSheetWithMeta('Contract');
+  if (!rows || rows.length < 2) return null;
+  const nameTarget = normalizeNameForContractMatch(name);
+  const bikeTarget = (bikeModel || '').toString().trim();
+  if (!nameTarget) return null;
+  for (let i = rows.length - 1; i >= 1; i--) {
+    const rowName = normalizeNameForContractMatch(rows[i][3]);
+    const rowBike = (rows[i][6] || '').toString().trim();
+    const rowStatus = (rows[i][16] || '').toString().trim().toLowerCase();
+    if (rowStatus !== 'rented') continue;
+    if (rowName !== nameTarget) continue;
+    if (bikeTarget && rowBike && !bikeNamesMatchForTaxLookup(rowBike, bikeTarget)) continue;
+    let totalPrice = Number(rows[i][11]);
+    if (isNaN(totalPrice)) totalPrice = 0;
+    return { row: i + 1, totalPrice };
+  }
+  return null;
+}
+async function syncContractRowTotalsFromJson(name, bikeModel, returnDateIso, totalAmount) {
+  const { rows, modifiedTime } = await fetchSheetWithMeta('Contract');
+  if (!rows || rows.length < 2) return { found: false };
+  const nameTarget = normalizeNameForContractMatch(name);
+  const bikeTarget = (bikeModel || '').toString().trim();
+  if (!nameTarget) return { found: false };
+  for (let i = rows.length - 1; i >= 1; i--) {
+    const rowName = normalizeNameForContractMatch(rows[i][3]);
+    const rowBike = (rows[i][6] || '').toString().trim();
+    const rowStatus = (rows[i][16] || '').toString().trim().toLowerCase();
+    if (rowStatus !== 'rented') continue;
+    if (rowName !== nameTarget) continue;
+    if (bikeTarget && rowBike && !bikeNamesMatchForTaxLookup(rowBike, bikeTarget)) continue;
+    const newRows = rows.map(r => r.slice());
+    const row = newRows[i].slice();
+    while (row.length < 17) row.push('');
+    if (returnDateIso) row[8] = isoDateInputToContractValue(returnDateIso);
+    if (totalAmount !== null && totalAmount !== undefined) row[11] = totalAmount;
+    newRows[i] = row;
+    await writeSheetJson('Contract', newRows, modifiedTime);
+    return { found: true, row: i + 1 };
+  }
+  return { found: false };
+}
+async function customerIntakeFromJson(data) {
+  const name = (data.name || '').toString().trim();
+  if (!name) throw new Error('Name is required.');
+  data.bikeModel = stripBikeNameBracketsB2(data.bikeModel);
+  const isExtendSource = (data.source || '').toString().trim().toLowerCase() === 'extend';
+
+  const { rows: custRows, modifiedTime: custModifiedTime } = await fetchSheetWithMeta('customer');
+  const newRows = (custRows || []).map(r => r.slice());
+  const newRow = new Array(16).fill('');
+  newRow[0] = isoDateInputToContractValue(isoYmdNowB());
+  newRow[1] = data.contact || '';
+  newRow[2] = name;
+  newRow[3] = data.nationality || '';
+  newRow[4] = data.passport || '';
+  newRow[5] = data.bikeModel || '';
+  newRow[6] = '';
+  newRow[7] = isoDateInputToContractValue(data.rentingDateFrom);
+  newRow[8] = isoDateInputToContractValue(data.returnDate);
+  newRow[9] = timeInputToContractValue(data.returnTime);
+  newRow[10] = data.deliverToHotel || '';
+  newRow[11] = data.totalPrice || '';
+  newRow[12] = data.paidBy || '';
+  newRow[13] = '';
+  newRow[14] = data.deposit || '';
+  newRow[15] = isExtendSource ? 'Extend' : 'Direct';
+  newRows.push(newRow);
+  const newRowNumber = newRows.length;
+  await writeSheetJson('customer', newRows, custModifiedTime);
+
+  let dayCount = null;
+  if (data.rentingDateFrom && data.returnDate) {
+    const from = new Date(data.rentingDateFrom + 'T00:00:00');
+    const to = new Date(data.returnDate + 'T00:00:00');
+    if (!isNaN(from) && !isNaN(to)) dayCount = Math.round((to - from) / (1000 * 60 * 60 * 24));
+  }
+
+  const warnings = [];
+  let ledgerTotals = null;
+  try {
+    let carriedNote = null;
+    if (isExtendSource && data.previousRowNumber) {
+      const previousRowNumber = parseInt(data.previousRowNumber, 10);
+      if (previousRowNumber && previousRowNumber >= 2) {
+        const { rows: prevNoteRows } = await fetchSheetWithMeta('customer_notes');
+        const prevEntry = (prevNoteRows || []).find(n => n[0] === previousRowNumber && n[1] === LEDGER_CONTACT_COL_B);
+        carriedNote = prevEntry ? (prevEntry[2] || '') : '';
+      }
+    }
+    const ledgerFromDmy = formatDmyJson(decodeSheetDate(newRow[7])) || '';
+    const ledgerToDmy = formatDmyJson(decodeSheetDate(newRow[8])) || '';
+    const ledgerDays = dayCount != null ? dayCount : 0;
+    const ledgerAmount = Number(data.totalPrice) || 0;
+    ledgerTotals = await appendLedgerEntryFromJson(newRowNumber, data.bikeModel, ledgerFromDmy, ledgerToDmy, ledgerDays, ledgerAmount, ledgerDays, ledgerAmount, carriedNote, !!data.isDeal);
+  } catch (ledgerErr) { warnings.push('Ledger note: ' + ledgerErr.message); }
+
+  try { await appendMonthlyIncomeRowFromJson(data, dayCount); }
+  catch (incomeErr) { warnings.push('Income sheet: ' + incomeErr.message); }
+
+  try {
+    if ((data.paidBy || '').toString().trim().toLowerCase() === 'cash') {
+      await appendCashSheetRowFromJson(buildRentalIncomeTextB(data, dayCount), data.totalPrice);
+    }
+  } catch (cashErr) { warnings.push('Cash sheet: ' + cashErr.message); }
+
+  try { await addRentalAmountToBikesSheetFromJson(data.bikeModel, data.totalPrice); }
+  catch (bikesErr) { warnings.push(bikesErr.message); }
+
+  try {
+    const paidByLower = (data.paidBy || '').toString().trim().toLowerCase();
+    if (paidByLower === 'wise' || paidByLower === 'revolut') {
+      await processDepositForPaymentFromJson(paidByLower, data.totalPrice);
+    }
+  } catch (depositErr) { warnings.push(depositErr.message); }
+
+  try {
+    const depositMethodLower = (data.deposit || '').toString().trim().toLowerCase();
+    if (!isExtendSource && (depositMethodLower === 'scan' || depositMethodLower === 'wise' || depositMethodLower === 'revolut')) {
+      await logSecurityDepositFromJson(depositMethodLower, data.depositAmount, name);
+    }
+  } catch (secDepErr) { warnings.push(secDepErr.message); }
+
+  if (isExtendSource && data.paidFromDeposit) {
+    warnings.push('This extension was marked as paid from an existing deposit, but drawing that down automatically is not ported yet -- please adjust the deposit log by hand.');
+  }
+
+  try { await markMatchingContractAsRentedFromJson(name, data.bikeModel); }
+  catch (contractStatusErr) { warnings.push('Contract status update: ' + contractStatusErr.message); }
+
+  try {
+    if (ledgerTotals) {
+      const newContractTotal = ledgerTotals.totalAmount;
+      const existingMatch = await findRentedContractRowForBackfillFromJson(name, data.bikeModel);
+      if (existingMatch && newContractTotal < existingMatch.totalPrice) {
+        await syncContractRowTotalsFromJson(name, data.bikeModel, data.returnDate, null);
+        warnings.push('Contract totals sync: computed running total (฿' + newContractTotal +
+          ') is LESS than Contract row ' + existingMatch.row + '\'s current total price (฿' + existingMatch.totalPrice +
+          ') -- skipped overwriting the total price to avoid shrinking it. Please check this customer\'s ledger note by hand.');
+      } else {
+        await syncContractRowTotalsFromJson(name, data.bikeModel, data.returnDate, newContractTotal);
+      }
+    }
+  } catch (contractSyncErr) { warnings.push('Contract totals sync: ' + contractSyncErr.message); }
+
+  const responsePayload = { success: true, row: newRowNumber };
+  if (warnings.length) responsePayload.warning = warnings.join(' ');
+  return responsePayload;
+}
+// ================== end WRITE layer 2 ==================
 
 let sessionCount = 0;
 
@@ -2078,12 +2522,7 @@ async function doRent() {
       // row's contact cell -- same mechanism, just fed from here instead.
       isDeal: String(r.isDeal).toUpperCase() === 'TRUE'
     };
-    const res = await fetch(scriptUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify(payload)
-    });
-    const data = await res.json();
+    const data = await customerIntakeFromJson(payload); // DISCONNECTED: writes to the static data/ JSON export instead of the live scriptUrl (see project CLAUDE.md)
     if (!data.success) throw new Error(data.error || 'Unknown error');
     if (data.warning) {
       confirmStatusBox.textContent = 'Rented, but: ' + data.warning;
