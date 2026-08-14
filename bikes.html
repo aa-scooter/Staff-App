@@ -1357,6 +1357,1228 @@ async function extendBikeRowFromJson(data) {
   return responsePayload;
 }
 // ================== end extendBike (short extension) ==================
+
+// ================== swapBike (ported 14/08/2026) ==================
+// Ports Code.gs's swapBike -- closes out the old bike's customer row (total
+// price overwritten with just the "used" portion, returnAmount) and appends
+// a brand-new customer row for the new bike covering today through the
+// ORIGINAL return date, priced at newBikeAmount (+ any upgrade charge).
+// returnAmount + newBikeAmount must always equal the old row's current
+// total price -- this is a redistribution of money already paid, not new
+// money, EXCEPT for the optional additionalAmount "upgrade" charge, which
+// genuinely is new money and gets logged as a fresh Income entry. See
+// Code.gs's own big comment on why the Contract row's total price is
+// deliberately left untouched by an ordinary swap (the Zvi Gur Rax
+// red -> Rax blue incident, 19/07/2026) -- only additionalAmount, if any,
+// gets added on top of it.
+//
+// Reuses appendLedgerEntryFromJson, addAmountToContractRowFromJson, and
+// syncContractReturnDateOnlyFromJson directly from the extendBike block
+// above (Code.gs's syncContractRowTotals_ with totalAmount=null and
+// addAmountToContractRow_ are functionally identical to those two). Three
+// NEW helpers below are swap-specific: renameContractBikeOnSwapFromJson
+// (keeps the customer's one continuous Contract row pointed at whichever
+// bike they're currently on), shortenLastLedgerLineForSwapFromJson (fixes
+// up the old bike's most-recent ledger line before handing the note
+// forward onto the new row -- either shortens it to actually-used days, or
+// drops it entirely and carries the full leg forward if it hadn't started
+// yet), and addRentalAmountToBikesSheetForMonthFromJson (a month-
+// parameterized sibling of addRentalAmountToBikesSheetFromJson above,
+// needed here because a swap's redistributed remainder belongs in the
+// ORIGINAL rental's start month, not necessarily the current month the way
+// every other bikes-sheet write on this page is).
+//
+// Deliberately NOT ported (same reasoning as extendBike's identical gaps):
+//  - The shared bike-returns calendar sync (syncCalendarForCustomerRow).
+//  - Code.gs's PropertiesService-based duplicate-submission guard
+//    (guardAgainstDuplicateSubmission_) -- no equivalent shared-lock cache
+//    exists across stateless serverless function calls; a double-fired
+//    click could in principle close out the old row and append the new row
+//    twice. Low-risk enough to accept unported for now, same as every other
+//    write action on this page.
+
+// Parses either a dd/MM/yyyy string or an ISO yyyy-MM-dd string into a real
+// Date -- mirrors Code.gs's parseDmyOrIsoToDate_swap, used when a customer
+// row's date cell was stored as plain text rather than a real Date value.
+function parseDmyOrIsoToDateSwapB(raw) {
+  const s = (raw || '').toString().trim();
+  if (!s) return null;
+  const dmy = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (dmy) return new Date(parseInt(dmy[3], 10), parseInt(dmy[2], 10) - 1, parseInt(dmy[1], 10));
+  const iso = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (iso) return new Date(parseInt(iso[1], 10), parseInt(iso[2], 10) - 1, parseInt(iso[3], 10));
+  return null;
+}
+
+// ---- Ports shortenLastLedgerLineForSwap_ (Code.gs) exactly -- see that
+// function's own long comment for the full reasoning. Touches ONLY the most
+// recent ledger line: if its start date is still in the future, drops it
+// entirely and tells the caller to carry its full days/amount onto the new
+// bike's line (newLineFromDmy/newLineDays/newLineAmount set); otherwise
+// rewrites it to show only actually-used days, ending today, at
+// actualAmount. Falls back to returning noteText UNCHANGED if there's
+// nothing to shorten (blank note) or the last line doesn't match the fixed
+// shape appendLedgerEntryFromJson always writes (e.g. a hand-edited note
+// pre-dating this feature) -- better to leave an unrecognized note alone
+// than mangle it guessing at a shape that isn't there. ----
+function shortenLastLedgerLineForSwapFromJson(noteText, todayValue, todayDmy, actualAmount) {
+  const text = (noteText || '').toString();
+  const unchanged = { note: text, newLineFromDmy: null, newLineDays: null, newLineAmount: null };
+
+  const totalMatch = text.match(/\n?(Total:[^\n]*)$/i);
+  const totalLine = totalMatch ? totalMatch[1] : null;
+  const body = stripLedgerTotalLineB(text);
+  if (!body) return unchanged;
+
+  const lines = body.split('\n');
+  const lastLine = lines[lines.length - 1];
+  const m = lastLine.match(/^(.*?) — (\d{1,2}\/\d{1,2}\/\d{4}) to \d{1,2}\/\d{1,2}\/\d{4} \(([\d.]+) days?\) — ฿([\d,]+(?:\.\d+)?)$/);
+  if (!m) return unchanged;
+
+  const lineBikeModel = m[1];
+  const lineFromDmy = m[2];
+  const lineOriginalDays = Number(m[3]) || 0;
+  const lineOriginalAmount = Number(m[4].replace(/,/g, '')) || 0;
+  const lineFromDate = parseDmyOrIsoToDateSwapB(lineFromDmy);
+
+  if (lineFromDate && lineFromDate.getTime() > todayValue.getTime()) {
+    lines.pop();
+    const droppedBody = lines.join('\n');
+    return {
+      note: totalLine ? (droppedBody ? droppedBody + '\n' + totalLine : totalLine) : droppedBody,
+      newLineFromDmy: lineFromDmy,
+      newLineDays: lineOriginalDays,
+      newLineAmount: lineOriginalAmount
+    };
+  }
+
+  const actualDays = lineFromDate
+    ? Math.max(1, Math.round((todayValue - lineFromDate) / 86400000))
+    : 1;
+
+  lines[lines.length - 1] = lineBikeModel + ' — ' + lineFromDmy + ' to ' + todayDmy +
+    ' (' + actualDays + (actualDays === 1 ? ' day' : ' days') + ') — ฿' + formatMoneyForLedgerB(actualAmount);
+
+  const newBody = lines.join('\n');
+  return {
+    note: totalLine ? (newBody + '\n' + totalLine) : newBody,
+    newLineFromDmy: null,
+    newLineDays: null,
+    newLineAmount: null
+  };
+}
+
+// ---- Ports renameContractBikeOnSwap_ (Code.gs) -- bottom-up scan for a
+// status='rented' Contract row matching normalized name + (fuzzy, optional)
+// old bike name, renames its bike column to the new bike. Best-effort: the
+// caller wraps this in try/catch, same as Code.gs does. Keeps the one
+// continuous Contract row for a customer pointed at whichever bike they're
+// currently on -- otherwise the final-return match (flipMatchingContractStatus,
+// addAmountToContractRowFromJson, etc.) would silently stop finding it after
+// a swap. ----
+async function renameContractBikeOnSwapFromJson(name, oldBikeModel, newBikeModel) {
+  const { rows, modifiedTime } = await fetchSheetWithMeta('Contract');
+  if (!rows || rows.length < 2) return { found: false };
+  const nameTarget = normalizeNameForContractMatch(name);
+  const bikeTarget = (oldBikeModel || '').toString().trim();
+  if (!nameTarget) return { found: false };
+  for (let i = rows.length - 1; i >= HEADER_ROWS_B; i--) {
+    const rowName = normalizeNameForContractMatch(rows[i][3]);
+    const rowBike = (rows[i][6] || '').toString().trim();
+    const rowStatus = (rows[i][16] || '').toString().trim().toLowerCase();
+    if (rowStatus !== 'rented') continue;
+    if (rowName !== nameTarget) continue;
+    if (bikeTarget && rowBike && !bikeNamesMatchForTaxLookup(rowBike, bikeTarget)) continue;
+    const newRows = rows.map(r => r.slice());
+    const row = newRows[i].slice();
+    while (row.length < 7) row.push('');
+    row[6] = newBikeModel; // G bikeModel
+    newRows[i] = row;
+    await writeSheetJson('Contract', newRows, modifiedTime);
+    return { found: true, row: i + 1 };
+  }
+  return { found: false };
+}
+
+// ---- Month-parameterized sibling of addRentalAmountToBikesSheetFromJson
+// above -- a swap's redistributed remainder belongs in the ORIGINAL
+// rental's start month, not necessarily the current month, so the month
+// name can't be derived from `new Date()` the way every other bikes-sheet
+// write on this page does it. ----
+async function addRentalAmountToBikesSheetForMonthFromJson(bikeModel, rawAmount, monthName) {
+  const amount = Number(rawAmount);
+  if (rawAmount === '' || rawAmount === null || rawAmount === undefined || isNaN(amount) || amount === 0) return;
+  const bikeNameTrimmed = (bikeModel || '').toString().trim();
+  if (!bikeNameTrimmed) throw new Error('No bike name given -- bike monthly total was NOT updated.');
+  const { rows, modifiedTime } = await fetchSheetWithMeta('bikes');
+  const header = rows[0] || [];
+  let rowIdx = -1;
+  for (let i = 1; i < rows.length; i++) {
+    const nm = (rows[i][0] || '').toString().trim();
+    if (nm && bikeNamesMatchForRentalLogB(nm, bikeNameTrimmed)) { rowIdx = i; break; }
+  }
+  if (rowIdx === -1) {
+    throw new Error('Could not find a row for "' + bikeNameTrimmed + '" on the "bikes" sheet -- its monthly total was NOT updated.');
+  }
+  const colIdx = findBikesSheetMonthColIdxB(header, monthName);
+  if (colIdx === -1) {
+    throw new Error('Could not find a "' + monthName + '" column on the "bikes" sheet -- "' + bikeNameTrimmed + '"\'s monthly total was NOT updated.');
+  }
+  const newRows = rows.map(r => r.slice());
+  const targetRow = newRows[rowIdx].slice();
+  while (targetRow.length <= colIdx) targetRow.push('');
+  const current = Number(targetRow[colIdx]);
+  targetRow[colIdx] = (isNaN(current) ? 0 : current) + amount;
+  newRows[rowIdx] = targetRow;
+  await writeSheetJson('bikes', newRows, modifiedTime);
+}
+
+// ---- Logs an upgrade/additional charge as a brand-new Income entry on the
+// CURRENT month's sheet. Mirrors swapBike's own inline income-write block
+// in Code.gs, which does NOT go through appendMonthlyIncomeRow/
+// buildRentalIncomeText the way customer-intake/extend do -- it builds its
+// own "<bike> upgrade" description and writes columns F-J directly.
+// KNOWN QUIRK (real Code.gs behavior, faithfully preserved): unlike every
+// other income-logging path in this app, this one does NOT convert paidBy
+// 'scan' -> 'QR scan' for display -- Code.gs's own swapBike writes
+// additionalPaidBy verbatim into column J, so this does too. ----
+async function appendSwapUpgradeIncomeRowFromJson(bikeModel, name, amount, paidBy) {
+  const now = new Date();
+  const monthName = DEPOSITS_MONTH_NAMES[now.getMonth()];
+  const year = now.getFullYear();
+  const { rows, modifiedTime } = await fetchSheetWithMeta(monthName, year);
+  if (!rows || !rows.length) {
+    throw new Error('no tab named "' + monthName + '" was found, so the upgrade charge was NOT logged on the monthly income sheet.');
+  }
+  const newRows = rows.map(r => r.slice());
+  const targetIdx = findFullyEmptyRowIdxJson(newRows, 1, [6, 7, 8, 9, 10]);
+  while (newRows.length <= targetIdx) newRows.push([]);
+  const row = newRows[targetIdx].slice();
+  while (row.length < 10) row.push('');
+  const description = (bikeModel || '').toString().trim() + ' upgrade';
+  const nowIso = now.getFullYear() + '-' + pad2Json(now.getMonth() + 1) + '-' + pad2Json(now.getDate());
+  row[5] = isoDateInputToSheetValue(nowIso);
+  row[6] = description;
+  row[7] = name || '';
+  row[8] = Number(amount) || 0;
+  row[9] = (paidBy || '').toString().trim(); // verbatim -- see KNOWN QUIRK above
+  newRows[targetIdx] = row;
+  await writeSheetJson(monthName, newRows, modifiedTime, year);
+  return description;
+}
+
+// ---- action:'swapBike' equivalent -- see the block comment above. ----
+async function swapBikeFromJson(data) {
+  const rowNumber = parseInt(data.rowNumber, 10);
+  if (!rowNumber || rowNumber < 2) throw new Error('Invalid row number.');
+  const newBikeModel = (data.newBikeModel || '').toString().trim();
+  if (!newBikeModel) throw new Error('No new bike given.');
+  const returnAmount = Number(data.returnAmount);
+  const newBikeAmount = Number(data.newBikeAmount);
+  if (isNaN(returnAmount) || returnAmount < 0 || isNaN(newBikeAmount) || newBikeAmount < 0) {
+    throw new Error('Both amounts must be numbers of 0 or more.');
+  }
+  const additionalAmount = Number(data.additionalAmount) || 0;
+  if (additionalAmount < 0) throw new Error('Additional amount must be 0 or more.');
+  const additionalPaidBy = (data.additionalPaidBy || '').toString().trim();
+  if (additionalAmount > 0 && !additionalPaidBy) {
+    throw new Error('An additional amount was given but no payment type was selected for it.');
+  }
+  if (!data.returnDate) throw new Error('No return date given.');
+  const dm = String(data.returnDate).trim().match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (!dm) throw new Error('Return date must be in yyyy-MM-dd format.');
+  const todayValue = new Date(parseInt(dm[1], 10), parseInt(dm[2], 10) - 1, parseInt(dm[3], 10));
+  const todayDmy = formatDmyJson(todayValue);
+  const todayIsoYmd = todayValue.getFullYear() + '-' + pad2Json(todayValue.getMonth() + 1) + '-' + pad2Json(todayValue.getDate());
+
+  const { rows, modifiedTime } = await fetchSheetWithMeta('customer');
+  const idx = rowNumber - 1;
+  if (!rows[idx]) throw new Error('Could not find row ' + rowNumber + ' on the customer sheet -- it may have moved. Please reload and try again.');
+  const newRows = rows.map(r => r.slice());
+  const oldRow = newRows[idx].slice();
+  while (oldRow.length < 14) oldRow.push('');
+
+  const oldBikeModel = (oldRow[5] || '').toString().trim();
+  let oldTotalPrice = Number(oldRow[11]);
+  if (isNaN(oldTotalPrice)) oldTotalPrice = 0;
+
+  // Belt-and-suspenders re-check: the two amounts must add up to exactly
+  // what's currently on this row, regardless of what the client thought the
+  // total was -- protects against a stale page or a race with some other
+  // edit to this row landing between load and save.
+  if (Math.abs((returnAmount + newBikeAmount) - oldTotalPrice) > 0.01) {
+    throw new Error('Return amount (' + returnAmount + ') + new bike amount (' + newBikeAmount +
+      ') must add up to this booking\'s current total price (' + oldTotalPrice + ').');
+  }
+
+  const origRentFromRaw = oldRow[7];
+  const origReturnDateRaw = oldRow[8];
+  const origReturnTimeRaw = oldRow[9];
+  const contact = oldRow[1] || '';
+  const name = oldRow[2] || '';
+  const nationality = oldRow[3] || '';
+  const passport = oldRow[4] || '';
+  const deliverToHotel = oldRow[10] || '';
+  const paidBy = oldRow[12] || '';
+
+  // ---- 1) Close out the old row: same as a normal Return, except the
+  // total price is overwritten with just the "used" portion (returnAmount)
+  // instead of being left as the full original amount. ----
+  oldRow[11] = returnAmount;                          // L totalPrice
+  oldRow[8] = isoDateInputToSheetValue(todayIsoYmd);   // I returnDate
+  oldRow[13] = 'Returned';                             // N situation
+  newRows[idx] = oldRow;
+
+  // ---- 2) Append a brand-new row for the new bike, covering today through
+  // the ORIGINAL return date (read above, before it was overwritten).
+  // Written in the SAME write as the old row's closeout above (one POST to
+  // the "customer" sheet) rather than Code.gs's two separate range writes --
+  // both touch the same array, so there's no reason to split them into two
+  // read-modify-write round trips against the JSON store. ----
+  const newRowTotalPrice = newBikeAmount + additionalAmount;
+  const newRow = new Array(16).fill('');
+  newRow[0] = isoDateInputToSheetValue(todayIsoYmd); // timestamp
+  newRow[1] = contact;
+  newRow[2] = name;
+  newRow[3] = nationality;
+  newRow[4] = passport;
+  newRow[5] = newBikeModel;
+  newRow[6] = '';
+  newRow[7] = isoDateInputToSheetValue(todayIsoYmd); // rentingDateFrom
+  newRow[8] = origReturnDateRaw;                       // returnDate -- copied raw (already sheet-native)
+  newRow[9] = origReturnTimeRaw;                       // returnTime -- copied raw
+  newRow[10] = deliverToHotel;
+  newRow[11] = newRowTotalPrice;
+  newRow[12] = paidBy;
+  newRow[13] = '';
+  newRow[14] = '';
+  newRow[15] = '';
+  newRows.push(newRow);
+  const newRowNumber = newRows.length;
+
+  await writeSheetJson('customer', newRows, modifiedTime);
+
+  const warnings = [];
+
+  const origReturnDateForDiff = decodeSheetDate(origReturnDateRaw) || parseDmyOrIsoToDateSwapB(origReturnDateRaw);
+  const origReturnDmy = origReturnDateForDiff ? formatDmyJson(origReturnDateForDiff) : (origReturnDateRaw || '').toString().trim();
+
+  // ---- 3) Ledger note surgery: hand the old bike's (corrected) history
+  // forward onto the new row, then append the new bike's own leg. See
+  // shortenLastLedgerLineForSwapFromJson and appendLedgerEntryFromJson's own
+  // comments for why deltaAmount is additionalAmount only (not
+  // newRowTotalPrice) and deltaDays is 0 -- newBikeAmount redistributes
+  // money already counted once on the old row, so counting it again here
+  // would double-count it in the running total. ----
+  try {
+    const { rows: noteRows } = await fetchSheetWithMeta('customer_notes');
+    const oldNoteEntry = (noteRows || []).find(n => n[0] === rowNumber && n[1] === LEDGER_CONTACT_COL_B);
+    const swapOldNote = oldNoteEntry ? (oldNoteEntry[2] || '') : '';
+
+    const noteFix = shortenLastLedgerLineForSwapFromJson(swapOldNote, todayValue, todayDmy, returnAmount);
+    const correctedOldNote = noteFix.note;
+
+    let swapLineFromDmy, swapLineDays, swapLineAmount;
+    if (noteFix.newLineFromDmy) {
+      swapLineFromDmy = noteFix.newLineFromDmy;
+      swapLineDays = noteFix.newLineDays;
+      swapLineAmount = noteFix.newLineAmount + additionalAmount;
+    } else {
+      swapLineFromDmy = todayDmy;
+      swapLineDays = origReturnDateForDiff
+        ? Math.max(1, Math.round((origReturnDateForDiff - todayValue) / 86400000))
+        : 1;
+      swapLineAmount = newBikeAmount + additionalAmount;
+    }
+
+    await appendLedgerEntryFromJson(newRowNumber, newBikeModel, swapLineFromDmy, origReturnDmy, swapLineDays, swapLineAmount, 0, additionalAmount, correctedOldNote, null);
+  } catch (ledgerErr) { warnings.push('Ledger note: ' + ledgerErr.message); }
+
+  // Contract sheet: keep the one continuous Contract row pointed at
+  // whichever bike the customer is currently on.
+  try { await renameContractBikeOnSwapFromJson(name, oldBikeModel, newBikeModel); }
+  catch (contractRenameErr) { warnings.push('Contract bike rename: ' + contractRenameErr.message); }
+
+  // Keep the Contract row's Return date synced -- the due date itself never
+  // changes on an ordinary swap. Total price is deliberately left untouched
+  // here (see the block comment above) -- only a genuine upgrade charge, if
+  // any, gets added on top of it in the next block.
+  try {
+    if (origReturnDateForDiff) {
+      await syncContractReturnDateOnlyFromJson(name, newBikeModel, origReturnDateForDiff);
+    } else {
+      warnings.push('Contract return date sync: could not read the original return date -- skipped, please check by hand.');
+    }
+  } catch (contractSyncErr) { warnings.push('Contract return date sync: ' + contractSyncErr.message); }
+
+  try {
+    if (additionalAmount > 0) {
+      await addAmountToContractRowFromJson(name, newBikeModel, additionalAmount);
+    }
+  } catch (contractAmountErr) { warnings.push('Contract total price sync: ' + contractAmountErr.message); }
+
+  // "bikes" sheet: the redistributed remainder (newBikeAmount) is not new
+  // money -- both sides of the move belong in the ORIGINAL rental's start
+  // month, netting to zero extra impact there. Any upgrade charge IS new
+  // money, received today, so it goes on the new bike's column in the
+  // CURRENT month as a separate write.
+  const startDateForMonth = decodeSheetDate(origRentFromRaw) || parseDmyOrIsoToDateSwapB(origRentFromRaw);
+  const origMonthName = startDateForMonth ? DEPOSITS_MONTH_NAMES[startDateForMonth.getMonth()] : null;
+  const currentMonthName = DEPOSITS_MONTH_NAMES[new Date().getMonth()];
+
+  if (!origMonthName) {
+    warnings.push('Could not determine the original rental\'s start month -- the "bikes" sheet totals for "' +
+      oldBikeModel + '" and "' + newBikeModel + '" were NOT adjusted for the redistributed remainder. Please adjust them by hand.');
+  } else {
+    try { await addRentalAmountToBikesSheetForMonthFromJson(oldBikeModel, -newBikeAmount, origMonthName); }
+    catch (bikesErr1) { warnings.push('Bikes sheet (' + oldBikeModel + '): ' + bikesErr1.message); }
+    try { await addRentalAmountToBikesSheetForMonthFromJson(newBikeModel, newBikeAmount, origMonthName); }
+    catch (bikesErr2) { warnings.push('Bikes sheet (' + newBikeModel + '): ' + bikesErr2.message); }
+  }
+
+  if (additionalAmount > 0) {
+    try { await addRentalAmountToBikesSheetForMonthFromJson(newBikeModel, additionalAmount, currentMonthName); }
+    catch (bikesErr3) { warnings.push('Bikes sheet (' + newBikeModel + ' upgrade): ' + bikesErr3.message); }
+  }
+
+  // ---- 4) Upgrade income entry, only if an additional amount was charged.
+  // Wrapped so a problem here never rolls back the swap itself, which has
+  // already been saved above. ----
+  if (additionalAmount > 0) {
+    try {
+      const upgradeDescription = await appendSwapUpgradeIncomeRowFromJson(newBikeModel, name, additionalAmount, additionalPaidBy);
+      const additionalPaidByLower = additionalPaidBy.toLowerCase();
+      try {
+        if (additionalPaidByLower === 'cash') {
+          await appendCashSheetRowFromJson(upgradeDescription, additionalAmount);
+        }
+      } catch (upgradeCashErr) { warnings.push('Upgrade cash sheet: ' + upgradeCashErr.message); }
+      try {
+        if (additionalPaidByLower === 'wise' || additionalPaidByLower === 'revolut') {
+          await processDepositForPaymentFromJson(additionalPaidByLower, additionalAmount);
+        }
+      } catch (upgradeDepositErr) { warnings.push('Upgrade deposit total: ' + upgradeDepositErr.message); }
+    } catch (upgradeIncomeErr) { warnings.push('Upgrade income entry: ' + upgradeIncomeErr.message); }
+  }
+
+  const responsePayload = { success: true, newRowNumber };
+  if (warnings.length) responsePayload.warning = warnings.join(' ');
+  return responsePayload;
+}
+// ================== end swapBike ==================
+
+// ================== earlyReturnBike (ported 14/08/2026) ==================
+// Ports Code.gs's earlyReturnBike -- the "Early return" checkbox on the
+// Return popup. A 0 refund is just an ordinary return (identical to
+// markReturned/performMarkReturned above). A genuine refund (money back for
+// unused days) redistributes the rental price downward the same way
+// swapBike redistributes it sideways: customer row, Contract row, ledger
+// note, "bikes" sheet monthly total, and a new Accounts income entry (this
+// one negative).
+//
+// Two dates matter, per Code.gs's own header comment (Anton, 21/07/2026):
+//   - RETURN date (data.returnDate, staff-chosen, can be backdated) drives
+//     the customer row's Return Date, the Contract row's Return Date, and
+//     the ledger note's corrected line + its own refund line.
+//   - TODAY (real wall-clock date this runs) drives every accounts-side
+//     write: which month's income row, cash entry, Wise/Revolut running
+//     total, and "bikes" sheet column this lands on -- money moves in the
+//     month it actually moves, never retroactively into the original
+//     rental's start month, even if returnDate is backdated into a
+//     different month.
+//
+// ORDERING MATTERS (this is the exact bug Anton reported, 21/07/2026 --
+// Alex John Milne / Aerox red 2): the Contract row's return-date sync and
+// total-price subtraction both only match a row whose status is still
+// "rented" -- so they MUST run before the Contract row's status flips to
+// Returned, same as Code.gs's own comment insists. Reuses
+// syncContractReturnDateOnlyFromJson and addAmountToContractRowFromJson
+// (with a NEGATIVE amount for the subtraction) from the extendBike/swapBike
+// blocks above, and flipMatchingContractStatus (already in the markReturned
+// block above) for the LAST step, the status flip itself.
+//
+// Deliberately NOT ported: the shared bike-returns calendar sync
+// (syncCalendarForCustomerRow) and Code.gs's duplicate-submission guard --
+// same reasoning as every other write action on this page.
+
+// ---- Ports appendEarlyReturnRefundToLedger_ (Code.gs) -- only called when
+// a genuine refund amount was entered. Shortens the last ledger line to end
+// on the ACTUAL return date (not whatever was originally booked) at the
+// reduced amount, appends a dedicated "Refund for early return ..." line,
+// and rolls the running Total's DAY count down too (unlike swapBike's
+// shortenLastLedgerLineForSwapFromJson, which deliberately leaves the day
+// count untouched -- a swap doesn't lose any days, an early-return refund
+// genuinely does). Falls back to leaving the note's history untouched
+// (still appending the refund line) if the last line doesn't match the
+// fixed shape appendLedgerEntryFromJson always writes, or there's no note
+// yet at all. ----
+async function appendEarlyReturnRefundToLedgerFromJson(rowNumber, returnDateValue, returnDmy, refundAmount, actualAmount) {
+  const { rows: noteRows, modifiedTime: noteModifiedTime } = await fetchSheetWithMeta('customer_notes');
+  const existingNoteEntry = (noteRows || []).find(n => n[0] === rowNumber && n[1] === LEDGER_CONTACT_COL_B);
+  const noteText = existingNoteEntry ? (existingNoteEntry[2] || '') : '';
+  const priorTotal = parseLedgerTotal(noteText);
+  let body = stripLedgerTotalLineB(noteText);
+
+  let dayDelta = 0;
+  if (body) {
+    const lines = body.split('\n');
+    const lastLine = lines[lines.length - 1];
+    const lm = lastLine.match(/^(.*?) — (\d{1,2}\/\d{1,2}\/\d{4}) to \d{1,2}\/\d{1,2}\/\d{4} \(([\d.]+) days?\) — ฿([\d,]+(?:\.\d+)?)$/);
+    if (lm) {
+      const lineBikeModel = lm[1];
+      const lineFromDmy = lm[2];
+      const lineOriginalDays = Number(lm[3]) || 0;
+      const lineFromDate = parseDmyOrIsoToDateSwapB(lineFromDmy);
+      if (lineFromDate && lineFromDate.getTime() <= returnDateValue.getTime()) {
+        const actualDays = Math.max(1, Math.round((returnDateValue - lineFromDate) / 86400000));
+        lines[lines.length - 1] = lineBikeModel + ' — ' + lineFromDmy + ' to ' + returnDmy +
+          ' (' + actualDays + (actualDays === 1 ? ' day' : ' days') + ') — ฿' + formatMoneyForLedgerB(actualAmount);
+        dayDelta = actualDays - lineOriginalDays;
+        body = lines.join('\n');
+      }
+      // else: the last leg's own start date is somehow still in the
+      // future -- leave it untouched rather than write a backwards or
+      // negative span; dayDelta stays 0.
+    }
+    // else: note doesn't match the fixed shape (blank, hand-edited, or
+    // pre-dates this feature) -- leave the history untouched, dayDelta
+    // stays 0.
+  }
+
+  const refundLine = 'Refund for early return ' + returnDmy + ' — -฿' + formatMoneyForLedgerB(refundAmount);
+  const newBody = (body ? body + '\n' : '') + refundLine;
+
+  const newTotalDays = priorTotal.days + dayDelta;
+  const newTotalAmount = priorTotal.amount - refundAmount;
+  const targetNote = newBody + '\nTotal: ' + newTotalDays + ' days, ฿' + formatMoneyForLedgerB(newTotalAmount);
+
+  const newNoteRows = (noteRows || []).filter(n => !(n[0] === rowNumber && n[1] === LEDGER_CONTACT_COL_B));
+  newNoteRows.push([rowNumber, LEDGER_CONTACT_COL_B, targetNote]);
+  await writeSheetJson('customer_notes', newNoteRows, noteModifiedTime);
+
+  const { rows: custRows, modifiedTime: custModifiedTime } = await fetchSheetWithMeta('customer');
+  const newCustRows = custRows.map(r => r.slice());
+  const targetRow = newCustRows[rowNumber - 1];
+  while (targetRow.length <= LEDGER_CONTACT_COL_B - 1) targetRow.push('');
+  const currentContact = (targetRow[LEDGER_CONTACT_COL_B - 1] || '').toString();
+  const isDeal = /\bDeal\s*$/i.test(currentContact.trim());
+  const baseContact = stripAllTrailingParensAndDealB(currentContact);
+  const targetBracket = ' (฿' + formatMoneyForLedgerB(newTotalAmount) + ', ' + newTotalDays + ' days)';
+  const targetContact = baseContact + targetBracket + (isDeal ? ' Deal' : '');
+  targetRow[LEDGER_CONTACT_COL_B - 1] = targetContact;
+  await writeSheetJson('customer', newCustRows, custModifiedTime);
+
+  return { totalDays: newTotalDays, totalAmount: newTotalAmount };
+}
+
+// ---- Logs an early-return refund as a NEGATIVE Income entry on the
+// CURRENT month's sheet -- mirrors earlyReturnBike's own inline income-
+// write block in Code.gs (a separate inline block from swapBike's, same
+// shape). KNOWN QUIRK (real Code.gs behavior, faithfully preserved): same
+// as appendSwapUpgradeIncomeRowFromJson above, this does NOT convert
+// 'scan' -> 'QR scan' -- refundPaidBy is written verbatim. ----
+async function appendEarlyReturnRefundIncomeRowFromJson(bikeModel, customerName, negAmount, paidBy) {
+  const now = new Date();
+  const monthName = DEPOSITS_MONTH_NAMES[now.getMonth()];
+  const year = now.getFullYear();
+  const { rows, modifiedTime } = await fetchSheetWithMeta(monthName, year);
+  if (!rows || !rows.length) {
+    throw new Error('no tab named "' + monthName + '" was found, so the refund was NOT logged on the monthly income sheet.');
+  }
+  const newRows = rows.map(r => r.slice());
+  const targetIdx = findFullyEmptyRowIdxJson(newRows, 1, [6, 7, 8, 9, 10]);
+  while (newRows.length <= targetIdx) newRows.push([]);
+  const row = newRows[targetIdx].slice();
+  while (row.length < 10) row.push('');
+  const description = (bikeModel || '').toString().trim() + ' refund - early return';
+  const nowIso = now.getFullYear() + '-' + pad2Json(now.getMonth() + 1) + '-' + pad2Json(now.getDate());
+  row[5] = isoDateInputToSheetValue(nowIso);
+  row[6] = description;
+  row[7] = customerName || '';
+  row[8] = Number(negAmount) || 0;
+  row[9] = (paidBy || '').toString().trim(); // verbatim -- see KNOWN QUIRK above
+  newRows[targetIdx] = row;
+  await writeSheetJson(monthName, newRows, modifiedTime, year);
+  return description;
+}
+
+// ---- action:'earlyReturnBike' equivalent -- see the block comment above. ----
+async function earlyReturnBikeFromJson(data) {
+  const rowNumber = parseInt(data.rowNumber, 10);
+  if (!rowNumber || rowNumber < 2) throw new Error('Invalid row number.');
+  if (!data.returnDate) throw new Error('No return date given.');
+  const refundAmount = Number(data.refundAmount);
+  if (isNaN(refundAmount) || refundAmount < 0) throw new Error('Refund amount must be a number of 0 or more.');
+  const refundPaidBy = (data.refundPaidBy || '').toString().trim();
+  if (refundAmount > 0 && !refundPaidBy) {
+    throw new Error('A refund amount was given but no payment type was selected for it.');
+  }
+  const dm = String(data.returnDate).trim().match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (!dm) throw new Error('Return date must be in yyyy-MM-dd format.');
+  const returnDateValue = new Date(parseInt(dm[1], 10), parseInt(dm[2], 10) - 1, parseInt(dm[3], 10));
+  const returnDmy = formatDmyJson(returnDateValue);
+  const returnIsoYmd = returnDateValue.getFullYear() + '-' + pad2Json(returnDateValue.getMonth() + 1) + '-' + pad2Json(returnDateValue.getDate());
+
+  const { rows, modifiedTime } = await fetchSheetWithMeta('customer');
+  const idx = rowNumber - 1;
+  if (!rows[idx]) throw new Error('Could not find row ' + rowNumber + ' on the customer sheet -- it may have moved. Please reload and try again.');
+  const newRows = rows.map(r => r.slice());
+  const row = newRows[idx].slice();
+  while (row.length < 14) row.push('');
+
+  const customerName = row[2] || '';
+  const bikeModel = row[5] || '';
+
+  // ---- 1) Ordinary return close-out -- identical to markReturned, plus
+  // (only for a genuine refund) overwriting the total price. Happens
+  // unconditionally, refund or not. ----
+  row[8] = isoDateInputToSheetValue(returnIsoYmd); // I returnDate
+  row[13] = 'Returned';                             // N situation
+
+  let newTotalPrice = null;
+  if (refundAmount > 0) {
+    let oldTotalPrice = Number(row[11]);
+    if (isNaN(oldTotalPrice)) oldTotalPrice = 0;
+    // Belt-and-suspenders re-check, same spirit as swapBike's own -- a
+    // refund bigger than what this booking was ever worth is almost
+    // certainly a typo, not a real transaction.
+    if (refundAmount > oldTotalPrice + 0.01) {
+      throw new Error('Refund amount (' + refundAmount + ') cannot be more than this booking\'s current total price (' + oldTotalPrice + ').');
+    }
+    newTotalPrice = oldTotalPrice - refundAmount;
+    row[11] = newTotalPrice; // L totalPrice
+  }
+  newRows[idx] = row;
+
+  await writeSheetJson('customer', newRows, modifiedTime);
+
+  const warnings = [];
+
+  // ---- 2) Contract sheet: sync the return date (and, for a genuine
+  // refund, subtract from the total) WHILE the row still says "Rented" --
+  // both helpers below only ever match a row whose status is still
+  // "rented", so this MUST run before step 3 flips it to "Returned". ----
+  try {
+    await syncContractReturnDateOnlyFromJson(customerName, bikeModel, returnDateValue);
+  } catch (contractDateErr) { warnings.push('Contract return date sync: ' + contractDateErr.message); }
+
+  if (refundAmount > 0) {
+    try {
+      await addAmountToContractRowFromJson(customerName, bikeModel, -refundAmount);
+    } catch (contractAmountErr) { warnings.push('Contract total price sync: ' + contractAmountErr.message); }
+
+    try {
+      await appendEarlyReturnRefundToLedgerFromJson(rowNumber, returnDateValue, returnDmy, refundAmount, newTotalPrice);
+    } catch (ledgerErr) { warnings.push('Ledger note: ' + ledgerErr.message); }
+  }
+
+  // ---- 3) NOW flip the Contract row's status to Returned -- must run
+  // LAST, only after every write above that depends on the row still
+  // saying "Rented" has already happened. ----
+  try {
+    await flipMatchingContractStatus(customerName, bikeModel, 'rented', 'Returned');
+  } catch (contractStatusErr) { warnings.push('Contract status update: ' + contractStatusErr.message); }
+
+  // ---- 4) Nothing further to do for a plain return (refund left at 0). ----
+  if (refundAmount <= 0) {
+    const responsePayloadPlain = { success: true };
+    if (warnings.length) responsePayloadPlain.warning = warnings.join(' ');
+    return responsePayloadPlain;
+  }
+
+  // ---- 5) A genuine refund -- redistribute the rest of the money the same
+  // way swapBike does, just subtracting instead of moving to a new bike.
+  // "bikes" sheet: reduce this bike's CURRENT month's earnings -- money
+  // moves in the month it actually moves, never the original rental's
+  // start month even if returnDate is backdated into a different one.
+  const negRefundAmount = -refundAmount;
+  try {
+    await addRentalAmountToBikesSheetFromJson(bikeModel, negRefundAmount);
+  } catch (bikesErr) { warnings.push('Bikes sheet (' + bikeModel + '): ' + bikesErr.message); }
+
+  // Accounts page: log the refund as a negative income entry on the
+  // CURRENT month's sheet. Cash/Wise/Revolut routing mirrors swapBike's
+  // upgrade-income block exactly; a Scan/Bank-Transfer refund deliberately
+  // triggers neither (Anton, 21/07/2026: "bank transfer... doesn't need to
+  // be done there").
+  try {
+    const refundDescription = await appendEarlyReturnRefundIncomeRowFromJson(bikeModel, customerName, negRefundAmount, refundPaidBy);
+    const refundPaidByLower = refundPaidBy.toLowerCase();
+    try {
+      if (refundPaidByLower === 'cash') {
+        await appendCashSheetRowFromJson((customerName || '') + ' - ' + refundDescription, negRefundAmount);
+      }
+    } catch (refundCashErr) { warnings.push('Refund cash sheet: ' + refundCashErr.message); }
+    try {
+      if (refundPaidByLower === 'wise' || refundPaidByLower === 'revolut') {
+        await processDepositForPaymentFromJson(refundPaidByLower, negRefundAmount);
+      }
+    } catch (refundDepositErr) { warnings.push('Refund deposit total: ' + refundDepositErr.message); }
+  } catch (refundIncomeErr) { warnings.push('Refund income entry: ' + refundIncomeErr.message); }
+
+  const responsePayload = { success: true };
+  if (warnings.length) responsePayload.warning = warnings.join(' ');
+  return responsePayload;
+}
+// ================== end earlyReturnBike ==================
+
+// ================== returnDeposit (ported 14/08/2026) ==================
+// Ports Code.gs's returnDeposit -- the Return popup's deposit section.
+// data: { category, row, deductionAmount, reason, customerName, bikeModel,
+// returnedVia, returnedViaAmount }. category is either a real
+// DEPOSIT_CATEGORIES_B key (bank/wise/revolut) or the special value
+// 'cash'. Three independent, best-effort steps (a problem in one shouldn't
+// undo the others):
+//   1. Clears the ENTIRE matched security-deposit entry (date/amount/name)
+//      on the current month's sheet, if there's an actual matched row
+//      (data.row is null for a Cash deposit -- those are never logged as
+//      their own row -- and for the "no tracked deposit found, assumed
+//      from how the rental itself was paid" fallback).
+//   2. If deductionAmount > 0, logs it as an ordinary Income entry, dated
+//      today: description "<bike>, Deposit returned for <reason>", paidBy
+//      whatever payment method this deposit's own category represents
+//      (Scan/Wise/Revolut/Cash) -- NOT the booking's original rental
+//      payment method. Routes exactly like any other income: Cash -> cash
+//      sheet, Wise/Revolut -> running deposit total, plus a bike-split
+//      note (always attributed to this one bike, no "extras" fallback)
+//      and a "bikes" sheet monthly-earnings bump.
+//   3. If returnedVia is set AND differs from category (staff handing the
+//      deposit back through a DIFFERENT method than it was originally
+//      held under -- e.g. paid in via Wise, given back in Cash), the
+//      RETURNED (non-deducted) portion needs two counterbalancing
+//      entries: "releasing" the original holding bucket (an income row --
+//      that money isn't earmarked/owed anymore) and "paying out" the
+//      method actually handing the money back (an expense row -- real
+//      money leaves there). Wise/Revolut also still bump their running
+//      deposit total on both sides. Skipped entirely when returnedVia
+//      equals category (or is blank) -- that's just a plain same-method
+//      return, already fully correct with steps 1-2 alone. See Code.gs's
+//      own much longer design comment above this function for the full
+//      "worked out with Anton on 2026-07-21" reasoning.
+//
+// Deliberately NOT ported: Code.gs's duplicate-submission guard (same
+// reasoning as every other write action on this page) and
+// applyExpenseTypeColor's cell-background expense-type tagging (KNOWN
+// GAP, same as accounts.html's task #25 -- and Code.gs hardcodes
+// 'business' at this exact call site anyway, so no real information is
+// lost by skipping it here).
+
+// Deposit category key -> the payment-method label used everywhere else
+// in the app (Accounts "Paid by" dropdown, customer intake forms) -- NOT
+// DEPOSIT_CATEGORIES_B's own .label ("Bank"/"Wise"/"Revolut"), which is
+// just that tracking table's display heading. "bank" deposits are
+// actually paid via Scan/Thai QR, hence "Scan" here.
+const DEPOSIT_CATEGORY_PAID_BY_B = { bank: 'Scan', wise: 'Wise', revolut: 'Revolut' };
+
+// ---- Ports setIncomeBikeSplits/setExpenseBikeSplits (Code.gs) -- the note
+// lives on the notes sidecar for whichever month sheet the income/expense
+// row is on, keyed by [row, colIdx1] (a 1-indexed column number, matching
+// Code.gs's own column numbers directly -- col 2/B for expense
+// description, col 7/G for income description). Best-effort by every
+// caller here, same as Code.gs's own setIncomeBikeSplits (never throws). ----
+async function setBikeSplitsNoteFromJsonB(monthName, year, row, colIdx1, splits) {
+  const clean = (splits || [])
+    .map(s => ({ bike: (s.bike || '').toString().trim(), amount: (s.amount !== '' && s.amount !== null && s.amount !== undefined && !isNaN(Number(s.amount))) ? Number(s.amount) : '' }))
+    .filter(s => s.bike && s.amount !== '');
+  const notesSheet = monthName + '_notes';
+  const { rows: noteRows, modifiedTime } = await fetchSheetWithMeta(notesSheet, year);
+  const filtered = (noteRows || []).filter(n => !(n[0] === row && n[1] === colIdx1));
+  if (clean.length) filtered.push([row, colIdx1, JSON.stringify(clean)]);
+  await writeSheetJson(notesSheet, filtered, modifiedTime, year);
+}
+
+// ---- Ports appendCashExpenseRowText (Code.gs) -- the "cash" sheet's
+// EXPENSE side lives in columns E-G (idx4-6), separate from its income
+// side in columns A-C (idx0-2); column D is an unused manual-highlight
+// spacer. Mirrors appendCashSheetRowFromJson's income-side structure
+// exactly. ----
+async function appendCashExpenseRowFromJson(expenseText, rawAmount) {
+  const { rows, modifiedTime } = await fetchSheetWithMeta('cash');
+  if (!rows || !rows.length) {
+    throw new Error('no tab named "cash" was found, so this entry was NOT logged on the cash sheet.');
+  }
+  const newRows = rows.map(r => r.slice());
+  const targetIdx = findFullyEmptyRowIdxJson(newRows, 1, [5, 6, 7]);
+  while (newRows.length <= targetIdx) newRows.push([]);
+  const row = newRows[targetIdx].slice();
+  while (row.length < 7) row.push('');
+  const amountValue = (rawAmount !== '' && rawAmount !== undefined && rawAmount !== null && !isNaN(Number(rawAmount))) ? Number(rawAmount) : '';
+  row[4] = isoDateInputToSheetValue(todayIso());
+  row[5] = expenseText;
+  row[6] = amountValue;
+  newRows[targetIdx] = row;
+  await writeSheetJson('cash', newRows, modifiedTime);
+}
+
+// ---- "Release"/"payout" halves of a cross-method deposit return -- see
+// the block comment above. Both write a plain income/expense row on the
+// CURRENT month's accounts sheet (F-J for income, A-D for expense), with
+// Cash routed onto the "cash" sheet and Wise/Revolut also bumping the
+// running deposit total -- the same routing every other income/expense
+// write on this page uses. These are genuinely separate write paths from
+// step 2's deduction-income block above (no bike-split note, no "bikes"
+// sheet bump -- this is pure balance-sheet bucket-shuffling, not new
+// rental earnings), matching Code.gs's own writeDepositTransferIncomeRow_/
+// writeDepositTransferExpenseRow_ staying separate from returnDeposit's
+// own inline step-2 block. ----
+async function writeDepositTransferIncomeRowFromJson(paidByLabel, amount, customerName, description) {
+  const now = new Date();
+  const monthName = DEPOSITS_MONTH_NAMES[now.getMonth()];
+  const year = now.getFullYear();
+  const { rows, modifiedTime } = await fetchSheetWithMeta(monthName, year);
+  if (!rows || !rows.length) {
+    throw new Error('no tab named "' + monthName + '" was found, so this entry was NOT logged on the monthly income sheet.');
+  }
+  const newRows = rows.map(r => r.slice());
+  const targetIdx = findFullyEmptyRowIdxJson(newRows, 1, [6, 7, 8, 9, 10]);
+  while (newRows.length <= targetIdx) newRows.push([]);
+  const row = newRows[targetIdx].slice();
+  while (row.length < 10) row.push('');
+  const nowIso = now.getFullYear() + '-' + pad2Json(now.getMonth() + 1) + '-' + pad2Json(now.getDate());
+  row[5] = isoDateInputToSheetValue(nowIso);
+  row[6] = description;
+  row[7] = customerName || '';
+  row[8] = Number(amount) || 0;
+  row[9] = paidByLabel;
+  newRows[targetIdx] = row;
+  await writeSheetJson(monthName, newRows, modifiedTime, year);
+
+  const paidByLower = (paidByLabel || '').toString().trim().toLowerCase();
+  if (paidByLower === 'cash') {
+    await appendCashSheetRowFromJson(description, amount);
+  }
+  // Scan/Bank: nothing further -- the row itself is enough, same
+  // convention as every other Scan-paid income entry in this app.
+}
+async function writeDepositTransferExpenseRowFromJson(paidByLabel, amount, description) {
+  const now = new Date();
+  const monthName = DEPOSITS_MONTH_NAMES[now.getMonth()];
+  const year = now.getFullYear();
+  const { rows, modifiedTime } = await fetchSheetWithMeta(monthName, year);
+  if (!rows || !rows.length) {
+    throw new Error('no tab named "' + monthName + '" was found, so this entry was NOT logged on the monthly expense sheet.');
+  }
+  const newRows = rows.map(r => r.slice());
+  const targetIdx = findFullyEmptyRowIdxJson(newRows, 1, [1, 2, 3, 4]);
+  while (newRows.length <= targetIdx) newRows.push([]);
+  const row = newRows[targetIdx].slice();
+  while (row.length < 4) row.push('');
+  const nowIso = now.getFullYear() + '-' + pad2Json(now.getMonth() + 1) + '-' + pad2Json(now.getDate());
+  row[0] = isoDateInputToSheetValue(nowIso);
+  row[1] = description;
+  row[2] = Number(amount) || 0;
+  row[3] = paidByLabel;
+  newRows[targetIdx] = row;
+  await writeSheetJson(monthName, newRows, modifiedTime, year);
+  // KNOWN GAP: Code.gs also calls applyExpenseTypeColor(expenseSheet, row,
+  // 'business') at this point -- see the block comment above.
+
+  const paidByLower = (paidByLabel || '').toString().trim().toLowerCase();
+  if (paidByLower === 'cash') {
+    await appendCashExpenseRowFromJson(description, amount);
+  }
+  // Scan/Bank: nothing further -- same reasoning as the income side above.
+}
+async function releaseDepositIntoBucketFromJson(category, amount, customerName, bikeModel) {
+  const paidByLabel = category === 'cash' ? 'Cash' : (DEPOSIT_CATEGORY_PAID_BY_B[category] || category);
+  const bucketLabel = category === 'bank' ? 'Bank' : paidByLabel;
+  const description = (bikeModel ? bikeModel + ', ' : '') + 'Deposit released (' + bucketLabel + ') for ' + (customerName || '');
+  await writeDepositTransferIncomeRowFromJson(paidByLabel, amount, customerName, description);
+  if (category === 'wise' || category === 'revolut') {
+    await processDepositForPaymentFromJson(category, amount);
+  }
+}
+async function payDepositOutOfBucketFromJson(method, amount, customerName, bikeModel) {
+  const paidByLabel = method === 'cash' ? 'Cash' : (DEPOSIT_CATEGORY_PAID_BY_B[method] || method);
+  const bucketLabel = method === 'bank' ? 'Bank' : paidByLabel;
+  const description = (bikeModel ? bikeModel + ', ' : '') + 'Deposit paid out via ' + bucketLabel + ' for ' + (customerName || '');
+  await writeDepositTransferExpenseRowFromJson(paidByLabel, amount, description);
+  if (method === 'wise' || method === 'revolut') {
+    await processDepositForPaymentFromJson(method, -amount);
+  }
+}
+
+// ---- action:'returnDeposit' equivalent -- see the block comment above. ----
+async function returnDepositFromJson(data) {
+  const isCash = (data.category || '').toString().trim().toLowerCase() === 'cash';
+  let cat = null;
+  if (!isCash) {
+    cat = DEPOSIT_CATEGORIES_B.find(c => c.key === data.category);
+    if (!cat) throw new Error('Unrecognized deposit category "' + data.category + '".');
+  }
+
+  const depositRowRaw = Math.round(Number(data.row));
+  const hasRow = !isCash && data.row !== null && data.row !== undefined && data.row !== '' && !isNaN(depositRowRaw) && depositRowRaw >= 2;
+
+  const warnings = [];
+
+  // 1. Clear the deposit entry -- only when there's an actual matched row.
+  if (hasRow) {
+    try {
+      const now = new Date();
+      const monthName = DEPOSITS_MONTH_NAMES[now.getMonth()];
+      const year = now.getFullYear();
+      const { rows, modifiedTime } = await fetchSheetWithMeta(monthName, year);
+      if (!rows || !rows.length) throw new Error('no sheet found for the current month -- the deposit was NOT cleared.');
+      const headerRaw = rows[0] ? rows[0][cat.dateCol - 1] : undefined;
+      if ((headerRaw || '').toString().trim().toLowerCase() !== cat.header) {
+        throw new Error('expected "' + cat.header + '" header on the "' + monthName + '" sheet -- the deposit was NOT cleared.');
+      }
+      const newRows = rows.map(r => r.slice());
+      const targetRow = newRows[depositRowRaw - 1] ? newRows[depositRowRaw - 1].slice() : null;
+      if (!targetRow) throw new Error('row ' + depositRowRaw + ' does not exist on the "' + monthName + '" sheet -- the deposit was NOT cleared.');
+      while (targetRow.length < cat.nameCol) targetRow.push('');
+      targetRow[cat.dateCol - 1] = '';
+      targetRow[cat.amountCol - 1] = '';
+      targetRow[cat.nameCol - 1] = '';
+      newRows[depositRowRaw - 1] = targetRow;
+      await writeSheetJson(monthName, newRows, modifiedTime, year);
+    } catch (clearErr) { warnings.push('Clearing deposit: ' + clearErr.message); }
+  }
+
+  // 2. Log the deduction (if any) as a normal income entry.
+  const deduction = Number(data.deductionAmount);
+  let incomeRowNum = null;
+  if (!isNaN(deduction) && deduction > 0) {
+    try {
+      const paidByLabel = isCash ? 'Cash' : (DEPOSIT_CATEGORY_PAID_BY_B[data.category] || cat.label);
+      const now = new Date();
+      const monthName = DEPOSITS_MONTH_NAMES[now.getMonth()];
+      const year = now.getFullYear();
+      const { rows, modifiedTime } = await fetchSheetWithMeta(monthName, year);
+      if (!rows || !rows.length) throw new Error('no tab named "' + monthName + '" was found, so this deduction was NOT logged on the monthly income sheet.');
+      const newRows = rows.map(r => r.slice());
+      const targetIdx = findFullyEmptyRowIdxJson(newRows, 1, [6, 7, 8, 9, 10]);
+      while (newRows.length <= targetIdx) newRows.push([]);
+      const row = newRows[targetIdx].slice();
+      while (row.length < 10) row.push('');
+      const reasonText = (data.reason || '').toString().trim();
+      const bikeNameForDescription = (data.bikeModel || '').toString().trim();
+      // Bike name up front (e.g. "GT Black 3, Deposit returned for scratch
+      // on side panel") so this income row reads the same way as every
+      // other bike-attributed line on the sheet.
+      const description = (bikeNameForDescription ? bikeNameForDescription + ', ' : '') + 'Deposit returned for ' + reasonText;
+      const nowIso = now.getFullYear() + '-' + pad2Json(now.getMonth() + 1) + '-' + pad2Json(now.getDate());
+      row[5] = isoDateInputToSheetValue(nowIso);
+      row[6] = description;
+      row[7] = data.customerName || '';
+      row[8] = deduction;
+      row[9] = paidByLabel;
+      newRows[targetIdx] = row;
+      incomeRowNum = targetIdx + 1;
+      await writeSheetJson(monthName, newRows, modifiedTime, year);
+
+      try {
+        await setBikeSplitsNoteFromJsonB(monthName, year, incomeRowNum, 7, [{ bike: data.bikeModel || '', amount: deduction }]);
+      } catch (splitErr) { /* best-effort, matches Code.gs's setIncomeBikeSplits which never throws */ }
+
+      const paidByLower = paidByLabel.toString().trim().toLowerCase();
+      try {
+        if (paidByLower === 'cash') {
+          await appendCashSheetRowFromJson(description, deduction);
+        } else if (paidByLower === 'wise' || paidByLower === 'revolut') {
+          await processDepositForPaymentFromJson(paidByLower, deduction);
+        }
+      } catch (depErr) { warnings.push((paidByLower === 'cash' ? 'Cash sheet: ' : 'Deposit total: ') + depErr.message); }
+
+      try {
+        await addRentalAmountToBikesSheetForMonthFromJson(data.bikeModel, deduction, monthName);
+      } catch (bikeErr) { warnings.push('Bikes sheet (income): ' + bikeErr.message); }
+    } catch (incomeErr) { warnings.push('Deduction income: ' + incomeErr.message); }
+  }
+
+  // 3. Cross-method release -- only when returnedVia is actually set AND
+  // differs from the category the deposit was originally held under.
+  const originalCategory = isCash ? 'cash' : (data.category || '').toString().trim().toLowerCase();
+  const returnedVia = (data.returnedVia || '').toString().trim().toLowerCase();
+  const crossAmount = Number(data.returnedViaAmount);
+  if (returnedVia && originalCategory && returnedVia !== originalCategory && !isNaN(crossAmount) && crossAmount > 0) {
+    try {
+      await releaseDepositIntoBucketFromJson(originalCategory, crossAmount, data.customerName || '', data.bikeModel || '');
+    } catch (releaseErr) { warnings.push('Releasing ' + originalCategory + ' deposit: ' + releaseErr.message); }
+    try {
+      await payDepositOutOfBucketFromJson(returnedVia, crossAmount, data.customerName || '', data.bikeModel || '');
+    } catch (payoutErr) { warnings.push('Paying out via ' + returnedVia + ': ' + payoutErr.message); }
+  }
+
+  const responsePayload = { success: true, incomeRow: incomeRowNum };
+  if (warnings.length) responsePayload.warning = warnings.join(' ');
+  return responsePayload;
+}
+// ================== end returnDeposit ==================
+
+// ================== long extension: closeBikeForExtend + customerIntake ==================
+// (ported 14/08/2026)
+// Ports Code.gs's two-step long-extension flow: closeBikeForExtend(),
+// followed by a plain customer-intake write (the SAME doPost default
+// branch a brand-new booking on customers.html's Add form hits -- see
+// confirmExtend()'s own client-side comment above the call sites below).
+// A long extension (the "Extend 1 month" checkbox, or 30+ days typed in)
+// doesn't push the due date on the existing row the way a short extension
+// does -- it closes that booking out (using its current due date,
+// UNCHANGED, as the point it ended) and starts a brand-new customer row
+// for the extension period instead, carrying the ledger note forward via
+// previousRowNumber.
+//
+// customerIntakeFromJson below is a duplicate of customers.html's own
+// function of the same name (per this project's per-file convention -- no
+// shared JS across pages), substituting this file's own already-existing
+// equivalents for a few small helpers (isoDateInputToSheetValue for
+// isoDateInputToCustomerValue, hhmmToSheetTimeValue for
+// timeInputToCustomerValue, todayIso() for isoYmdNowB(),
+// stripBikeNameBracketsB3 for stripBikeNameBracketsB, and the already-
+// existing generic flipMatchingContractStatus(name, bike, 'pending',
+// 'Rented') for markMatchingContractAsRentedFromJson -- same match logic,
+// no need for a second copy). Three genuinely NEW helpers are added below:
+// findRentedContractRowForBackfillFromJson and syncContractRowTotalsFromJson
+// (together implement the "never shrink the Contract row's total price"
+// failsafe -- DELIBERATELY separate from addAmountToContractRowFromJson
+// used by extendBike/swapBike above, see that failsafe's own comment) and
+// logSecurityDepositFromJson (skipped entirely for an extend-sourced
+// intake, per Code.gs's own `!isExtendSource` guard -- an extension never
+// logs a fresh security deposit).
+//
+// Deliberately NOT ported (same reasoning as every other write action on
+// this page): the shared bike-returns calendar sync
+// (syncCalendarForCustomerRow, both on the close-out and the new row), and
+// "paid from an existing deposit" (applyExtendDepositSpend_) -- surfaces
+// the same "not ported yet" warning customerIntakeFromJson's own
+// extend-source branch already emits.
+
+// ---- Ports closeBikeForExtend(data) (Code.gs) -- flips situation to
+// "Returned" only. Deliberately does NOT change the return date's value
+// (unlike a normal return) -- that date stays exactly where it was, since
+// it's the point this booking's original commitment ended; the extension
+// period is a whole new row. ----
+async function closeBikeForExtendFromJson(rowNumber) {
+  const rn = parseInt(rowNumber, 10);
+  if (!rn || rn < 2) throw new Error('Invalid row number.');
+  const { rows, modifiedTime } = await fetchSheetWithMeta('customer');
+  const idx = rn - 1;
+  if (!rows[idx]) throw new Error('Could not find row ' + rn + ' on the customer sheet -- it may have moved. Please reload and try again.');
+  const newRows = rows.map(r => r.slice());
+  const row = newRows[idx].slice();
+  while (row.length < 14) row.push('');
+  row[13] = 'Returned'; // N situation
+  newRows[idx] = row;
+  await writeSheetJson('customer', newRows, modifiedTime);
+  return { success: true };
+}
+
+// ---- Used just before syncContractRowTotalsFromJson, to apply the "never
+// shrink the Contract row's total price" failsafe Code.gs has. ----
+async function findRentedContractRowForBackfillFromJson(name, bikeModel) {
+  const { rows } = await fetchSheetWithMeta('Contract');
+  if (!rows || rows.length < 2) return null;
+  const nameTarget = normalizeNameForContractMatch(name);
+  const bikeTarget = (bikeModel || '').toString().trim();
+  if (!nameTarget) return null;
+  for (let i = rows.length - 1; i >= HEADER_ROWS_B; i--) {
+    const rowName = normalizeNameForContractMatch(rows[i][3]);
+    const rowBike = (rows[i][6] || '').toString().trim();
+    const rowStatus = (rows[i][16] || '').toString().trim().toLowerCase();
+    if (rowStatus !== 'rented') continue;
+    if (rowName !== nameTarget) continue;
+    if (bikeTarget && rowBike && !bikeNamesMatchForTaxLookup(rowBike, bikeTarget)) continue;
+    let totalPrice = Number(rows[i][11]);
+    if (isNaN(totalPrice)) totalPrice = 0;
+    return { row: i + 1, totalPrice };
+  }
+  return null;
+}
+
+// ---- Syncs the matching "Rented" Contract row's return date (column I)
+// and/or total price (column L) -- either can be omitted (pass
+// null/undefined for totalAmount to leave it alone). DELIBERATELY separate
+// from addAmountToContractRowFromJson (which ADDS onto the existing total,
+// used by extendBike/swapBike) -- this one OVERWRITES the total with
+// whatever the caller computed, same as customer-intake's own ledger-total
+// sync, since a long extension's new row is itself a fresh intake, not an
+// incremental add. ----
+async function syncContractRowTotalsFromJson(name, bikeModel, returnDateIso, totalAmount) {
+  const { rows, modifiedTime } = await fetchSheetWithMeta('Contract');
+  if (!rows || rows.length < 2) return { found: false };
+  const nameTarget = normalizeNameForContractMatch(name);
+  const bikeTarget = (bikeModel || '').toString().trim();
+  if (!nameTarget) return { found: false };
+  for (let i = rows.length - 1; i >= HEADER_ROWS_B; i--) {
+    const rowName = normalizeNameForContractMatch(rows[i][3]);
+    const rowBike = (rows[i][6] || '').toString().trim();
+    const rowStatus = (rows[i][16] || '').toString().trim().toLowerCase();
+    if (rowStatus !== 'rented') continue;
+    if (rowName !== nameTarget) continue;
+    if (bikeTarget && rowBike && !bikeNamesMatchForTaxLookup(rowBike, bikeTarget)) continue;
+    const newRows = rows.map(r => r.slice());
+    const row = newRows[i].slice();
+    while (row.length < 17) row.push('');
+    if (returnDateIso) row[8] = isoDateInputToSheetValue(returnDateIso);
+    if (totalAmount !== null && totalAmount !== undefined) row[11] = totalAmount;
+    newRows[i] = row;
+    await writeSheetJson('Contract', newRows, modifiedTime);
+    return { found: true, row: i + 1 };
+  }
+  return { found: false };
+}
+
+// ---- Logs a fresh security deposit onto the current month's tracking
+// table (bank/wise/revolut -- Cash/Passport/unrecognized are no-ops,
+// matching Code.gs). Skipped entirely for an extend-sourced intake (see
+// customerIntakeFromJson's own `!isExtendSource` guard below) -- an
+// extension never logs a brand-new deposit. ----
+async function logSecurityDepositFromJson(methodLower, rawAmount, customerName) {
+  const categoryKey = methodLower === 'scan' ? 'bank' : methodLower;
+  const cat = DEPOSIT_CATEGORIES_B.find(c => c.key === categoryKey);
+  if (!cat) return; // Cash/Passport/unrecognized -- nothing to log, matches Code.gs.
+
+  const now = new Date();
+  const monthName = DEPOSITS_MONTH_NAMES[now.getMonth()];
+  const year = now.getFullYear();
+  const { rows, modifiedTime } = await fetchSheetWithMeta(monthName, year);
+  if (!rows || !rows.length) throw new Error('No sheet found for the current month -- could not log the ' + methodLower + ' deposit.');
+
+  let targetIdx = -1;
+  for (let i = 1; i < rows.length; i++) {
+    const row = rows[i] || [];
+    const dateRaw = row[cat.dateCol - 1];
+    const dateLabel = (dateRaw || '').toString().trim().toLowerCase();
+    if (dateLabel === 'total') break;
+    const amtRaw = row[cat.amountCol - 1];
+    const nameRaw = row[cat.nameCol - 1];
+    const dateEmpty = dateRaw === '' || dateRaw === null || dateRaw === undefined;
+    const amtEmpty = amtRaw === '' || amtRaw === null || amtRaw === undefined;
+    const nameEmpty = nameRaw === '' || nameRaw === null || nameRaw === undefined;
+    if (dateEmpty && amtEmpty && nameEmpty) { targetIdx = i; break; }
+  }
+  if (targetIdx === -1) {
+    throw new Error('Could not find a free row above the totals row in the ' + methodLower + ' deposit section of "' + monthName + '" -- the deposit was NOT logged.');
+  }
+  const newRows = rows.map(r => r.slice());
+  const row = newRows[targetIdx].slice();
+  const maxCol = Math.max(cat.dateCol, cat.amountCol, cat.nameCol);
+  while (row.length < maxCol) row.push('');
+  row[cat.dateCol - 1] = isoDateInputToSheetValue(todayIso());
+  row[cat.amountCol - 1] = (Number(rawAmount) || rawAmount || '');
+  row[cat.nameCol - 1] = customerName || '';
+  newRows[targetIdx] = row;
+  await writeSheetJson(monthName, newRows, modifiedTime, year);
+}
+
+// ---- Ports customer-intake (Code.gs's doPost default branch) -- the SAME
+// write path a brand-new booking on customers.html's Add form hits. A
+// long extension routes through here too (data.source === 'extend',
+// data.previousRowNumber set) rather than through extendBikeRow's
+// incremental-add path, exactly mirroring Code.gs's own doPost dispatch
+// (no `action` field on this payload falls through to this default
+// branch). See customers.html's own copy of this function for the
+// original, more detailed comments. ----
+async function customerIntakeFromJson(data) {
+  const name = (data.name || '').toString().trim();
+  if (!name) throw new Error('Name is required.');
+  data.bikeModel = stripBikeNameBracketsB3(data.bikeModel);
+  const isExtendSource = (data.source || '').toString().trim().toLowerCase() === 'extend';
+
+  const { rows: custRows, modifiedTime: custModifiedTime } = await fetchSheetWithMeta('customer');
+  const newRows = (custRows || []).map(r => r.slice());
+  const newRow = new Array(16).fill('');
+  newRow[0] = isoDateInputToSheetValue(todayIso());
+  newRow[1] = data.contact || '';
+  newRow[2] = name;
+  newRow[3] = data.nationality || '';
+  newRow[4] = data.passport || '';
+  newRow[5] = data.bikeModel || '';
+  newRow[6] = '';
+  newRow[7] = isoDateInputToSheetValue(data.rentingDateFrom);
+  newRow[8] = isoDateInputToSheetValue(data.returnDate);
+  newRow[9] = hhmmToSheetTimeValue(data.returnTime);
+  newRow[10] = data.deliverToHotel || '';
+  newRow[11] = data.totalPrice || '';
+  newRow[12] = data.paidBy || '';
+  newRow[13] = '';
+  newRow[14] = data.deposit || '';
+  newRow[15] = isExtendSource ? 'Extend' : 'Direct';
+  newRows.push(newRow);
+  const newRowNumber = newRows.length;
+  await writeSheetJson('customer', newRows, custModifiedTime);
+
+  let dayCount = null;
+  if (data.rentingDateFrom && data.returnDate) {
+    const from = new Date(data.rentingDateFrom + 'T00:00:00');
+    const to = new Date(data.returnDate + 'T00:00:00');
+    if (!isNaN(from) && !isNaN(to)) dayCount = Math.round((to - from) / (1000 * 60 * 60 * 24));
+  }
+
+  const warnings = [];
+  let ledgerTotals = null;
+  try {
+    let carriedNote = null;
+    if (isExtendSource && data.previousRowNumber) {
+      const previousRowNumber = parseInt(data.previousRowNumber, 10);
+      if (previousRowNumber && previousRowNumber >= 2) {
+        const { rows: prevNoteRows } = await fetchSheetWithMeta('customer_notes');
+        const prevEntry = (prevNoteRows || []).find(n => n[0] === previousRowNumber && n[1] === LEDGER_CONTACT_COL_B);
+        carriedNote = prevEntry ? (prevEntry[2] || '') : '';
+      }
+    }
+    const ledgerFromDmy = formatDmyJson(decodeSheetDate(newRow[7])) || '';
+    const ledgerToDmy = formatDmyJson(decodeSheetDate(newRow[8])) || '';
+    const ledgerDays = dayCount != null ? dayCount : 0;
+    const ledgerAmount = Number(data.totalPrice) || 0;
+    ledgerTotals = await appendLedgerEntryFromJson(newRowNumber, data.bikeModel, ledgerFromDmy, ledgerToDmy, ledgerDays, ledgerAmount, ledgerDays, ledgerAmount, carriedNote, !!data.isDeal);
+  } catch (ledgerErr) { warnings.push('Ledger note: ' + ledgerErr.message); }
+
+  try { await appendMonthlyIncomeRowFromJson(data, dayCount); }
+  catch (incomeErr) { warnings.push('Income sheet: ' + incomeErr.message); }
+
+  try {
+    if ((data.paidBy || '').toString().trim().toLowerCase() === 'cash') {
+      await appendCashSheetRowFromJson(buildRentalIncomeTextB(data, dayCount), data.totalPrice);
+    }
+  } catch (cashErr) { warnings.push('Cash sheet: ' + cashErr.message); }
+
+  try { await addRentalAmountToBikesSheetFromJson(data.bikeModel, data.totalPrice); }
+  catch (bikesErr) { warnings.push(bikesErr.message); }
+
+  try {
+    const paidByLower = (data.paidBy || '').toString().trim().toLowerCase();
+    if (paidByLower === 'wise' || paidByLower === 'revolut') {
+      await processDepositForPaymentFromJson(paidByLower, data.totalPrice);
+    }
+  } catch (depositErr) { warnings.push(depositErr.message); }
+
+  try {
+    const depositMethodLower = (data.deposit || '').toString().trim().toLowerCase();
+    if (!isExtendSource && (depositMethodLower === 'scan' || depositMethodLower === 'wise' || depositMethodLower === 'revolut')) {
+      await logSecurityDepositFromJson(depositMethodLower, data.depositAmount, name);
+    }
+  } catch (secDepErr) { warnings.push(secDepErr.message); }
+
+  if (isExtendSource && data.paidFromDeposit) {
+    warnings.push('This extension was marked as paid from an existing deposit, but drawing that down automatically is not ported yet -- please adjust the deposit log by hand.');
+  }
+
+  try { await flipMatchingContractStatus(name, data.bikeModel, 'pending', 'Rented'); }
+  catch (contractStatusErr) { warnings.push('Contract status update: ' + contractStatusErr.message); }
+
+  try {
+    if (ledgerTotals) {
+      const newContractTotal = ledgerTotals.totalAmount;
+      const existingMatch = await findRentedContractRowForBackfillFromJson(name, data.bikeModel);
+      if (existingMatch && newContractTotal < existingMatch.totalPrice) {
+        await syncContractRowTotalsFromJson(name, data.bikeModel, data.returnDate, null);
+        warnings.push('Contract totals sync: computed running total (฿' + newContractTotal +
+          ') is LESS than Contract row ' + existingMatch.row + '\'s current total price (฿' + existingMatch.totalPrice +
+          ') -- skipped overwriting the total price to avoid shrinking it. Please check this customer\'s ledger note by hand.');
+      } else {
+        await syncContractRowTotalsFromJson(name, data.bikeModel, data.returnDate, newContractTotal);
+      }
+    }
+  } catch (contractSyncErr) { warnings.push('Contract totals sync: ' + contractSyncErr.message); }
+
+  const responsePayload = { success: true, row: newRowNumber };
+  if (warnings.length) responsePayload.warning = warnings.join(' ');
+  return responsePayload;
+}
+// ================== end long extension ==================
 // ================== end JSON-backed WRITE actions ==================
 
 // ================== end JSON-backed data layer ==================
@@ -3250,21 +4472,14 @@ function confirmReturn(rowNumber, isoDate, depositMatch, deductionAmount, reason
   // own comment in Code.gs), so ticking the box and leaving it at 0 is
   // still just a normal return, just routed through the one action that
   // already knows how to handle either case.
-  const body = isEarlyReturn
-    ? { action: 'earlyReturnBike', rowNumber: rowNumber, returnDate: isoDate, refundAmount: refundAmount, refundPaidBy: refundPaidBy }
-    : { action: 'markReturned', rowNumber: rowNumber, returnDate: isoDate };
-
-  // earlyReturnBike (refund math + ledger/Contract/bikes-sheet cascade)
-  // isn't ported yet -- see the JSON-backed WRITE actions block's scope
-  // note above -- so that path still goes through the old (disconnected)
-  // scriptUrl and fails cleanly below rather than silently doing the wrong
-  // thing. A plain return (markReturned) is fully ported.
+  // A normal return (unticked) still goes through performMarkReturned;
+  // an early return (ticked, refund or not) goes through
+  // earlyReturnBikeFromJson -- see that function's own block comment for
+  // the full refund/ledger/Contract/bikes-sheet cascade.
   const writePromise = isEarlyReturn
-    ? fetch(scriptUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify(body)
-      }).then(res => res.json())
+    ? Promise.resolve().then(() => earlyReturnBikeFromJson({
+        rowNumber: rowNumber, returnDate: isoDate, refundAmount: refundAmount, refundPaidBy: refundPaidBy
+      }))
     : performMarkReturned(rowNumber, isoDate);
 
   writePromise
@@ -3350,12 +4565,7 @@ function submitReturnDeposit(depositMatch, deductionAmount, reason, customerName
     body.returnedVia = 'cash';
     body.returnedViaAmount = depositMatch.amount;
   }
-  fetch(scriptUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify(body)
-  })
-    .then(res => res.json())
+  Promise.resolve().then(() => returnDepositFromJson(body))
     .then(result => {
       if (!result.success) {
         alert('Bike marked returned, but the deposit could not be processed: ' + (result.error || 'unknown error'));
@@ -3499,12 +4709,7 @@ function confirmExtend(rowNumber, daysToExtend, amountPaid, extendMonth, paidBy,
     // as it sits on the sheet right now; there's currently no in-app edit
     // for a customer-sheet row, so if anything here turns out wrong,
     // fix it on the sheet directly.
-    fetch(scriptUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({ action: 'closeBikeForExtend', rowNumber: rowNumber })
-    })
-      .then(res => res.json())
+    Promise.resolve().then(() => closeBikeForExtendFromJson(rowNumber))
       .then(closeResult => {
         if (!closeResult.success) throw new Error(closeResult.error || 'Could not close out the old booking.');
         // Post-write verification problems come back as a warning -- the
@@ -3548,12 +4753,7 @@ function confirmExtend(rowNumber, daysToExtend, amountPaid, extendMonth, paidBy,
           payload.depositRow = depositCategory === 'cash' ? '' : Number(depositRow);
         }
 
-        return fetch(scriptUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-          body: JSON.stringify(payload)
-        })
-          .then(res => res.json())
+        return Promise.resolve().then(() => customerIntakeFromJson(payload))
           .then(addResult => {
             if (!addResult.success) throw new Error(addResult.error || 'Could not save the extension.');
             const warnings = [closeWarning, addResult.warning].filter(Boolean);
@@ -4472,11 +5672,7 @@ function submitSwap() {
   renderSwapModal();
   setAllButtonsDisabled(true);
 
-  fetch(scriptUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify({
-      action: 'swapBike',
+  Promise.resolve().then(() => swapBikeFromJson({
       rowNumber: swapModalRowNumber,
       newBikeModel: swapDraft.newBike,
       returnAmount: swapDraft.returnAmount,
@@ -4484,9 +5680,7 @@ function submitSwap() {
       returnDate: todayIso(),
       additionalAmount: swapDraft.upgradeChecked ? swapDraft.additionalAmount : 0,
       additionalPaidBy: swapDraft.upgradeChecked ? swapDraft.additionalPaidBy : ''
-    })
-  })
-    .then(res => res.json())
+    }))
     .then(result => {
       setAllButtonsDisabled(false);
       if (!result.success) throw new Error(result.error || 'Could not save.');
