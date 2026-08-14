@@ -300,6 +300,852 @@
 <script>
 const scriptUrl = ''; // DISCONNECTED: this Vercel copy is intentionally not wired to the live backend (dev/testing only, see project CLAUDE.md)
 
+// ================== JSON-backed data layer (ported 13/08/2026) ==================
+// Reads: this page's two GETs (action=deposits, and the bare fetch(scriptUrl)
+// autofillDeductBike uses) -- same pattern/functions as bikes.html/
+// customers.html. Writes: addDeposit/editDeposit/deleteDeposit are ported
+// this pass too (simple single-row cell writes, no cascading math). NOT
+// ported: deductDeposit and deductCashDeposit -- both are genuinely
+// multi-step cascades (consumeDeposit's running-balance math, an Income
+// row, Wise/Revolut running-total updates, a Bikes-sheet earnings bump,
+// and a best-effort Contract-row mirror, all in one action) -- deliberately
+// left for a dedicated pass rather than rushed through alongside the
+// simpler actions on this page. Both still hit the old (disconnected)
+// scriptUrl and fail cleanly.
+const depositsJsonCache = {};
+function fetchSheetJson(sheetName, year) {
+  const cacheKey = year ? `${year}/${sheetName}` : sheetName;
+  const url = year
+    ? `/api/data/${encodeURIComponent(sheetName)}?year=${encodeURIComponent(year)}`
+    : `/api/data/${encodeURIComponent(sheetName)}`;
+  if (!depositsJsonCache[cacheKey]) {
+    depositsJsonCache[cacheKey] = fetch(url).then(r => {
+      if (r.status === 401) throw new Error('Signed out -- please refresh to sign in again.');
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    }).then(res => {
+      if (!res.success) throw new Error(res.error || 'Could not load data.');
+      return res.rows || [];
+    }).catch(err => {
+      // A cached PROMISE stays truthy whether it resolved or rejected --
+      // clear the entry on failure so the next call actually retries
+      // instead of replaying the same stale failure forever.
+      delete depositsJsonCache[cacheKey];
+      throw err;
+    });
+  }
+  return depositsJsonCache[cacheKey];
+}
+function decodeSheetDate(val) {
+  if (val === null || val === undefined) return null;
+  if (typeof val !== 'string') return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(val)) {
+    const m = val.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  }
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(val)) {
+    const m = val.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/);
+    return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6]));
+  }
+  return null;
+}
+function pad2Json(n) { return String(n).padStart(2, '0'); }
+function formatDmyJson(date) {
+  if (!date) return '';
+  return pad2Json(date.getDate()) + '/' + pad2Json(date.getMonth() + 1) + '/' + date.getFullYear();
+}
+function customerCellToString(key, val) {
+  if (val === null || val === undefined) return '';
+  if (typeof val === 'string' && key === 'returnTime' && /^\d{2}:\d{2}:\d{2}/.test(val)) {
+    return val.slice(0, 5);
+  }
+  const d = decodeSheetDate(val);
+  if (d) return formatDmyJson(d);
+  return String(val);
+}
+function depositsCellToString(val) {
+  if (val === null || val === undefined) return '';
+  const d = decodeSheetDate(val);
+  if (d) return formatDmyJson(d);
+  return String(val);
+}
+function normalizeNameForContractMatch(name) {
+  return (name || '').toString().toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+function normalizeBikeNameForTaxLookup(s) {
+  return (s || '').toString().toLowerCase().replace(/[()]/g, ' ').replace(/[^a-z0-9]+/g, ' ').trim().replace(/\s+/g, ' ');
+}
+function normalizeBikeNameCore(s) {
+  let t = (s || '').toString().toLowerCase();
+  t = t.replace(/\(\s*\d{2,4}\s*cc?\s*\)/gi, ' ');
+  t = t.replace(/\b\d{2,4}\s?cc\b/gi, ' ');
+  t = t.replace(/[()]/g, ' ');
+  t = t.replace(/\b(yamaha|honda|gpx)\b/gi, ' ');
+  t = t.replace(/[^a-z0-9]+/g, ' ').trim().replace(/\s+/g, ' ');
+  return t;
+}
+function bikeNamesMatchForTaxLookup(a, b) {
+  const na = normalizeBikeNameForTaxLookup(a);
+  const nb = normalizeBikeNameForTaxLookup(b);
+  if (na && nb) {
+    if (na === nb) return true;
+    const paddedA = ' ' + na + ' ', paddedB = ' ' + nb + ' ';
+    if (paddedA.indexOf(paddedB) !== -1 || paddedB.indexOf(paddedA) !== -1) return true;
+  }
+  const ca = normalizeBikeNameCore(a), cb = normalizeBikeNameCore(b);
+  if (!ca || !cb) return false;
+  if (ca === cb) return true;
+  const paddedCa = ' ' + ca + ' ', paddedCb = ' ' + cb + ' ';
+  return paddedCa.indexOf(paddedCb) !== -1 || paddedCb.indexOf(paddedCa) !== -1;
+}
+const HEADER_ROWS_B = 1;
+const LEDGER_CONTACT_COL_B = 2;
+function buildContractChatNameLookup(contractRows2D) {
+  const rows = [];
+  for (let i = HEADER_ROWS_B; i < contractRows2D.length; i++) {
+    const r = contractRows2D[i];
+    rows.push({
+      rowNumber: i + 1,
+      name: normalizeNameForContractMatch(r[3]),
+      bikeModel: (r[6] || '').toString().trim(),
+      number: (r[2] || '').toString().trim(),
+      chatName: (r[25] || '').toString().trim(),
+      status: (r[16] || '').toString().trim().toLowerCase(),
+      totalPrice: r[11],
+      paidBy: (r[12] || '').toString().trim(),
+      deposit: (r[13] || '').toString().trim(),
+      depositAmount: r[14],
+      depositCurrency: (r[26] || '').toString().trim(),
+      deliveryLink: (r[23] || '').toString().trim(),
+      contact: (r[1] || '').toString().trim(),
+      messengerId: (r[35] || '').toString().trim()
+    });
+  }
+  return rows;
+}
+function buildContractLookupIndex(contractLookupRows) {
+  const index = {};
+  for (const row of contractLookupRows) {
+    if (!row.name) continue;
+    if (!index[row.name]) index[row.name] = [];
+    index[row.name].push(row);
+  }
+  return index;
+}
+function lookupContractInfoForCustomerRowIndexed(contractIndex, name, bikeModel) {
+  const result = { chatName: '', number: '', contactMethod: '', messengerId: '', financials: null, rowNumber: null };
+  const nameTarget = normalizeNameForContractMatch(name);
+  if (!nameTarget) return result;
+  const bikeTarget = (bikeModel || '').toString().trim();
+  const candidateRows = contractIndex[nameTarget];
+  if (!candidateRows || !candidateRows.length) return result;
+
+  let needChatName = true, needNumber = true, needContactMethod = true, needMessengerId = true, needRented = true;
+  for (let i = candidateRows.length - 1; i >= 0 && (needChatName || needNumber || needContactMethod || needMessengerId || needRented); i--) {
+    const row = candidateRows[i];
+    if (bikeTarget && row.bikeModel && !bikeNamesMatchForTaxLookup(row.bikeModel, bikeTarget)) continue;
+    if (needChatName && row.chatName) { result.chatName = row.chatName; needChatName = false; }
+    if (needNumber && row.number) { result.number = row.number; needNumber = false; }
+    if (needContactMethod && row.contact) { result.contactMethod = row.contact; needContactMethod = false; }
+    if (needMessengerId && row.messengerId) { result.messengerId = row.messengerId; needMessengerId = false; }
+    if (needRented && row.status === 'rented') {
+      result.financials = { totalPrice: row.totalPrice, paidBy: row.paidBy, deposit: row.deposit, depositAmount: row.depositAmount, depositCurrency: row.depositCurrency, deliveryLink: row.deliveryLink };
+      result.rowNumber = row.rowNumber;
+      needRented = false;
+    }
+  }
+  return result;
+}
+function parseLedgerTotal(noteText) {
+  const m = (noteText || '').toString().match(/Total:\s*([\d.]+)\s*days?,\s*฿\s*([\d,]+(?:\.\d+)?)\s*$/i);
+  if (!m) return { days: 0, amount: 0 };
+  return { days: Number(m[1]) || 0, amount: Number(m[2].replace(/,/g, '')) || 0 };
+}
+// ---- Ports the doGet default branch -- used by autofillDeductBike to find
+// a customer's current bike by name. Same shape as bikes.html/customers.html's
+// identical function. ----
+async function getCustomerRowsFromJson() {
+  const [customerRows2D, contractRows2D, customerNotes] = await Promise.all([
+    fetchSheetJson('customer'),
+    fetchSheetJson('Contract'),
+    fetchSheetJson('customer_notes').catch(() => [])
+  ]);
+  const keys = ['timestamp', 'contact', 'name', 'nationality', 'passport', 'bikeModel',
+    'status', 'rentingDateFrom', 'returnDate', 'returnTime', 'deliverToHotel',
+    'totalPrice', 'paidBy', 'situation'];
+  const noteByRow = new Map();
+  (customerNotes || []).forEach(([r, c, t]) => { if (c === LEDGER_CONTACT_COL_B) noteByRow.set(r, t); });
+  const contractLookupRows = buildContractChatNameLookup(contractRows2D || []);
+  const contractLookupIndex = buildContractLookupIndex(contractLookupRows);
+  const dataRows = (customerRows2D || []).slice(HEADER_ROWS_B);
+  const rows = dataRows.map((row, i) => {
+    const obj = {};
+    keys.forEach((k, ki) => { obj[k] = customerCellToString(k, row[ki]); });
+    obj.confirmedReturnDate = customerCellToString('confirmedReturnDate', row[18]);
+    const contractInfo = lookupContractInfoForCustomerRowIndexed(contractLookupIndex, obj.name, obj.bikeModel);
+    obj.chatName = contractInfo.chatName;
+    obj.number = contractInfo.number;
+    obj.contactMethod = contractInfo.contactMethod;
+    obj.messengerId = contractInfo.messengerId;
+    const cf = contractInfo.financials;
+    obj.contractTotalPrice = cf ? customerCellToString('contractTotalPrice', cf.totalPrice) : '';
+    obj.contractPaidBy = cf ? (cf.paidBy || '') : '';
+    obj.deposit = cf ? (cf.deposit || '') : '';
+    obj.depositAmount = cf ? customerCellToString('depositAmount', cf.depositAmount) : '';
+    obj.depositCurrency = cf ? (cf.depositCurrency || '') : '';
+    obj.deliveryLink = cf ? (cf.deliveryLink || '') : '';
+    obj.pickupLink = (row[19] || '').toString().trim();
+    const sheetRow = HEADER_ROWS_B + i + 1;
+    obj.rowNumber = sheetRow;
+    const ledgerTotalForRow = parseLedgerTotal(noteByRow.get(sheetRow) || '');
+    obj.ledgerTotalDays = ledgerTotalForRow.days > 0 ? String(ledgerTotalForRow.days) : '';
+    return obj;
+  }).filter(r => r.name !== '');
+  return { success: true, rows };
+}
+
+const DEPOSIT_CATEGORIES_B = [
+  { key: 'bank', label: 'Bank', header: 'deposit scan', dateCol: 15, amountCol: 16, nameCol: 17 },
+  { key: 'wise', label: 'Wise', header: 'deposit wise', dateCol: 18, amountCol: 19, nameCol: 20 },
+  { key: 'revolut', label: 'Revolut', header: 'deposit revolut', dateCol: 22, amountCol: 23, nameCol: 24 }
+];
+const DEPOSITS_MONTH_NAMES = ['January', 'February', 'march', 'april', 'may', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December'];
+
+async function getDepositsDataFromJson() {
+  const now = new Date();
+  const currentMonthIndex = now.getMonth();
+  const monthName = DEPOSITS_MONTH_NAMES[currentMonthIndex];
+  const year = now.getFullYear();
+  try {
+    const monthRows2D = await fetchSheetJson(monthName, year);
+    if (!monthRows2D) {
+      return { success: false, error: 'No sheet found matching "' + monthName + '" -- could not load this month\'s deposits.' };
+    }
+    function norm(s) { return (s || '').toString().trim().toLowerCase(); }
+    function cell(row, col) {
+      const r = monthRows2D[row - 1];
+      return r ? r[col - 1] : undefined;
+    }
+    const deposits = [];
+    const warnings = [];
+    const maxRow = monthRows2D.length;
+    DEPOSIT_CATEGORIES_B.forEach(cat => {
+      const headerRaw = cell(1, cat.dateCol);
+      if (norm(headerRaw) !== cat.header) {
+        warnings.push('"' + monthName + '" sheet: expected "' + cat.header + '" in column ' + cat.dateCol + ', row 1 but found "' + (headerRaw || '(blank)') + '" -- skipped this section, please go have a look.');
+        return;
+      }
+      for (let row = 2; row <= maxRow; row++) {
+        const dateRaw = cell(row, cat.dateCol);
+        if (norm(dateRaw) === 'total') break;
+        const amtRaw = cell(row, cat.amountCol);
+        const nameRaw = cell(row, cat.nameCol);
+        const dateEmpty = (dateRaw === '' || dateRaw === null || dateRaw === undefined);
+        const amtEmpty = (amtRaw === '' || amtRaw === null || amtRaw === undefined);
+        const nameEmpty = (nameRaw === '' || nameRaw === null || nameRaw === undefined);
+        if (dateEmpty && amtEmpty && nameEmpty) continue;
+        deposits.push({
+          row, category: cat.key, categoryLabel: cat.label,
+          date: depositsCellToString(dateRaw),
+          amount: (amtEmpty || isNaN(Number(amtRaw))) ? '' : Number(amtRaw),
+          name: (nameRaw || '').toString().trim()
+        });
+      }
+    });
+    const summary = {};
+    DEPOSIT_CATEGORIES_B.forEach(cat => {
+      const entry = {};
+      const totalLabelRaw = cell(15, cat.dateCol);
+      if (norm(totalLabelRaw).indexOf('total') === 0) {
+        const v = cell(15, cat.amountCol);
+        entry.total = { label: depositsCellToString(totalLabelRaw), value: (v === null || v === undefined || v === '') ? '' : Number(v).toLocaleString('en-US', { maximumFractionDigits: 2 }) };
+      } else {
+        warnings.push('"' + monthName + '" sheet: expected a "total" label at column ' + cat.dateCol + ', row 15 for ' + cat.label + ' but found "' + (totalLabelRaw || '(blank)') + '" -- ' + cat.label + ' total not shown.');
+      }
+      if (cat.key !== 'bank') {
+        const rtLabelRaw = cell(16, cat.dateCol);
+        if (norm(rtLabelRaw).indexOf('total') === 0) {
+          const v = cell(16, cat.amountCol);
+          entry.runningTotal = { label: depositsCellToString(rtLabelRaw), value: (v === null || v === undefined || v === '') ? '' : Number(v).toLocaleString('en-US', { maximumFractionDigits: 2 }) };
+        } else {
+          warnings.push('"' + monthName + '" sheet: expected a running-total label at column ' + cat.dateCol + ', row 16 for ' + cat.label + ' but found "' + (rtLabelRaw || '(blank)') + '" -- ' + cat.label + ' running total not shown.');
+        }
+      }
+      summary[cat.key] = entry;
+    });
+    return { success: true, monthIndex: currentMonthIndex, month: monthName, sheetName: monthName, deposits, summary, warnings };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+}
+
+// ---- WRITE plumbing -- same read-modify-write-with-conflict-detection
+// pattern as bikes.html. ----
+async function fetchSheetWithMeta(sheetName, year) {
+  const url = year
+    ? `/api/data/${encodeURIComponent(sheetName)}?year=${encodeURIComponent(year)}`
+    : `/api/data/${encodeURIComponent(sheetName)}`;
+  const r = await fetch(url);
+  if (r.status === 401) throw new Error('Signed out -- please refresh to sign in again.');
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  const res = await r.json();
+  if (!res.success) throw new Error(res.error || 'Could not load data.');
+  return { rows: res.rows || [], modifiedTime: res.modifiedTime || null };
+}
+async function writeSheetJson(sheetName, rows, expectedModifiedTime, year) {
+  const url = year
+    ? `/api/data/${encodeURIComponent(sheetName)}?year=${encodeURIComponent(year)}`
+    : `/api/data/${encodeURIComponent(sheetName)}`;
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ rows, expectedModifiedTime })
+  });
+  const res = await r.json().catch(() => ({}));
+  if (r.status === 409) {
+    throw new Error(res.error || 'This record was changed by someone else in the meantime -- please reload and try again.');
+  }
+  if (!r.ok || !res.success) throw new Error(res.error || ('HTTP ' + r.status));
+  const cacheKey = year ? `${year}/${sheetName}` : sheetName;
+  delete depositsJsonCache[cacheKey];
+  return res;
+}
+function isoDateInputToSheetValue(isoDate) {
+  const m = String(isoDate || '').trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return null;
+  return `${m[1]}-${m[2]}-${m[3]}T00:00:00`;
+}
+function todaySheetDateValue() {
+  const now = new Date();
+  return `${now.getFullYear()}-${pad2Json(now.getMonth() + 1)}-${pad2Json(now.getDate())}T00:00:00`;
+}
+function currentDepositsMonthYear() {
+  const now = new Date();
+  return { monthName: DEPOSITS_MONTH_NAMES[now.getMonth()], year: now.getFullYear() };
+}
+// Validates row 1's label at cat.dateCol against cat.header, same check
+// locateDepositHeaderRow does server-side -- throws (writes nothing) if the
+// column's moved/been retyped, rather than silently writing into the wrong
+// place.
+function assertDepositHeader(rows2D, cat, monthName, failureNote) {
+  const raw = rows2D[0] ? rows2D[0][cat.dateCol - 1] : undefined;
+  const norm = (raw || '').toString().trim().toLowerCase();
+  if (norm !== cat.header) {
+    throw new Error('"' + monthName + '" sheet: expected "' + cat.header + '" in column ' + cat.dateCol +
+      ', row 1 but found "' + (raw || '(blank)') + '" -- ' + failureNote + '.');
+  }
+}
+
+// ---- Ports addDepositEntry(). data: { category, date (yyyy-mm-dd or ''),
+// name, amount }. Finds the first free gap row above the totals row and
+// writes date/amount/name there -- nothing else on the sheet is touched. ----
+async function addDepositEntryJson(data) {
+  const cat = DEPOSIT_CATEGORIES_B.find(c => c.key === data.category);
+  if (!cat) throw new Error('Unrecognized deposit category "' + data.category + '".');
+  const amount = (data.amount === '' || data.amount === undefined || data.amount === null) ? NaN : Number(data.amount);
+  if (isNaN(amount) || amount <= 0) throw new Error('Enter a valid deposit amount.');
+  const name = (data.name || '').toString().trim();
+
+  const { monthName, year } = currentDepositsMonthYear();
+  const { rows, modifiedTime } = await fetchSheetWithMeta(monthName, year);
+  assertDepositHeader(rows, cat, monthName, 'the deposit was NOT added');
+
+  let targetRow = null;
+  for (let i = 1; i < rows.length; i++) {
+    const dateRaw = rows[i][cat.dateCol - 1];
+    if ((dateRaw || '').toString().trim().toLowerCase() === 'total') break;
+    const dateEmpty = dateRaw === '' || dateRaw === null || dateRaw === undefined;
+    const amtRaw = rows[i][cat.amountCol - 1];
+    const amtEmpty = amtRaw === '' || amtRaw === null || amtRaw === undefined;
+    const nameRaw = rows[i][cat.nameCol - 1];
+    const nameEmpty = nameRaw === '' || nameRaw === null || nameRaw === undefined;
+    if (dateEmpty && amtEmpty && nameEmpty) { targetRow = i + 1; break; } // 1-indexed sheet row
+  }
+  if (!targetRow) {
+    throw new Error('Could not find a free row above the totals row in the ' + cat.label +
+      ' deposit section of "' + monthName + '" -- the deposit was NOT added.');
+  }
+
+  const newRows = rows.map(r => r.slice());
+  const rowIdx = targetRow - 1; // back to 0-indexed array position
+  while (newRows.length <= rowIdx) newRows.push([]);
+  newRows[rowIdx][cat.dateCol - 1] = data.date ? isoDateInputToSheetValue(data.date) : todaySheetDateValue();
+  newRows[rowIdx][cat.amountCol - 1] = amount;
+  newRows[rowIdx][cat.nameCol - 1] = name;
+
+  await writeSheetJson(monthName, newRows, modifiedTime, year);
+  return { success: true, row: targetRow };
+}
+
+// ---- Ports editDepositEntry(). data: { category, row, date, name, amount }.
+// Overwrites ONLY those three cells on the given row -- a manual correction,
+// not a running-total transaction. ----
+async function editDepositEntryJson(data) {
+  const cat = DEPOSIT_CATEGORIES_B.find(c => c.key === data.category);
+  if (!cat) throw new Error('Unrecognized deposit category "' + data.category + '".');
+  const row = Math.round(Number(data.row));
+  if (!row || row < 2) throw new Error('Invalid deposit row.');
+
+  const { monthName, year } = currentDepositsMonthYear();
+  const { rows, modifiedTime } = await fetchSheetWithMeta(monthName, year);
+  assertDepositHeader(rows, cat, monthName, 'the deposit was NOT changed');
+
+  const rowIdx = row - 1;
+  const existingDate = rows[rowIdx] ? rows[rowIdx][cat.dateCol - 1] : undefined;
+  if ((existingDate || '').toString().trim().toLowerCase() === 'total') {
+    throw new Error('That row is the "' + cat.label + '" totals row, not a deposit -- it was NOT changed.');
+  }
+
+  const newAmount = (data.amount === '' || data.amount === undefined || data.amount === null) ? null : Number(data.amount);
+  if (newAmount !== null && isNaN(newAmount)) throw new Error('Invalid amount.');
+  const newName = (data.name || '').toString().trim();
+  const newDate = data.date ? isoDateInputToSheetValue(data.date) : null;
+
+  const newRows = rows.map(r => r.slice());
+  newRows[rowIdx][cat.dateCol - 1] = newDate;
+  newRows[rowIdx][cat.amountCol - 1] = newAmount;
+  newRows[rowIdx][cat.nameCol - 1] = newName;
+
+  await writeSheetJson(monthName, newRows, modifiedTime, year);
+  return { success: true };
+}
+
+// ---- Ports deleteDepositEntry(). data: { category, row }. Clears the
+// date/amount/name cells back to blank -- same three cells editDepositEntry
+// touches, nothing else. ----
+async function deleteDepositEntryJson(data) {
+  const cat = DEPOSIT_CATEGORIES_B.find(c => c.key === data.category);
+  if (!cat) throw new Error('Unrecognized deposit category "' + data.category + '".');
+  const row = Math.round(Number(data.row));
+  if (!row || row < 2) throw new Error('Invalid deposit row.');
+
+  const { monthName, year } = currentDepositsMonthYear();
+  const { rows, modifiedTime } = await fetchSheetWithMeta(monthName, year);
+  assertDepositHeader(rows, cat, monthName, 'the deposit was NOT removed');
+
+  const rowIdx = row - 1;
+  const existingDate = rows[rowIdx] ? rows[rowIdx][cat.dateCol - 1] : undefined;
+  if ((existingDate || '').toString().trim().toLowerCase() === 'total') {
+    throw new Error('That row is the "' + cat.label + '" totals row, not a deposit -- it was NOT removed.');
+  }
+
+  const newRows = rows.map(r => r.slice());
+  newRows[rowIdx][cat.dateCol - 1] = null;
+  newRows[rowIdx][cat.amountCol - 1] = null;
+  newRows[rowIdx][cat.nameCol - 1] = null;
+
+  await writeSheetJson(monthName, newRows, modifiedTime, year);
+  return { success: true };
+}
+// ================== end JSON-backed data layer ==================
+
+// ================== WRITE layer: deductDeposit / deductCashDeposit (ported 14/08/2026) ==================
+// Both mirror Code.gs's deductDepositEntry/deductCashDeposit exactly,
+// including their deliberately different write scopes: deductDeposit
+// touches the deposit tracking row, an Income row, the Wise/Revolut
+// running total, the bikes-sheet monthly earnings, AND best-effort mirrors
+// onto the matching Contract row's deposit amount; deductCashDeposit
+// writes ONLY the Contract row (per Anton: cash deposits are never logged
+// as their own row anywhere else, the Contract cell IS the record).
+
+const DEPOSIT_CATEGORY_PAID_BY_B = { bank: 'Scan', wise: 'Wise', revolut: 'Revolut' };
+
+// FIFTH bike-name matcher in this codebase (see add-bikes.html's comment
+// on the four others) -- mirrors Code.gs's bikeNamesMatchForRentalLog.
+// Used only for finding a bike's row on the "bikes" sheet for the
+// running-total bump below.
+function normalizeBikeNameForRentalLogB(s) {
+  return (s || '').toString().toLowerCase().replace(/[()]/g, ' ').replace(/[^a-z0-9]+/g, ' ').trim().replace(/\s+/g, ' ');
+}
+const RENTAL_LOG_DISTINGUISHING_SUFFIXES_B = {
+  one: 1, two: 1, three: 1, four: 1, five: 1, six: 1, seven: 1, eight: 1, nine: 1, ten: 1,
+  i: 1, ii: 1, iii: 1, iv: 1, v: 1, vi: 1, vii: 1, viii: 1, ix: 1, x: 1,
+  '1': 1, '2': 1, '3': 1, '4': 1, '5': 1, '6': 1, '7': 1, '8': 1, '9': 1, '10': 1
+};
+function bikeNamesMatchForRentalLogB(a, b) {
+  const na = normalizeBikeNameForRentalLogB(a), nb = normalizeBikeNameForRentalLogB(b);
+  if (!na || !nb) return false;
+  if (na === nb) return true;
+  const ta = na.split(' '), tb = nb.split(' ');
+  const shorter = ta.length <= tb.length ? ta : tb;
+  const longer = ta.length <= tb.length ? tb : ta;
+  let isPrefix = true;
+  for (let i = 0; i < shorter.length; i++) { if (shorter[i] !== longer[i]) { isPrefix = false; break; } }
+  if (isPrefix) {
+    const extra = longer.slice(shorter.length);
+    for (let j = 0; j < extra.length; j++) { if (RENTAL_LOG_DISTINGUISHING_SUFFIXES_B[extra[j]]) return false; }
+    return true;
+  }
+  // KNOWN QUIRK (inherited from Code.gs -- see customers.html's identical
+  // comment): a garbled bike name containing "total" as a raw prefix can
+  // wrongly match the income table's own "total" label row.
+  return na.indexOf(nb) !== -1 || nb.indexOf(na) !== -1;
+}
+function findBikesSheetMonthColIdxB(headerRow, monthName) {
+  const targetShort = monthName.toString().trim().toLowerCase().slice(0, 3);
+  for (let c = 0; c < headerRow.length; c++) {
+    const h = (headerRow[c] || '').toString().trim().toLowerCase();
+    if (h && h.slice(0, 3) === targetShort) return c;
+  }
+  return -1;
+}
+async function addRentalAmountToBikesSheetFromJson(bikeModel, rawAmount) {
+  const amount = Number(rawAmount);
+  if (rawAmount === '' || rawAmount === null || rawAmount === undefined || isNaN(amount) || amount === 0) return;
+  const bikeNameTrimmed = (bikeModel || '').toString().trim();
+  if (!bikeNameTrimmed) throw new Error('No bike name given -- bike monthly total was NOT updated.');
+  const { rows, modifiedTime } = await fetchSheetWithMeta('bikes');
+  const header = rows[0] || [];
+  let rowIdx = -1;
+  for (let i = 1; i < rows.length; i++) {
+    const name = (rows[i][0] || '').toString().trim();
+    if (name && bikeNamesMatchForRentalLogB(name, bikeNameTrimmed)) { rowIdx = i; break; }
+  }
+  if (rowIdx === -1) {
+    throw new Error('Could not find a row for "' + bikeNameTrimmed + '" on the "bikes" sheet -- its monthly total was NOT updated.');
+  }
+  const now = new Date();
+  const monthName = DEPOSITS_MONTH_NAMES[now.getMonth()];
+  const colIdx = findBikesSheetMonthColIdxB(header, monthName);
+  if (colIdx === -1) {
+    throw new Error('Could not find a "' + monthName + '" column on the "bikes" sheet -- "' + bikeNameTrimmed + '"\'s monthly total was NOT updated.');
+  }
+  const newRows = rows.map(r => r.slice());
+  const targetRow = newRows[rowIdx].slice();
+  while (targetRow.length <= colIdx) targetRow.push('');
+  const current = Number(targetRow[colIdx]);
+  targetRow[colIdx] = (isNaN(current) ? 0 : current) + amount;
+  newRows[rowIdx] = targetRow;
+  await writeSheetJson('bikes', newRows, modifiedTime);
+}
+async function processDepositForPaymentFromJson(paidByLower, rawAmount) {
+  const now = new Date();
+  const monthName = DEPOSITS_MONTH_NAMES[now.getMonth()];
+  const year = now.getFullYear();
+  const { rows, modifiedTime } = await fetchSheetWithMeta(monthName, year);
+  if (!rows || !rows.length) throw new Error('No sheet found for the current month -- could not update the ' + paidByLower + ' deposit total.');
+  const expectedRow = paidByLower === 'wise' ? 11 : 12;
+  const expectedLabel = paidByLower === 'wise' ? 'wise(less deposit)' : 'revolut(less deposit)';
+  const norm = s => (s || '').toString().trim().toLowerCase();
+  let rowIdx = -1;
+  if (rows[expectedRow - 1] && norm(rows[expectedRow - 1][11]) === expectedLabel) rowIdx = expectedRow - 1;
+  else { for (let i = 0; i < rows.length; i++) { if (rows[i] && norm(rows[i][11]) === expectedLabel) { rowIdx = i; break; } } }
+  if (rowIdx === -1) throw new Error('Could not find a "' + expectedLabel + '" row in column L of the "' + monthName + '" sheet -- the ' + paidByLower + ' deposit total was NOT updated.');
+  const newRows = rows.map(r => r.slice());
+  const targetRow = newRows[rowIdx].slice();
+  while (targetRow.length < 13) targetRow.push('');
+  const current = Number(targetRow[12]);
+  const delta = Number(rawAmount) || 0;
+  targetRow[12] = (isNaN(current) ? 0 : current) + delta;
+  newRows[rowIdx] = targetRow;
+  await writeSheetJson(monthName, newRows, modifiedTime, year);
+}
+
+// ---- JSON port of consumeDeposit -- reduces (or, if fully spent, clears)
+// a single deposit tracking row. Growing-formula cells ("=1000-100") are
+// deliberately replaced with a plain numeric write here -- the flat-JSON
+// model has no live formula engine, and this project's established
+// simplification is a plain add/subtract in its place (see bikes.html's
+// extendBikeRow port). Throws (writes nothing) if the deduction is more
+// than what's left, same as the live version. ----
+async function consumeDepositFromJson(cat, depositRow, deductAmount, monthName, year) {
+  const { rows, modifiedTime } = await fetchSheetWithMeta(monthName, year);
+  assertDepositHeader(rows, cat, monthName, 'the deposit was NOT updated');
+
+  const rowIdx = depositRow - 1;
+  const row = rows[rowIdx] || [];
+  const norm = s => (s || '').toString().trim().toLowerCase();
+  const dateVal = row[cat.dateCol - 1];
+  const amtVal = row[cat.amountCol - 1];
+  const nameVal = row[cat.nameCol - 1];
+  if (norm(dateVal) === 'total') {
+    throw new Error('That row is the "' + cat.label + '" totals row, not a deposit -- the deposit was NOT updated.');
+  }
+  const rowEmpty = (dateVal === '' || dateVal === null || dateVal === undefined) &&
+    (amtVal === '' || amtVal === null || amtVal === undefined) &&
+    (nameVal === '' || nameVal === null || nameVal === undefined);
+  if (rowEmpty) {
+    throw new Error('That ' + cat.label + ' deposit no longer exists (it may have already been used) -- please refresh the deposit list and pick again.');
+  }
+
+  const currentAmount = (amtVal === '' || amtVal === null || amtVal === undefined || isNaN(Number(amtVal))) ? 0 : Number(amtVal);
+  const EPSILON = 0.005; // tolerate float rounding noise around an exact-zero result
+  const remaining = currentAmount - deductAmount;
+  if (remaining < -EPSILON) {
+    throw new Error('This income (' + deductAmount.toFixed(2) + ') is more than what\'s left in this ' + cat.label +
+      ' deposit (' + currentAmount.toFixed(2) + ') -- the deposit was NOT updated. Pick a different deposit or fix the amount.');
+  }
+
+  const newRows = rows.map(r => r.slice());
+  const newRow = (newRows[rowIdx] || []).slice();
+  while (newRow.length < cat.nameCol) newRow.push('');
+  if (remaining <= EPSILON) {
+    newRow[cat.dateCol - 1] = '';
+    newRow[cat.amountCol - 1] = '';
+    newRow[cat.nameCol - 1] = '';
+  } else {
+    newRow[cat.amountCol - 1] = remaining;
+  }
+  newRows[rowIdx] = newRow;
+  await writeSheetJson(monthName, newRows, modifiedTime, year);
+}
+
+// ---- JSON port of looksLikeSummaryLabel/getAccountsFreeRow -- finds a row
+// safe to write a new Income entry into on the given month sheet, packing
+// alongside existing Expense rows the same way the live version does. If
+// every row runs straight into a "total ..." style summary row with no
+// gap, a blank row is spliced in directly above it (same as
+// sheet.insertRowBefore on the live version) so the row lands inside
+// whatever range the sheet's own SUM-style formulas already cover. ----
+function looksLikeSummaryLabelJson(raw) {
+  const t = (raw || '').toString().trim().toLowerCase();
+  if (!t) return false;
+  if (t.indexOf('total') === 0) return true;
+  const phrases = ['income for month', 'income for the month', 'income less',
+    'bussiness expense', 'business expense', 'personal expense',
+    'wages and bike', 'net profit', 'actual profit', '% of'];
+  for (const p of phrases) { if (t.indexOf(p) !== -1) return true; }
+  return false;
+}
+function isAccountsSideEmptyJson(r, side) {
+  if (side === 'expense') {
+    const eDateEmpty = (r[0] === '' || r[0] === null || r[0] === undefined);
+    const expenseLabel = (r[1] || '').toString().trim();
+    const eAmountEmpty = (r[2] === '' || r[2] === null || r[2] === undefined);
+    return eDateEmpty && !expenseLabel && eAmountEmpty;
+  }
+  const iDateEmpty = (r[5] === '' || r[5] === null || r[5] === undefined);
+  const incomeLabel = (r[6] || '').toString().trim();
+  const nameEmpty = !(r[7] || '').toString().trim();
+  const iAmountEmpty = (r[8] === '' || r[8] === null || r[8] === undefined);
+  return iDateEmpty && !incomeLabel && nameEmpty && iAmountEmpty;
+}
+// Returns { rows: <possibly row-inserted 2D array>, rowNum: 1-indexed
+// sheet row to write into, inserted: bool }.
+function findAccountsFreeRowIdxJson(rows2D, side) {
+  for (let idx = 1; idx < rows2D.length; idx++) {
+    const r = rows2D[idx] || [];
+    const expenseLabel = (r[1] || '').toString().trim();
+    const incomeLabel = (r[6] || '').toString().trim();
+    if (looksLikeSummaryLabelJson(expenseLabel) || looksLikeSummaryLabelJson(incomeLabel)) {
+      const newRows = rows2D.slice();
+      newRows.splice(idx, 0, []);
+      return { rows: newRows, rowNum: idx + 1, inserted: true };
+    }
+    if (isAccountsSideEmptyJson(r, side)) {
+      return { rows: rows2D.slice(), rowNum: idx + 1, inserted: false };
+    }
+  }
+  return { rows: rows2D.slice(), rowNum: rows2D.length + 1, inserted: false };
+}
+
+// ---- JSON port of the F-J Income row write plus setIncomeBikeSplits'
+// note (the bike-attribution JSON blob Code.gs stores as a cell NOTE on
+// column G -- here, an entry in the month sheet's own "<month>_notes"
+// sidecar, same [row, col, note] shape as customer_notes/Contract_notes).
+// Returns the 1-indexed sheet row written. ----
+async function appendIncomeRowFromJson(opts) {
+  const { rows, modifiedTime } = await fetchSheetWithMeta(opts.monthName, opts.year);
+  const free = findAccountsFreeRowIdxJson(rows, 'income');
+  const newRows = free.rows;
+  const rowIdx = free.rowNum - 1;
+  while (newRows.length <= rowIdx) newRows.push([]);
+  const row = (newRows[rowIdx] || []).slice();
+  while (row.length < 10) row.push('');
+  row[5] = opts.date;
+  row[6] = opts.description;
+  row[7] = opts.name || '';
+  row[8] = opts.amount;
+  row[9] = opts.paidBy;
+  newRows[rowIdx] = row;
+  await writeSheetJson(opts.monthName, newRows, modifiedTime, opts.year);
+
+  try {
+    const cleanSplits = (opts.bikeSplits || [])
+      .map(s => ({
+        bike: (s.bike || '').toString().trim(),
+        amount: (s.amount !== '' && s.amount !== null && s.amount !== undefined && !isNaN(Number(s.amount))) ? Number(s.amount) : ''
+      }))
+      .filter(s => s.bike && s.amount !== '');
+    const notesSheet = opts.monthName + '_notes';
+    const { rows: noteRows, modifiedTime: noteModifiedTime } = await fetchSheetWithMeta(notesSheet, opts.year);
+    const filteredNotes = (noteRows || []).filter(n => !(n[0] === free.rowNum && n[1] === 7));
+    if (cleanSplits.length) filteredNotes.push([free.rowNum, 7, JSON.stringify(cleanSplits)]);
+    await writeSheetJson(notesSheet, filteredNotes, noteModifiedTime, opts.year);
+  } catch (noteErr) {
+    // Best-effort, same as the live setIncomeBikeSplits call (never part
+    // of the transaction that decides success/failure) -- the income row
+    // itself has already been written by this point.
+  }
+  return free.rowNum;
+}
+
+// ---- JSON port of findRentedContractRowForDeduction_ -- most-recently-
+// added "Rented" Contract row matching this customer name (and, if given,
+// a fuzzy bike-name match too). Returns null on no match, never throws --
+// this is always a best-effort lookup, same as the live version. ----
+async function findRentedContractRowForDeductionFromJson(name, bikeModel) {
+  const { rows } = await fetchSheetWithMeta('Contract');
+  const nameTarget = normalizeNameForContractMatch(name);
+  if (!nameTarget) return null;
+  const bikeTarget = (bikeModel || '').toString().trim();
+  for (let i = rows.length - 1; i >= 1; i--) {
+    const row = rows[i];
+    if (!row) continue;
+    const status = (row[16] || '').toString().trim().toLowerCase();
+    if (status !== 'rented') continue;
+    const rowName = normalizeNameForContractMatch(row[3]);
+    if (rowName !== nameTarget) continue;
+    const rowBike = (row[6] || '').toString().trim();
+    if (bikeTarget && rowBike && !bikeNamesMatchForTaxLookup(rowBike, bikeTarget)) continue;
+    return { rowNumber: i + 1, deposit: row[13], depositAmount: row[14], name: row[3], bikeModel: row[6] };
+  }
+  return null;
+}
+
+// ---- JSON port of applyDepositDeductionToContract_ -- writes the reduced
+// deposit amount onto the Contract row's depositAmount cell (column O,
+// index 15) and appends a dated note on top of whatever's already there
+// (Contract_notes sidecar, same [row, col, note] shape). Deliberately just
+// subtracts -- no "can't go below what's left" block, same as the live
+// version (Cash has a physical paper trail; for Scan/Wise/Revolut this is
+// only a best-effort mirror of a deduction the monthly sheet already
+// validated). Returns the new amount. ----
+async function applyDepositDeductionToContractFromJson(contractRowNumber, currentAmount, deductedAmount, reasonText, methodLabel) {
+  const { rows, modifiedTime } = await fetchSheetWithMeta('Contract');
+  const idx = contractRowNumber - 1;
+  if (!rows[idx]) throw new Error('Contract row ' + contractRowNumber + ' not found -- the Contract deposit amount was NOT updated.');
+  const newAmount = currentAmount - deductedAmount;
+  const newRows = rows.map(r => r.slice());
+  const row = newRows[idx].slice();
+  while (row.length < 15) row.push('');
+  row[14] = newAmount;
+  newRows[idx] = row;
+  await writeSheetJson('Contract', newRows, modifiedTime);
+
+  const { rows: noteRows, modifiedTime: noteModifiedTime } = await fetchSheetWithMeta('Contract_notes');
+  const existingEntry = (noteRows || []).find(n => n[0] === contractRowNumber && n[1] === 15);
+  const existingNote = existingEntry ? (existingEntry[2] || '') : '';
+  const todayDmy = formatDmyJson(new Date());
+  const newLine = todayDmy + ' -- deducted ฿' + formatMoneyForLedgerB(deductedAmount) + ' (' + methodLabel + '): ' +
+    reasonText + '. New balance: ฿' + formatMoneyForLedgerB(newAmount) + '.';
+  const newNote = existingNote ? (existingNote + '\n' + newLine) : newLine;
+  const newNoteRows = (noteRows || []).filter(n => !(n[0] === contractRowNumber && n[1] === 15));
+  newNoteRows.push([contractRowNumber, 15, newNote]);
+  await writeSheetJson('Contract_notes', newNoteRows, noteModifiedTime);
+
+  return newAmount;
+}
+function formatMoneyForLedgerB(n) {
+  const num = Number(n) || 0;
+  return num.toLocaleString('en-US', { maximumFractionDigits: 2 });
+}
+
+// ---- action:'deductDeposit' port. data: { category, row, deductionAmount,
+// reason, customerName, bikeModel }. Order matters and is NOT
+// transactional, faithfully matching the live version: the deposit's own
+// balance is reduced FIRST (throws, writes nothing, if the deduction is
+// bigger than what's left); only once that's succeeded is the Income row
+// logged, followed by the Wise/Revolut running total, the bikes-sheet
+// earnings bump, and a best-effort Contract-side mirror -- each of those
+// last three is independently best-effort (folded into `warning`, never
+// blocking) exactly like the live version. ----
+async function deductDepositEntryFromJson(data) {
+  const cat = DEPOSIT_CATEGORIES_B.find(c => c.key === data.category);
+  if (!cat) throw new Error('Unrecognized deposit category "' + data.category + '".');
+  const depositRow = Math.round(Number(data.row));
+  if (!depositRow || depositRow < 2) throw new Error('Invalid deposit row.');
+  const deduction = Number(data.deductionAmount);
+  if (isNaN(deduction) || deduction <= 0) throw new Error('Enter a valid deduction amount.');
+  const reasonText = (data.reason || '').toString().trim();
+  if (!reasonText) throw new Error('Enter a reason for the deduction.');
+
+  const { monthName, year } = currentDepositsMonthYear();
+
+  // 1. Reduce the deposit's own balance first.
+  await consumeDepositFromJson(cat, depositRow, deduction, monthName, year);
+
+  const warnings = [];
+  const paidByLabel = DEPOSIT_CATEGORY_PAID_BY_B[data.category] || cat.label;
+  const bikeNameForDescription = (data.bikeModel || '').toString().trim();
+  const description = (bikeNameForDescription ? bikeNameForDescription + ', ' : '') + 'Deposit deduction for ' + reasonText;
+
+  // 2. Only now, log the deduction as a normal Income entry. The deposit
+  // balance has ALREADY been reduced at this point -- if this step fails,
+  // that's surfaced as a hard error (not a warning) since staff need to
+  // know the income row needs adding by hand, same asymmetry the live
+  // version has (no rollback of step 1 either way).
+  let incomeRowNum;
+  try {
+    incomeRowNum = await appendIncomeRowFromJson({
+      monthName, year, date: todaySheetDateValue(), description,
+      name: data.customerName || '', amount: deduction, paidBy: paidByLabel,
+      bikeSplits: [{ bike: bikeNameForDescription || 'extras', amount: deduction }]
+    });
+  } catch (incomeErr) {
+    throw new Error('The deposit balance was reduced, but the income row could NOT be logged: ' + incomeErr.message + ' Please add it by hand.');
+  }
+
+  const paidByLower = paidByLabel.toString().trim().toLowerCase();
+  try {
+    if (paidByLower === 'wise' || paidByLower === 'revolut') {
+      await processDepositForPaymentFromJson(paidByLower, deduction);
+    }
+  } catch (depErr) { warnings.push('Deposit total: ' + depErr.message); }
+
+  try {
+    await addRentalAmountToBikesSheetFromJson(bikeNameForDescription || 'extras', deduction);
+  } catch (bikeErr) { warnings.push('Bikes sheet (income): ' + bikeErr.message); }
+
+  // 3. Best-effort mirror onto the matching "Rented" Contract row's own
+  // deposit amount (Anton, 07/08/2026 -- see the live comment).
+  try {
+    const match = await findRentedContractRowForDeductionFromJson(data.customerName, bikeNameForDescription);
+    if (match && !isNaN(Number(match.depositAmount)) && Number(match.depositAmount) > 0) {
+      await applyDepositDeductionToContractFromJson(match.rowNumber, Number(match.depositAmount), deduction, reasonText, cat.label);
+    }
+  } catch (contractErr) { warnings.push('Contract deposit amount: ' + contractErr.message); }
+
+  const responsePayload = { success: true, incomeRow: incomeRowNum };
+  if (warnings.length) responsePayload.warning = warnings.join(' ');
+  return responsePayload;
+}
+
+// ---- action:'deductCashDeposit' port. data: { customerName, bikeModel
+// (optional), deductionAmount, reason }. Writes ONLY to the Contract sheet
+// -- no income row, no monthly sheet, no bikes-sheet earnings update (per
+// Anton: "we don't record cash there"). Deliberately permissive: no
+// matching "Rented" Contract row, or one found but its deposit method
+// isn't Cash, or no deposit amount on file -- none of that is an error,
+// it's applied:false and a message, same as the live version. ----
+async function deductCashDepositFromJson(data) {
+  const customerName = (data.customerName || '').toString().trim();
+  if (!customerName) throw new Error('Enter a customer name.');
+  const deduction = Number(data.deductionAmount);
+  if (isNaN(deduction) || deduction <= 0) throw new Error('Enter a valid deduction amount.');
+  const reasonText = (data.reason || '').toString().trim();
+  if (!reasonText) throw new Error('Enter a reason for the deduction.');
+
+  const match = await findRentedContractRowForDeductionFromJson(customerName, data.bikeModel);
+  const hasCashDeposit = match &&
+    (match.deposit || '').toString().trim().toLowerCase() === 'cash' &&
+    !isNaN(Number(match.depositAmount)) && Number(match.depositAmount) > 0;
+
+  if (!hasCashDeposit) {
+    return {
+      success: true, applied: false,
+      message: 'No cash deposit on file for "' + customerName + '" -- nothing was deducted.'
+    };
+  }
+
+  const newAmount = await applyDepositDeductionToContractFromJson(
+    match.rowNumber, Number(match.depositAmount), deduction, reasonText, 'Cash');
+
+  return { success: true, applied: true, newAmount, contractRow: match.rowNumber };
+}
+// ================== end WRITE layer: deductDeposit / deductCashDeposit ==================
+
 // Matches the CATEGORIES list in Code.gs's getDepositsData -- just used
 // here to control display order/labels/colors, since the server already
 // does the actual reading, header-checking and classification.
@@ -332,7 +1178,7 @@ async function loadDeposits() {
 
   let res;
   try {
-    res = await fetch(scriptUrl + '?action=deposits').then(r => r.json());
+    res = await getDepositsDataFromJson();
   } catch (err) {
     setLoadStatus('Failed to load deposits: ' + err.message, true);
     return;
@@ -510,7 +1356,7 @@ async function autofillDeductBike(customerName) {
   fDeductBike.placeholder = 'Looking up current rental…';
   let res;
   try {
-    res = await fetch(scriptUrl).then(r => r.json());
+    res = await getCustomerRowsFromJson();
   } catch (err) {
     res = null;
   }
@@ -677,10 +1523,8 @@ async function saveDeductFromDeposit() {
   setModalButtonsDisabled(true);
   startModalProgress('Connecting…');
   try {
-    const res = await fetch(scriptUrl, {
-      method: 'POST',
-      body: JSON.stringify(payload)
-    }).then(r => r.json());
+    // DISCONNECTED: writes to the static data/ JSON export instead of the live scriptUrl (see project CLAUDE.md)
+    const res = await deductDepositEntryFromJson(payload);
     stopModalProgress();
 
     if (!res.success) {
@@ -742,10 +1586,7 @@ modalSaveBtn.addEventListener('click', async () => {
   setModalButtonsDisabled(true);
   startModalProgress('Connecting…');
   try {
-    const res = await fetch(scriptUrl, {
-      method: 'POST',
-      body: JSON.stringify(payload)
-    }).then(r => r.json());
+    const res = isAdd ? await addDepositEntryJson(payload) : await editDepositEntryJson(payload);
     stopModalProgress();
 
     if (!res.success) {
@@ -779,10 +1620,7 @@ modalDeleteBtn.addEventListener('click', async () => {
   setModalButtonsDisabled(true);
   startModalProgress('Connecting…');
   try {
-    const res = await fetch(scriptUrl, {
-      method: 'POST',
-      body: JSON.stringify(payload)
-    }).then(r => r.json());
+    const res = await deleteDepositEntryJson(payload);
     stopModalProgress();
 
     if (!res.success) {
@@ -865,10 +1703,8 @@ cashDeductBtn.addEventListener('click', async () => {
   cashDeductBtn.disabled = true;
   startCashDeductProgress();
   try {
-    const res = await fetch(scriptUrl, {
-      method: 'POST',
-      body: JSON.stringify(payload)
-    }).then(r => r.json());
+    // DISCONNECTED: writes to the static data/ JSON export instead of the live scriptUrl (see project CLAUDE.md)
+    const res = await deductCashDepositFromJson(payload);
     stopCashDeductProgress();
 
     if (!res.success) {
