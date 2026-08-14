@@ -357,6 +357,14 @@ function fetchSheetJson(sheetName, year) {
     }).then(res => {
       if (!res.success) throw new Error(res.error || 'Could not load data.');
       return res.rows || [];
+    }).catch(err => {
+      // A cached PROMISE stays truthy whether it resolved or rejected, so
+      // without this a failed fetch would wedge this cache entry on the
+      // error forever -- every "tap to retry" would just replay the same
+      // stale failure instead of actually re-fetching. Clearing the entry
+      // on failure lets the next call try again for real.
+      delete bikesJsonCache[cacheKey];
+      throw err;
     });
   }
   return bikesJsonCache[cacheKey];
@@ -383,6 +391,19 @@ function decodeSheetDate(val) {
   return null;
 }
 function pad2Json(n) { return String(n).padStart(2, '0'); }
+// Mirrors Code.gs's columnLetter() -- 1 -> "A", 27 -> "AA", etc. Used ONLY
+// as the fallback object-key label for a blank header cell, same as
+// getPartsData()'s own headers.map() fallback (Code.gs uses the letter,
+// NOT the bare column number, for this).
+function columnLetterJson(col) {
+  let letter = '';
+  while (col > 0) {
+    const rem = (col - 1) % 26;
+    letter = String.fromCharCode(65 + rem) + letter;
+    col = Math.floor((col - 1) / 26);
+  }
+  return letter;
+}
 function formatDmyJson(date) {
   if (!date) return '';
   return pad2Json(date.getDate()) + '/' + pad2Json(date.getMonth() + 1) + '/' + date.getFullYear();
@@ -674,7 +695,7 @@ async function getPartsDataFromJson() {
   const rawHeaders = partsRows2D[0] || [];
   const headers = rawHeaders.map((h, i) => {
     const key = (h || '').toString().trim();
-    return key || ('Column ' + (i + 1));
+    return key || ('Column ' + columnLetterJson(i + 1));
   });
   const rows = partsRows2D.slice(1).map(row => {
     const obj = {};
@@ -961,6 +982,381 @@ async function performUpdateReturnPickup(rowNumber, isoDate, hhmm, deliveryLink)
   }
   return { success: true, warning, modifiedTime: writeResult.modifiedTime };
 }
+
+// ================== extendBike (short extension) ==================
+// Ports Code.gs's extendBikeRow -- a SHORT extension (under 30 days, "1
+// month" checkbox not ticked): pushes the customer row's own return date
+// forward in place and adds the new payment onto its total price, rather
+// than the long-extension flow's "close this booking out, start a new
+// customer row" approach (closeBikeForExtend + customerIntakeFromJson --
+// NOT ported this pass, see the scope note below). Reuses the same
+// append-ledger/income/cash/bikes-total/deposit-total sub-writes built for
+// customers.html's customer-intake cascade (duplicated here per this
+// project's per-file convention), plus two NEW Contract-sync helpers this
+// action needs that customer-intake didn't: addAmountToContractRowFromJson
+// (ADDS onto the Contract row's existing total rather than overwriting it
+// with a running total -- see Code.gs's addAmountToContractRow_ comment on
+// why: overwriting from a note-less customer's ฿0 running total once
+// zeroed out a real customer's Contract total) and
+// syncContractReturnDateOnlyFromJson (syncs ONLY the return date, since an
+// extension's payment is added incrementally, never used to overwrite the
+// total price the way a fresh booking's ledger total does).
+//
+// Deliberately NOT ported (same reasoning as customer-intake's identical
+// gaps -- see that block's comment):
+//  - The shared bike-returns calendar sync (syncCalendarForCustomerRow).
+//  - "Paid from an existing deposit" draw-down (applyExtendDepositSpend_)
+//    -- surfaces a warning instead of silently no-op'ing.
+//  - The long-extension flow (closeBikeForExtend + a fresh customer-intake
+//    row) -- this page's Extend UI still routes a 30+ day / "1 month"
+//    extension through the old scriptUrl for now and fails cleanly.
+
+function stripBikeNameBracketsB3(s) {
+  return (s || '').toString().replace(/[()]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+function formatMoneyForLedgerB(n) {
+  const num = Number(n) || 0;
+  return num.toLocaleString('en-US', { maximumFractionDigits: 2 });
+}
+function stripLedgerTotalLineB(noteText) {
+  return (noteText || '').toString().replace(/\n?Total:[^\n]*$/i, '').replace(/\n+$/, '');
+}
+function stripAllTrailingParensAndDealB(contact) {
+  let result = (contact || '').toString().trim();
+  let prev;
+  do {
+    prev = result;
+    result = result.replace(/\s*\([^()]*\)(?:\s*Deal)?\s*$/i, '').replace(/\s*Deal\s*$/i, '').trim();
+  } while (result !== prev);
+  return result;
+}
+function buildRentalIncomeTextB(data, dayCount) {
+  const bikeName = (data.bikeModel || '').toString().trim();
+  const isExtendSource = (data.source || '').toString().trim().toLowerCase() === 'extend';
+  const verb = isExtendSource ? 'extend' : 'rent';
+  let text = bikeName;
+  text += (dayCount !== null && dayCount !== undefined && !isNaN(dayCount))
+    ? (' ' + verb + ' ' + dayCount + (dayCount === 1 ? ' day' : ' days'))
+    : (' ' + verb);
+  return text;
+}
+function findFullyEmptyRowIdxJson(rows2D, startRowIdx, cols) {
+  for (let i = startRowIdx; i < rows2D.length; i++) {
+    const row = rows2D[i] || [];
+    let allBlank = true;
+    for (const c of cols) {
+      const v = row[c - 1];
+      if (v !== '' && v !== null && v !== undefined) { allBlank = false; break; }
+    }
+    if (allBlank) return i;
+  }
+  return rows2D.length;
+}
+// FIFTH bike-name matcher in this codebase (see add-bikes.html's comment
+// on the four others) -- mirrors Code.gs's bikeNamesMatchForRentalLog.
+function normalizeBikeNameForRentalLogB(s) {
+  return (s || '').toString().toLowerCase().replace(/[()]/g, ' ').replace(/[^a-z0-9]+/g, ' ').trim().replace(/\s+/g, ' ');
+}
+const RENTAL_LOG_DISTINGUISHING_SUFFIXES_B = {
+  one: 1, two: 1, three: 1, four: 1, five: 1, six: 1, seven: 1, eight: 1, nine: 1, ten: 1,
+  i: 1, ii: 1, iii: 1, iv: 1, v: 1, vi: 1, vii: 1, viii: 1, ix: 1, x: 1,
+  '1': 1, '2': 1, '3': 1, '4': 1, '5': 1, '6': 1, '7': 1, '8': 1, '9': 1, '10': 1
+};
+function bikeNamesMatchForRentalLogB(a, b) {
+  const na = normalizeBikeNameForRentalLogB(a), nb = normalizeBikeNameForRentalLogB(b);
+  if (!na || !nb) return false;
+  if (na === nb) return true;
+  const ta = na.split(' '), tb = nb.split(' ');
+  const shorter = ta.length <= tb.length ? ta : tb;
+  const longer = ta.length <= tb.length ? tb : ta;
+  let isPrefix = true;
+  for (let i = 0; i < shorter.length; i++) { if (shorter[i] !== longer[i]) { isPrefix = false; break; } }
+  if (isPrefix) {
+    const extra = longer.slice(shorter.length);
+    for (let j = 0; j < extra.length; j++) { if (RENTAL_LOG_DISTINGUISHING_SUFFIXES_B[extra[j]]) return false; }
+    return true;
+  }
+  // KNOWN QUIRK (inherited from Code.gs -- see customers.html's identical
+  // comment): a garbled bike name containing "total" as a raw prefix can
+  // wrongly match the income table's own "total" label row.
+  return na.indexOf(nb) !== -1 || nb.indexOf(na) !== -1;
+}
+function findBikesSheetMonthColIdxB(headerRow, monthName) {
+  const targetShort = monthName.toString().trim().toLowerCase().slice(0, 3);
+  for (let c = 0; c < headerRow.length; c++) {
+    const h = (headerRow[c] || '').toString().trim().toLowerCase();
+    if (h && h.slice(0, 3) === targetShort) return c;
+  }
+  return -1;
+}
+
+async function appendLedgerEntryFromJson(rowNumber, bikeModel, fromDmy, toDmy, lineDays, lineAmount, deltaDays, deltaAmount, previousNoteText, isDeal) {
+  const { rows: noteRows, modifiedTime: noteModifiedTime } = await fetchSheetWithMeta('customer_notes');
+  const existingNoteEntry = (noteRows || []).find(n => n[0] === rowNumber && n[1] === LEDGER_CONTACT_COL_B);
+  const seedNote = (previousNoteText !== null && previousNoteText !== undefined)
+    ? previousNoteText
+    : (existingNoteEntry ? (existingNoteEntry[2] || '') : '');
+  const priorTotal = parseLedgerTotal(seedNote);
+  const body = stripLedgerTotalLineB(seedNote);
+  const safeDays = Number(lineDays) || 0;
+  const line = (bikeModel || 'Bike') + ' — ' + fromDmy + ' to ' + toDmy +
+    ' (' + safeDays + (safeDays === 1 ? ' day' : ' days') + ') — ฿' + formatMoneyForLedgerB(lineAmount);
+  const newTotalDays = priorTotal.days + (Number(deltaDays) || 0);
+  const newTotalAmount = priorTotal.amount + (Number(deltaAmount) || 0);
+  const targetNote = (body ? body + '\n' : '') + line + '\n' + 'Total: ' + newTotalDays + ' days, ฿' + formatMoneyForLedgerB(newTotalAmount);
+
+  const newNoteRows = (noteRows || []).filter(n => !(n[0] === rowNumber && n[1] === LEDGER_CONTACT_COL_B));
+  newNoteRows.push([rowNumber, LEDGER_CONTACT_COL_B, targetNote]);
+  await writeSheetJson('customer_notes', newNoteRows, noteModifiedTime);
+
+  const { rows: custRows, modifiedTime: custModifiedTime } = await fetchSheetWithMeta('customer');
+  const newCustRows = custRows.map(r => r.slice());
+  const targetRow = newCustRows[rowNumber - 1];
+  while (targetRow.length <= LEDGER_CONTACT_COL_B - 1) targetRow.push('');
+  const currentContact = (targetRow[LEDGER_CONTACT_COL_B - 1] || '').toString();
+  const baseContact = stripAllTrailingParensAndDealB(currentContact);
+  const targetBracket = ' (฿' + formatMoneyForLedgerB(newTotalAmount) + ', ' + newTotalDays + ' days)';
+  const targetContact = baseContact + targetBracket + (isDeal ? ' Deal' : '');
+  targetRow[LEDGER_CONTACT_COL_B - 1] = targetContact;
+  await writeSheetJson('customer', newCustRows, custModifiedTime);
+
+  return { totalDays: newTotalDays, totalAmount: newTotalAmount };
+}
+async function appendMonthlyIncomeRowFromJson(data, dayCount) {
+  const now = new Date();
+  const monthName = DEPOSITS_MONTH_NAMES[now.getMonth()];
+  const year = now.getFullYear();
+  const { rows, modifiedTime } = await fetchSheetWithMeta(monthName, year);
+  if (!rows || !rows.length) {
+    throw new Error('no tab named "' + monthName + '" was found, so this entry was NOT logged on the monthly income sheet.');
+  }
+  const newRows = rows.map(r => r.slice());
+  const targetIdx = findFullyEmptyRowIdxJson(newRows, 1, [6, 7, 8, 9, 10]);
+  while (newRows.length <= targetIdx) newRows.push([]);
+  const row = newRows[targetIdx].slice();
+  while (row.length < 10) row.push('');
+  const incomeText = buildRentalIncomeTextB(data, dayCount);
+  const paidByRaw = (data.paidBy || '').toString().trim().toLowerCase();
+  const paidDisplay = paidByRaw === 'scan' ? 'QR scan' : paidByRaw;
+  const amountValue = (data.totalPrice !== '' && data.totalPrice !== undefined && !isNaN(Number(data.totalPrice))) ? Number(data.totalPrice) : '';
+  const nowIso = now.getFullYear() + '-' + pad2Json(now.getMonth() + 1) + '-' + pad2Json(now.getDate());
+  row[5] = isoDateInputToSheetValue(nowIso);
+  row[6] = incomeText;
+  row[7] = data.name || '';
+  row[8] = amountValue;
+  row[9] = paidDisplay;
+  newRows[targetIdx] = row;
+  await writeSheetJson(monthName, newRows, modifiedTime, year);
+}
+async function appendCashSheetRowFromJson(incomeText, rawAmount) {
+  const { rows, modifiedTime } = await fetchSheetWithMeta('cash');
+  if (!rows || !rows.length) {
+    throw new Error('no tab named "cash" was found, so this entry was NOT logged on the cash sheet.');
+  }
+  const newRows = rows.map(r => r.slice());
+  const targetIdx = findFullyEmptyRowIdxJson(newRows, 1, [1, 2, 3]);
+  while (newRows.length <= targetIdx) newRows.push([]);
+  const row = newRows[targetIdx].slice();
+  while (row.length < 3) row.push('');
+  const amountValue = (rawAmount !== '' && rawAmount !== undefined && rawAmount !== null && !isNaN(Number(rawAmount))) ? Number(rawAmount) : '';
+  const now = new Date();
+  const nowIso = now.getFullYear() + '-' + pad2Json(now.getMonth() + 1) + '-' + pad2Json(now.getDate());
+  row[0] = isoDateInputToSheetValue(nowIso);
+  row[1] = incomeText;
+  row[2] = amountValue;
+  newRows[targetIdx] = row;
+  await writeSheetJson('cash', newRows, modifiedTime);
+}
+async function addRentalAmountToBikesSheetFromJson(bikeModel, rawAmount) {
+  const amount = Number(rawAmount);
+  if (rawAmount === '' || rawAmount === null || rawAmount === undefined || isNaN(amount) || amount === 0) return;
+  const bikeNameTrimmed = (bikeModel || '').toString().trim();
+  if (!bikeNameTrimmed) throw new Error('No bike name given -- bike monthly total was NOT updated.');
+  const { rows, modifiedTime } = await fetchSheetWithMeta('bikes');
+  const header = rows[0] || [];
+  let rowIdx = -1;
+  for (let i = 1; i < rows.length; i++) {
+    const name = (rows[i][0] || '').toString().trim();
+    if (name && bikeNamesMatchForRentalLogB(name, bikeNameTrimmed)) { rowIdx = i; break; }
+  }
+  if (rowIdx === -1) {
+    throw new Error('Could not find a row for "' + bikeNameTrimmed + '" on the "bikes" sheet -- its monthly total was NOT updated.');
+  }
+  const now = new Date();
+  const monthName = DEPOSITS_MONTH_NAMES[now.getMonth()];
+  const colIdx = findBikesSheetMonthColIdxB(header, monthName);
+  if (colIdx === -1) {
+    throw new Error('Could not find a "' + monthName + '" column on the "bikes" sheet -- "' + bikeNameTrimmed + '"\'s monthly total was NOT updated.');
+  }
+  const newRows = rows.map(r => r.slice());
+  const targetRow = newRows[rowIdx].slice();
+  while (targetRow.length <= colIdx) targetRow.push('');
+  const current = Number(targetRow[colIdx]);
+  targetRow[colIdx] = (isNaN(current) ? 0 : current) + amount;
+  newRows[rowIdx] = targetRow;
+  await writeSheetJson('bikes', newRows, modifiedTime);
+}
+async function processDepositForPaymentFromJson(paidByLower, rawAmount) {
+  const now = new Date();
+  const monthName = DEPOSITS_MONTH_NAMES[now.getMonth()];
+  const year = now.getFullYear();
+  const { rows, modifiedTime } = await fetchSheetWithMeta(monthName, year);
+  if (!rows || !rows.length) throw new Error('No sheet found for the current month -- could not update the ' + paidByLower + ' deposit total.');
+  const expectedRow = paidByLower === 'wise' ? 11 : 12;
+  const expectedLabel = paidByLower === 'wise' ? 'wise(less deposit)' : 'revolut(less deposit)';
+  const norm = s => (s || '').toString().trim().toLowerCase();
+  let rowIdx = -1;
+  if (rows[expectedRow - 1] && norm(rows[expectedRow - 1][11]) === expectedLabel) rowIdx = expectedRow - 1;
+  else { for (let i = 0; i < rows.length; i++) { if (rows[i] && norm(rows[i][11]) === expectedLabel) { rowIdx = i; break; } } }
+  if (rowIdx === -1) throw new Error('Could not find a "' + expectedLabel + '" row in column L of the "' + monthName + '" sheet -- the ' + paidByLower + ' deposit total was NOT updated.');
+  const newRows = rows.map(r => r.slice());
+  const targetRow = newRows[rowIdx].slice();
+  while (targetRow.length < 13) targetRow.push('');
+  const current = Number(targetRow[12]);
+  const delta = Number(rawAmount) || 0;
+  targetRow[12] = (isNaN(current) ? 0 : current) + delta;
+  newRows[rowIdx] = targetRow;
+  await writeSheetJson(monthName, newRows, modifiedTime, year);
+}
+
+// ---- Adds addAmount onto the Contract row's OWN existing total (column
+// L) -- deliberately NOT an overwrite, see the big comment above. ----
+async function addAmountToContractRowFromJson(name, bikeModel, addAmount) {
+  const { rows, modifiedTime } = await fetchSheetWithMeta('Contract');
+  if (!rows || rows.length < 2) return { found: false };
+  const nameTarget = normalizeNameForContractMatch(name);
+  const bikeTarget = (bikeModel || '').toString().trim();
+  if (!nameTarget) return { found: false };
+  for (let i = rows.length - 1; i >= HEADER_ROWS_B; i--) {
+    const rowName = normalizeNameForContractMatch(rows[i][3]);
+    const rowBike = (rows[i][6] || '').toString().trim();
+    const rowStatus = (rows[i][16] || '').toString().trim().toLowerCase();
+    if (rowStatus !== 'rented') continue;
+    if (rowName !== nameTarget) continue;
+    if (bikeTarget && rowBike && !bikeNamesMatchForTaxLookup(rowBike, bikeTarget)) continue;
+    const newRows = rows.map(r => r.slice());
+    const row = newRows[i].slice();
+    while (row.length < 12) row.push('');
+    const currentTotal = Number(row[11]) || 0;
+    row[11] = currentTotal + (Number(addAmount) || 0);
+    newRows[i] = row;
+    await writeSheetJson('Contract', newRows, modifiedTime);
+    return { found: true, row: i + 1 };
+  }
+  return { found: false };
+}
+// ---- Syncs ONLY the Contract row's return date (column I) -- an
+// extension's payment is added incrementally via
+// addAmountToContractRowFromJson above, never used to overwrite the total
+// price the way a fresh booking's ledger total does. ----
+async function syncContractReturnDateOnlyFromJson(name, bikeModel, returnDate) {
+  const { rows, modifiedTime } = await fetchSheetWithMeta('Contract');
+  if (!rows || rows.length < 2) return { found: false };
+  const nameTarget = normalizeNameForContractMatch(name);
+  const bikeTarget = (bikeModel || '').toString().trim();
+  if (!nameTarget) return { found: false };
+  for (let i = rows.length - 1; i >= HEADER_ROWS_B; i--) {
+    const rowName = normalizeNameForContractMatch(rows[i][3]);
+    const rowBike = (rows[i][6] || '').toString().trim();
+    const rowStatus = (rows[i][16] || '').toString().trim().toLowerCase();
+    if (rowStatus !== 'rented') continue;
+    if (rowName !== nameTarget) continue;
+    if (bikeTarget && rowBike && !bikeNamesMatchForTaxLookup(rowBike, bikeTarget)) continue;
+    const newRows = rows.map(r => r.slice());
+    const row = newRows[i].slice();
+    while (row.length < 9) row.push('');
+    const isoYmd = returnDate.getFullYear() + '-' + pad2Json(returnDate.getMonth() + 1) + '-' + pad2Json(returnDate.getDate());
+    row[8] = isoDateInputToSheetValue(isoYmd);
+    newRows[i] = row;
+    await writeSheetJson('Contract', newRows, modifiedTime);
+    return { found: true, row: i + 1 };
+  }
+  return { found: false };
+}
+
+// ---- action:'extendBike' equivalent (SHORT extension only -- under 30
+// days, "1 month" checkbox not ticked; see the big comment above). ----
+async function extendBikeRowFromJson(data) {
+  const rowNumber = parseInt(data.rowNumber, 10);
+  if (!rowNumber || rowNumber < 2) throw new Error('Invalid row number.');
+  const daysToExtend = parseInt(data.daysToExtend, 10);
+  if (!daysToExtend || daysToExtend <= 0) throw new Error('Days to extend must be a positive number.');
+  const amountPaid = parseFloat(data.amountPaid);
+  if (isNaN(amountPaid) || amountPaid < 0) throw new Error('Amount paid must be a number.');
+  const paidBy = (data.paidBy || '').toString().trim();
+  if (!paidBy) throw new Error('Paid by is required.');
+
+  const { rows, modifiedTime } = await fetchSheetWithMeta('customer');
+  const idx = rowNumber - 1;
+  if (!rows[idx]) throw new Error('Could not find row ' + rowNumber + ' on the customer sheet -- it may have moved. Please reload and try again.');
+  const newRows = rows.map(r => r.slice());
+  const row = newRows[idx].slice();
+  while (row.length < 19) row.push('');
+
+  let currentDate = decodeSheetDate(row[8]);
+  if (!currentDate) {
+    const m = String(row[8] || '').trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+    if (!m) throw new Error('Could not read the current return date to extend from.');
+    currentDate = new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1]));
+  }
+  const preExtendDueDate = new Date(currentDate.getTime());
+  currentDate = new Date(currentDate.getTime());
+  currentDate.setDate(currentDate.getDate() + daysToExtend);
+
+  const newDueIso = currentDate.getFullYear() + '-' + pad2Json(currentDate.getMonth() + 1) + '-' + pad2Json(currentDate.getDate());
+  row[8] = isoDateInputToSheetValue(newDueIso); // I returnDate
+  row[17] = false;                               // R timeConfirmed -- due date moved, so any prior pickup confirmation no longer applies
+  row[18] = '';                                  // S confirmedReturnDate
+  const currentPrice = Number(row[11]) || 0;
+  row[11] = currentPrice + amountPaid;            // L totalPrice
+  row[12] = paidBy;                               // M paidBy
+  const bikeModel = row[5], custName = row[2];
+  newRows[idx] = row;
+
+  await writeSheetJson('customer', newRows, modifiedTime);
+
+  const warnings = [];
+  try {
+    const extendFromDmy = formatDmyJson(preExtendDueDate);
+    const extendToDmy = formatDmyJson(currentDate);
+    await appendLedgerEntryFromJson(rowNumber, bikeModel, extendFromDmy, extendToDmy, daysToExtend, amountPaid, daysToExtend, amountPaid, null, null);
+  } catch (ledgerErr) { warnings.push('Ledger note: ' + ledgerErr.message); }
+
+  try { await syncContractReturnDateOnlyFromJson(custName, bikeModel, currentDate); }
+  catch (contractDateErr) { warnings.push('Contract return date sync: ' + contractDateErr.message); }
+
+  try { await addAmountToContractRowFromJson(custName, bikeModel, amountPaid); }
+  catch (contractAmountErr) { warnings.push('Contract total price sync: ' + contractAmountErr.message); }
+
+  const incomeData = { bikeModel: bikeModel || '', name: custName || '', totalPrice: amountPaid, paidBy, source: 'extend' };
+  try { await appendMonthlyIncomeRowFromJson(incomeData, daysToExtend); }
+  catch (incomeErr) { warnings.push('Income sheet: ' + incomeErr.message); }
+
+  try {
+    if (paidBy.toLowerCase() === 'cash') {
+      await appendCashSheetRowFromJson(buildRentalIncomeTextB(incomeData, daysToExtend), amountPaid);
+    }
+  } catch (cashErr) { warnings.push('Cash sheet: ' + cashErr.message); }
+
+  try {
+    const paidByLower = paidBy.toLowerCase();
+    if (paidByLower === 'wise' || paidByLower === 'revolut') {
+      await processDepositForPaymentFromJson(paidByLower, amountPaid);
+    }
+  } catch (depositErr) { warnings.push('Deposit total: ' + depositErr.message); }
+
+  if (data.paidFromDeposit) {
+    warnings.push('This extension was marked as paid from an existing deposit, but drawing that down automatically is not ported yet -- please adjust the deposit log by hand.');
+  }
+
+  try { await addRentalAmountToBikesSheetFromJson(bikeModel, amountPaid); }
+  catch (bikesErr) { warnings.push(bikesErr.message); }
+
+  const responsePayload = { success: true };
+  if (warnings.length) responsePayload.warning = warnings.join(' ');
+  return responsePayload;
+}
+// ================== end extendBike (short extension) ==================
 // ================== end JSON-backed WRITE actions ==================
 
 // ================== end JSON-backed data layer ==================
@@ -3190,11 +3586,9 @@ function confirmExtend(rowNumber, daysToExtend, amountPaid, extendMonth, paidBy,
   setAllButtonsDisabled(true);
   const stageTimer = setTimeout(() => { savingExtendStage = 'saving'; render(); setAllButtonsDisabled(true); }, 500);
 
-  fetch(scriptUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify({
-      action: 'extendBike',
+  // DISCONNECTED: writes to the static data/ JSON export instead of the live scriptUrl (see project CLAUDE.md)
+  Promise.resolve()
+    .then(() => extendBikeRowFromJson({
       rowNumber: rowNumber,
       daysToExtend: daysToExtend,
       amountPaid: amountPaid,
@@ -3202,9 +3596,7 @@ function confirmExtend(rowNumber, daysToExtend, amountPaid, extendMonth, paidBy,
       paidFromDeposit: paidFromDeposit,
       depositCategory: depositCategory,
       depositRow: depositRow
-    })
-  })
-    .then(res => res.json())
+    }))
     .then(result => {
       clearTimeout(stageTimer);
       setAllButtonsDisabled(false);
