@@ -303,36 +303,6 @@
     return res;
   }
 
-  // ---- Transaction log helper (own copy -- see accounts.html's identical
-  // comment on the original). Used here only to log the reversal action
-  // itself, as a non-reversible audit entry. ----
-  async function logTransactionB(entry) {
-    try {
-      entry.id = 'txn_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
-      entry.ts = new Date().toISOString();
-      entry.reversed = false;
-      entry.reversedAt = null;
-      for (let attempt = 0; attempt < 3; attempt++) {
-        let rows, modifiedTime;
-        try {
-          const res = await fetch('/api/data/transactionLog').then(r => r.json());
-          rows = Array.isArray(res.rows) ? res.rows : [];
-          modifiedTime = res.modifiedTime || null;
-        } catch (e) { rows = []; modifiedTime = null; }
-        const newRows = rows.concat([entry]);
-        const r = await fetch('/api/data/transactionLog', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ rows: newRows, expectedModifiedTime: modifiedTime })
-        });
-        if (r.status === 409) continue;
-        return;
-      }
-    } catch (e) {
-      console.warn('Transaction log write failed (non-critical):', e && e.message);
-    }
-  }
-
   function escapeHtmlS(s) {
     return (s || '').toString().replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
@@ -453,6 +423,12 @@
   var filterFromIso = '';
   var filterToIso = '';
   var pendingEntry = null;
+  // Once something's been reversed, its row is redundant clutter after a
+  // while -- the whole point of "Reversed" is that it's done and settled.
+  // Hidden from the default (unsearched) recent view once older than this;
+  // nothing is deleted, so it's still findable via an explicit date search
+  // covering when it happened. (Anton, 14/08/2026, watching this live.)
+  var HIDE_REVERSED_AFTER_MS = 24 * 60 * 60 * 1000;
 
   function fmtTs(iso) {
     var d = new Date(iso);
@@ -463,6 +439,11 @@
   function entryMatchesFilter(e) {
     if (filterFromIso && (!e.ts || e.ts < filterFromIso)) return false;
     if (filterToIso && (!e.ts || e.ts > filterToIso)) return false;
+    var isDefaultView = !filterFromIso && !filterToIso;
+    if (isDefaultView && e.reversed && e.reversedAt) {
+      var ageMs = Date.now() - new Date(e.reversedAt).getTime();
+      if (!isNaN(ageMs) && ageMs > HIDE_REVERSED_AFTER_MS) return false;
+    }
     return true;
   }
   function currentFilteredSorted() {
@@ -625,13 +606,12 @@
         }
       }
 
-      // Log the reversal itself as its own audit entry (not itself
-      // reversible -- undoing an undo isn't supported here).
-      await logTransactionB({
-        page: 'settings.html', action: 'reverseTransactionEntry', reversible: false,
-        summary: 'Reversed: ' + (fresh.summary || fresh.id),
-        writes: []
-      });
+      // Deliberately NOT logging a second "Reversed: ..." entry here --
+      // the original entry's own reversed/reversedAt fields (set just
+      // above) are the record of this happening, shown as the "Reversed"
+      // badge on that same row. A separate audit row for the same event
+      // was pure duplication in the list (Anton caught this live,
+      // 14/08/2026) -- one row per action is enough.
 
       if (writeErrors.length) {
         throw new Error('Marked as reversed, but some writes had issues: ' + writeErrors.join('; '));

@@ -6,6 +6,37 @@ update its row below in the same commit. This exists because work on this
 project gets picked up across multiple Claude sessions/accounts with no
 shared memory between them — this file is the handoff.
 
+## ✅ DONE, tested, awaiting Anton's push — settings.html list-clutter
+## follow-up (2026-08-14, same day, caught by Anton testing the panel live
+## right after the push below)
+
+Two small changes to the Reverse Transactions panel, both from Anton
+watching the live "twse" test entries pile up in the list:
+
+1. **No more separate "Reversed: ..." row.** `executeReversal()` used to
+   log the reversal itself as a second, new `reverseTransactionEntry`
+   entry (an audit trail) in addition to flipping `reversed:true` on the
+   original entry. Anton pointed out this was pure duplication — the
+   original entry's own `reversed`/`reversedAt` fields (shown as the green
+   "Reversed" badge on that same row) already say everything the second
+   row said. Removed that `logTransactionB(...)` call, and removed
+   `logTransactionB` itself from settings.html entirely since nothing else
+   there used it.
+2. **Reversed entries drop out of the default view after ~24h.** Added
+   `HIDE_REVERSED_AFTER_MS` (24 hours) to `entryMatchesFilter()` — an entry
+   with `reversed:true` older than that is excluded from the default
+   (no date filter active) recent list, so old settled reversals don't
+   permanently clutter it. Nothing is deleted — searching an explicit date
+   range that covers it still shows it, for when someone genuinely needs
+   to dig up an old reversal.
+
+**Tested:** extended the same Playwright end-to-end suite from the panel's
+initial build (now 19/19) — added checks that reversing no longer creates
+a second log entry (`txnRows.length` stays at the original count), and a
+new scenario seeding an entry reversed 30 hours ago that's confirmed
+hidden from the default view but reappears when explicitly searching the
+date it happened on.
+
 ## ✅ DONE, tested, awaiting Anton's push — Reverse Transactions UI
 ## (2026-08-14, phase 2 of the "reverse transactions" feature — the panel
 ## itself, on top of phase 1's write-logging instrumentation above)
