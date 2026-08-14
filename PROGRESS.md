@@ -17,6 +17,47 @@ that same commit hash, matching local `HEAD` exactly. Nothing left to do
 here. Leaving the original text below for the historical record, but a new
 session does NOT need to re-run anything in it.
 
+## ✅ DONE, tested, awaiting Anton's push — Add/Edit Expense/Income modal
+## silently saved with required fields left blank (2026-08-14)
+
+**Bug reported by Anton:** saved a test expense with Payment method left at
+"— Select —" and no warning appeared (screenshot showed it saved and
+appears in the ledger with no payment method).
+
+**Investigated before touching anything** (per Anton's "confirm your
+understanding before coding" request): checked whether this was a
+migration regression by comparing against BOTH references --
+`upload to hostgator/accounts.html` (the real, currently-live production
+frontend -- confirmed by its `scriptUrl` pointing at a real
+`script.google.com/macros/.../exec` deployment, not a placeholder) and
+Code.gs's `addExpenseRow`/`addIncomeRow` handlers. **Neither the live
+app's client-side JS nor the server ever actually required Payment
+method (or Date, or Amount) to be filled in** -- `modalSaveBtn`'s click
+handler in the live hostgator copy has line-for-line identical validation
+to what the JSON port had. So this was NOT something the migration broke;
+it appears to have simply never been enforced, in either version. Told
+Anton this plainly rather than assuming he was right that "it was there
+before" -- but he wants it enforced regardless, so this is a genuine new
+feature, not a restore.
+
+**Fix implemented (accounts.html, `modalSaveBtn` click handler, ~line
+3110):** Date, description (Expense/Income text), Amount, and Payment
+method (`fExpensePayment` / `fPaidBy`) are now all required before the
+modal will proceed to save -- each shows a specific `setModalError(...)`
+message and returns early, exactly like the pre-existing description/
+amount-format checks already did. "Name" on the Income side deliberately
+stays OPTIONAL, matching both references above (neither required it).
+
+**Tested** via a real Playwright/headless-Chromium run against the actual
+page (not a DOM mock) -- served the real `accounts.html` statically (no
+live backend needed since validation runs entirely before any `fetch`
+call) and drove the real `#modalSaveBtn` button. 6/6 passed: blank payment
+method blocks save with a payment-specific error (Anton's exact repro);
+filling every required field proceeds past validation; blank date blocks
+save; blank amount blocks save; Income's blank payment method blocks
+save; Income with Name left blank still passes (confirms Name truly
+stays optional, not accidentally required too).
+
 ## ✅ DONE, tested, awaiting Anton's push — bike income/expense summary
 ## columns don't recalculate after a JSON-model write (2026-08-14)
 
@@ -100,11 +141,64 @@ but a full-file grep on 2026-08-14 confirms `writeSheetJson('bikes', ...)`
 only appears at this one call site in accounts.html, so there's currently
 nothing else to check.
 
+## ✅ AUDIT COMPLETE, awaiting Anton's prioritization -- full app-wide
+## formula-cascade sanity check (2026-08-14)
+
+Anton asked for a full sweep: cross-reference every ported page's writes
+against BOTH `Code.gs` (control flow reference) and the xlsx (live-formula
+reference) to find every other place with the same bug class as the
+bikes-sheet cascade fix above. **Full findings report:**
+`FORMULA_CASCADE_AUDIT_2026-08-14.md` (project root on the Mac, alongside
+this file) -- read that file in full before starting any of the items
+below, it has exact formulas, exact file/line references, and severity
+reasoning for each. Per Anton's explicit instruction, **nothing in that
+report has been fixed yet** -- it's a findings list only, to be
+prioritized before any code changes.
+
+**Summary of what needs fixing, in the report's suggested order:**
+1. **Operation sheet Current KM/Remaining/Status** (parts.html's
+   `updateBikeRowJson`, add-bikes.html's `editBikeFromJson`) -- highest
+   severity, feeds oilchange.html's daily-use status badge directly, most
+   contained fix.
+2. **Monthly ledger "Bank" balance + deposit-log totals + cash-sheet
+   totals** (accounts.html, deposits.html, and every file that appends to
+   the cash sheet) -- this is Anton's originally-described concern
+   exactly. Three sheets, one shared recompute-after-write pattern
+   (same shape as the bikes-sheet fix, just chained further).
+3. **Bike Tax staleness on EDIT** (not just add, which was already known)
+   -- add-bikes.html's `editBikeFromJson`; low severity today (nothing
+   reads it back yet) but corrects a misleading existing code comment.
+4. **Month-rollover mechanism** -- not ported at all (`index.html`'s
+   button is a disconnected placeholder); bigger/structural, needs
+   Anton's explicit scoping decision, already flagged pre-audit
+   (see "Immediate next task" list below) but now confirmed directly
+   relevant to item 2's "Bank" figure.
+
+**Confirmed harmless, no fix needed** (also detailed in the report):
+customer sheet's Status column (dead field, nothing reads it), customer
+sheet's L/O columns (not real formulas), Parts_and_Oil_change's Status/
+days-since columns (both already computed live by the pages that read
+them, by design), cash sheet's I9/C278 (nothing writes to their sources),
+Operation's rental-projection columns (nothing writes to them at all,
+different problem than this audit's scope), Bike Tax G/H on new-bike-add
+specifically (already known, confirmed accurate, low severity).
+
+Also corrected in this pass: `oilchange.html`'s status-table row below
+previously claimed "Writes (JSON): Done" -- it's actually a pure
+read-only dashboard, always has been, zero write calls, no `oilChange`
+action in Code.gs either. Documentation error only, not a functional gap.
+
 ## Reference materials (ground truth for how the original app behaved)
 
 - **`Code.gs`** (project root on the Mac) — the actual Apps Script backend
   that ran against the real Sheets for years. Still the reference for
   business logic/control flow.
+- **`upload to hostgator/`** (project root on the Mac) — the REAL, currently-
+  live production frontend (confirmed via its `scriptUrl` pointing at a
+  real `script.google.com/macros/.../exec` deployment). Useful as a
+  second, independent reference alongside Code.gs for exactly what the
+  client used to do (e.g. what was/wasn't validated) -- checked for the
+  modal-validation bug above.
 - **`AA Scooter Account 2026.xlsx`** (project root on the Mac, added
   2026-08-14) — a real, formula-intact copy of the original spreadsheet
   Anton supplied specifically as a reference for reconstructing exactly how
@@ -177,7 +271,7 @@ confirms it landed.
 | Page | Reads (JSON) | Writes (JSON) | Notes |
 |---|---|---|---|
 | bikes.html | Done | Done | markReturned/updateReturnPickup, short-extension, swapBike, earlyReturnBike, returnDeposit, long-extension (30+ day) all ported+tested. `fetch(scriptUrl` sweep: 0 real calls (2 comment mentions only). |
-| accounts.html | Done | Done | addExpense/editExpense/deleteExpense/addIncome/editIncome/deleteIncome/transferToBank, plus expense-type persistence + bulkSetExpenseType. New design decision made unilaterally: expense type is now stored as a notes-sidecar marker on column E (`EXPENSE_TYPE_NOTE_COL_B`) since real cell colors have no JSON equivalent — **not explicitly approved by Anton, flagged for review.** `fetch(scriptUrl` sweep: 0 real calls. **2026-08-14 fix:** bike-sheet income/expenses/profit/net-profit cascade now recomputed on every bike-split write (see "DONE, tested, awaiting Anton's push" section above) — was previously frozen at JSON-export time. |
+| accounts.html | Done | Done | addExpense/editExpense/deleteExpense/addIncome/editIncome/deleteIncome/transferToBank, plus expense-type persistence + bulkSetExpenseType. New design decision made unilaterally: expense type is now stored as a notes-sidecar marker on column E (`EXPENSE_TYPE_NOTE_COL_B`) since real cell colors have no JSON equivalent — **not explicitly approved by Anton, flagged for review.** `fetch(scriptUrl` sweep: 0 real calls. **2026-08-14 fix 1:** bike-sheet income/expenses/profit/net-profit cascade now recomputed on every bike-split write (see "DONE, tested, awaiting Anton's push" section above) — was previously frozen at JSON-export time. **2026-08-14 fix 2:** Add/Edit Expense/Income modal now requires Date/description/Amount/Payment method before saving (previously saved silently with any of these left blank — confirmed via the live production app + Code.gs that this was never actually enforced anywhere, not a migration regression, but Anton wants it enforced going forward). |
 | contract.html | Done | Done (Create/Edit/Cancel) | Drive-file actions (findContractDocument, uploadPassportPhoto, generateReceipt, generateChecklist, getFilesForShare, regenerateContract) still hit the old scriptUrl by design — these need a live Drive/PDF backend regardless of the JSON migration, not in scope for this effort. 13 real calls remain, all confirmed Drive-file ops. |
 | customers.html | Done | Done (intake) | Customer-intake write cascade ported, shared with contract.html's doRent path. `fetch(scriptUrl` sweep (2026-08-14): 0 real calls (2 comment mentions only) — the "2 sites not yet audited" note from before was stale, there's nothing left here. |
 | deposits.html | Done | Done | deductDeposit/deductCashDeposit AND addDeposit/editDeposit/deleteDeposit (`addDepositEntryJson`/`editDepositEntryJson`/`deleteDepositEntryJson`) are ALL already ported and already committed+pushed (commit `1dba35c`, whose message only mentioned deductDeposit/deductCashDeposit — misleading, but the diff shows all five). **Confirmed via `fetch(scriptUrl` sweep (2026-08-14): 0 real calls left, and md5 of the container's copy matches the Mac's committed copy exactly.** This row was wrongly marked "Partial" before — no work was actually needed here. |
@@ -185,7 +279,7 @@ confirms it landed.
 | available-bikes.html | Done | n/a (read-only page) | |
 | bike-income.html | Done | n/a (read-only page) | |
 | bikephotos.html | Done | Out of scope | uploadPhoto/deletePhoto are Drive file operations — need a live backend regardless of JSON migration. 4 real calls remain, confirmed Drive-file ops. |
-| oilchange.html | Done | Done | |
+| oilchange.html | Done | n/a (read-only page) | **Corrected 2026-08-14:** this row previously (wrongly) said "Writes: Done" — a full grep found ZERO `writeSheetJson(` calls anywhere in this file, and Code.gs has no `oilChange`-named write action either. It's a pure read-only dashboard (`getPartsDataFromJson`/`getBikeRentalStatusFromJson`, both reads) and always has been — there was never a write to port here. Documentation error only, not a functional gap. |
 | parts.html | Done | Done | Turned out ALREADY PORTED in the cloud sandbox (dated 13/08/2026 in its own code comment) but never pushed — the exact bikes.html near-miss pattern, again. `getPartsDataFromJson`/`updateBikeRowJson` were already fully written and wired to the UI (`saveFields`/`performQuickSave`/`performSave`). Tested via `/tmp/parts_write_test.js` (existing thin test extended 2026-08-14 with: date/numeric/text/blank value-type coercion checks, clearing a field to blank actually clears it, an unknown field name is silently ignored rather than crashing, categoryRows/rates are populated from real Bike_Tax/rates_per_day data, and a malformed rates sheet reports a warning rather than throwing) — all pass. `readOdometerWithAI` correctly stays on the old disconnected path (AI vision call, no backend integration exists for this). Pushed to Mac, confirmed via md5 match (`b451b8a...`). |
 | reply-assistant.html | Done | Done | `addContact` (`addContactFromJson`) is already ported and wired (line ~1212) — the "not yet audited" note was stale. `fetch(scriptUrl` sweep: 2 real calls remain, both confirmed AI-assist (`generateReplyDraft`, `readWhatsAppContactWithAI`) — correctly out of scope. |
 | bike-name-audit.html | Done | Done | `fetch(scriptUrl` sweep (2026-08-14): 0 real calls (1 comment mention only) — the "1 site not yet audited" note was stale, nothing left here. |

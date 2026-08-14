@@ -3118,12 +3118,37 @@ modalSaveBtn.addEventListener('click', () => {
   };
   if (isEdit) payload.row = modalEditRow;
 
+  // Required-fields check (added 14/08/2026 -- Anton reported the modal
+  // silently saved an expense with "— Select —" left as the payment
+  // method, with no warning at all. Neither the live production app
+  // (upload to hostgator/accounts.html) nor Code.gs's addExpenseRow/
+  // addIncomeRow actually enforced this server- or client-side either --
+  // it appears to have never been a hard requirement, not something this
+  // migration regressed -- but Anton wants it enforced going forward, so
+  // date/description/amount/payment are now all mandatory here. "Name" on
+  // the income side stays optional, matching both of those references.
+  if (!payload.date) { setModalError('Please select a date.'); return; }
+
   if (isIncome) {
     payload.income = fIncome.value.trim();
     payload.name = fName.value.trim();
     payload.paidBy = fPaidBy.value.trim();
     payload.incomeBikeSplits = fExpenseBikeToggle.checked ? collectBikeSplits() : [];
     if (!payload.income) { setModalError('Please enter an income description.'); return; }
+  } else {
+    payload.expense = fExpense.value.trim();
+    payload.payment = fExpensePayment.value;
+    payload.expenseType = fExpenseType.value;
+    payload.expenseBikeSplits = fExpenseBikeToggle.checked ? collectBikeSplits() : [];
+    if (!payload.expense) { setModalError('Please enter an expense description.'); return; }
+  }
+
+  if (fAmount.value === '') { setModalError('Please enter an amount.'); return; }
+  payload.amount = Number(fAmount.value);
+  if (isNaN(payload.amount)) { setModalError('Amount must be a number.'); return; }
+
+  if (isIncome) {
+    if (!payload.paidBy) { setModalError('Please select a payment method.'); return; }
 
     // Add-only: paidFromDepositFeatureEnabled is false whenever this is an
     // edit, so an edit never sends these fields even if the checkbox
@@ -3135,14 +3160,8 @@ modalSaveBtn.addEventListener('click', () => {
       payload.depositRow = Number(fPaidFromDeposit.value);
     }
   } else {
-    payload.expense = fExpense.value.trim();
-    payload.payment = fExpensePayment.value;
-    payload.expenseType = fExpenseType.value;
-    payload.expenseBikeSplits = fExpenseBikeToggle.checked ? collectBikeSplits() : [];
-    if (!payload.expense) { setModalError('Please enter an expense description.'); return; }
+    if (!payload.payment) { setModalError('Please select a payment method.'); return; }
   }
-  payload.amount = fAmount.value === '' ? '' : Number(fAmount.value);
-  if (fAmount.value !== '' && isNaN(payload.amount)) { setModalError('Amount must be a number.'); return; }
 
   pendingPayload = payload;
   runPendingPayload();
