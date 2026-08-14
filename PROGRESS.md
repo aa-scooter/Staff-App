@@ -6,6 +6,102 @@ update its row below in the same commit. This exists because work on this
 project gets picked up across multiple Claude sessions/accounts with no
 shared memory between them — this file is the handoff.
 
+## ✅ DONE, tested, awaiting Anton's push — Reverse Transactions UI
+## (2026-08-14, phase 2 of the "reverse transactions" feature — the panel
+## itself, on top of phase 1's write-logging instrumentation above)
+
+**What Anton asked for:** a Settings-page panel showing the last 10 writes
+across the app, with the ability to search further back, and click-to-
+reverse with a confirmation dialog. When asked where it should live, Anton
+asked for a new dedicated `settings.html` page (reached via the gear icon)
+that also absorbs what used to be a small dropdown widget baked into
+`nav.js` (AI provider toggle, "Reset data from latest deploy", sign out) —
+rather than cramming the new panel into that small dropdown.
+
+**New file: `settings.html`.** Four sections: AI provider, Transaction
+history (the new panel), Data (testing)/reset, Account/sign out. The AI
+provider toggle, reset-data button, and sign-out button are moved here
+byte-for-byte in behavior from nav.js's old dropdown (including that the AI
+provider toggle is still hitting `BUGS_SCRIPT_URL = ''`, i.e. still
+disconnected — pre-existing state, not something this pass touched).
+
+**`nav.js` change:** the gear icon is no longer a dropdown-opening button —
+it's now a plain `<a href="settings.html">` link, with `.active` styling
+when already on that page (same pattern every other nav link uses). All of
+the old dropdown's CSS/JS (`.settings-wrap`/`.settings-dropdown`/
+`.settings-pill`/etc., `initSettingsWidget`/`loadSettingsProvider`/
+`setSettingsProvider`/`initDataResetWidget`/`initSignOutWidget`/
+`closeSettingsDropdown`) was removed from nav.js — it's the one shared file
+across every page (UI chrome only, no business logic per this project's
+convention), so moving the AI-provider/reset/sign-out logic out to
+settings.html's own page-private copy (matching how every other page does
+it) was part of this move, not just an add.
+
+**Transaction history panel — how it works:**
+- Fetches the whole `transactionLog.json` (via the existing generic
+  `/api/data/transactionLog` endpoint from phase 1 — no new API route).
+  Sorted newest-first client-side, showing the last 10 by default with a
+  "Show more" button (loads more from what's already fetched, no extra
+  round-trip) and a From/To date search that filters the full loaded set.
+- Each entry shows as a card: summary, timestamp, page/action, and a
+  badge — "Reversible", "Not reversible" (with its `note` shown, e.g. the
+  row-shift-delete explanation from phase 1), or "Reversed &lt;when&gt;".
+  Only reversible-and-not-yet-reversed entries are clickable.
+- Clicking one opens a confirm modal (same modal-backdrop/sheet pattern
+  used everywhere else in the app) showing the summary plus a "Technical
+  detail" block listing exactly which sheet/row/columns will be restored
+  to what values, and a standing warning that a restore targets a specific
+  row number — if other rows were added/removed on that sheet since the
+  original write, a very-stale reversal could land on the wrong row.
+- Confirming re-fetches the transaction log fresh (so two people clicking
+  "Reverse" on the same entry can't both run it — the second sees "already
+  reversed"), applies each write's `before` values back to its exact
+  sheet/row/cols via the same generic `fetchSheetWithMeta`/`writeSheetJson`
+  every page already uses, then marks the log entry `reversed:true` with a
+  retry-on-409 loop (same pattern as phase 1's append), and finally logs
+  the reversal itself as a new `reversible:false` audit entry (via this
+  page's own copy of `logTransactionB`) so there's a record of who/when
+  undid what. Partial failure (some writes restore, others error) still
+  marks the entry reversed and surfaces exactly which sheet/row had a
+  problem, rather than leaving a "Reverse" button that would retry forever.
+
+**Tested end-to-end in a real headless browser (Playwright, 17/17 checks),
+not just at the function level** — served the actual `accounts.html`,
+`nav.js`, and `settings.html` from a static file server against a mocked
+backend (in-memory fake Drive store seeded with realistic log entries and
+a real "August" sheet), then drove real clicks/navigation/form fills in
+headless Chromium:
+gear icon on accounts.html is a real link to settings.html and navigating
+there works; the settings page's own gear shows active; entries render
+newest-first with correct summaries; reversible/not-reversible badges are
+correct; a not-reversible entry isn't clickable; clicking a reversible
+entry opens the confirm modal with the correct summary and technical
+detail; confirming actually restores the target sheet row's real cell
+values (verified against the mock backend's in-memory state, not just a
+UI checkmark); the log entry is marked reversed with a timestamp; a new
+audit-trail entry for the reversal itself gets created; after a page
+reload the "Reversed" badge and non-clickable state persist; clicking an
+already-reversed row is a no-op (doesn't reopen the modal); and the
+date-range search correctly narrows/empties/resets the list. Also
+confirmed no stray references to the removed dropdown CSS/JS remain
+anywhere else in the app, and that `login.html` (which opts out of the
+shared topbar) still loads cleanly against the updated nav.js.
+
+**Known limitations, deliberately not solved in this pass (matches the
+original feasibility discussion):**
+- Only writes that were instrumented in phase 1 are in the log — e.g. the
+  secondary "bikes" sheet cascade write from a bike-split income/expense
+  entry isn't separately logged, so reversing the main ledger line won't
+  undo a linked bike-split adjustment. Pre-existing phase-1 scope, not new.
+- Row-based restore has no protection against a sheet's rows having
+  shifted since the original write (see the in-modal warning above) — this
+  was flagged as a known tradeoff in the original feasibility discussion,
+  not something this UI pass could fully close given the JSON model has no
+  stable row IDs, only positions.
+- The full log is fetched in one request with no pagination — fine at
+  current data volumes, but worth revisiting if the log grows very large
+  over time (also flagged in the original feasibility discussion).
+
 ## ✅ FIXED, tested, awaiting Anton's push — accounts.html:
 ## "extras"/"deposit" income entries threw a bogus "Totals cascade NOT
 ## recalculated" warning (2026-08-14, found live by Anton right after the

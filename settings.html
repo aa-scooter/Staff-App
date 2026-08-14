@@ -1,0 +1,680 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Settings — AA Scooters</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="nav.js" defer></script>
+<style>
+  :root{
+    --sand:#F5EFE6;
+    --ink:#1A2421;
+    --petrol:#0F3D3E;
+    --petrol-light:#175A5B;
+    --cone:#FF6B35;
+    --card:#FFFFFF;
+    --line:#DED4C2;
+    --muted:#5A6663;
+    --ok:#2F855A;
+    --bad:#C53030;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; background:var(--sand); color:var(--ink);
+    font-family:'Inter',sans-serif; min-height:100vh;
+  }
+
+  .page-head{ max-width:760px; margin:0 auto; padding:22px 16px 4px; }
+  .page-head h1{
+    font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:26px;
+    color:var(--petrol); margin:0;
+  }
+  .page-head .sub{ color:var(--muted); font-size:13px; margin-top:6px; line-height:1.5; }
+
+  main{ max-width:760px; margin:0 auto; padding:16px 16px 60px; }
+
+  .settings-section{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:18px; margin-bottom:16px;
+  }
+  .settings-section h2{
+    font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:17px;
+    color:var(--petrol); margin:0 0 4px;
+  }
+  .settings-section .desc{ font-size:12.5px; color:var(--muted); margin-bottom:14px; line-height:1.5; }
+  .settings-section.danger h2{ color:#B36A2E; }
+
+  /* AI provider */
+  .settings-toggle{
+    display:flex; background:#F5EFE6; border-radius:8px; padding:3px; gap:3px; max-width:280px;
+  }
+  .settings-pill{
+    all:unset; box-sizing:border-box; flex:1; text-align:center; padding:9px 0;
+    border-radius:6px; color:var(--muted); font-size:13px; font-weight:600; cursor:pointer;
+    font-family:'Inter',sans-serif;
+  }
+  .settings-pill.active{ background:var(--cone); color:#fff; }
+  .settings-hint{ font-size:11.5px; color:#9AA6A1; margin-top:10px; line-height:1.4; }
+  .settings-status{ font-size:12px; color:var(--bad); margin-top:8px; }
+  .settings-status.show{ display:block; }
+  .settings-status:not(.show){ display:none; }
+
+  .settings-action-btn{
+    all:unset; box-sizing:border-box; display:inline-block; padding:11px 18px; border-radius:9px;
+    font-size:13px; font-weight:700; font-family:'Barlow Condensed',sans-serif; letter-spacing:.03em;
+    text-transform:uppercase; color:#fff; background:#B36A2E; cursor:pointer;
+  }
+  .settings-action-btn:active{ transform:scale(.98); }
+  .settings-action-btn:disabled{ opacity:.6; cursor:default; }
+  .settings-signout-btn{
+    all:unset; box-sizing:border-box; display:inline-block; padding:11px 18px; border-radius:9px;
+    font-size:13px; font-weight:700; font-family:'Barlow Condensed',sans-serif; letter-spacing:.03em;
+    text-transform:uppercase; color:#C53030; background:#FCEBEB; cursor:pointer;
+  }
+  .settings-signout-btn:active{ transform:scale(.98); }
+
+  /* Transaction history */
+  .search-bar{
+    display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end; margin-bottom:14px;
+    padding-bottom:14px; border-bottom:1px solid var(--line);
+  }
+  .search-field label{
+    display:block; font-size:11px; font-weight:600; color:var(--muted);
+    margin-bottom:5px; text-transform:uppercase; letter-spacing:.04em;
+  }
+  .search-field input{
+    padding:9px 10px; border:1px solid var(--line); border-radius:8px;
+    font-size:13.5px; font-family:'Inter',sans-serif; background:#FBFAF7; color:var(--ink);
+  }
+  .search-bar button{
+    padding:10px 14px; border:none; border-radius:8px; cursor:pointer;
+    font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:12.5px;
+    letter-spacing:.03em; text-transform:uppercase;
+  }
+  .btn-search{ background:var(--petrol); color:#fff; }
+  .btn-reset-search{ background:#EFEAE0; color:var(--petrol); }
+
+  .row{
+    background:var(--card); border:1px solid var(--line); border-radius:9px;
+    padding:10px 12px; margin-bottom:8px; font-size:13.5px;
+    display:flex; align-items:center; justify-content:space-between; gap:10px;
+  }
+  .txn-row.clickable{ cursor:pointer; }
+  .txn-row.clickable:active{ transform:scale(.99); }
+  .txn-row .left{ min-width:0; }
+  .txn-row .title{ color:var(--ink); font-weight:500; }
+  .txn-row .meta{ color:var(--muted); font-size:11.5px; margin-top:3px; line-height:1.4; }
+  .txn-right{ flex-shrink:0; }
+  .txn-badge{
+    font-size:11px; font-weight:600; padding:3px 9px; border-radius:20px; white-space:nowrap;
+  }
+  .txn-badge.reversible{ background:#EAF1EE; color:var(--petrol); }
+  .txn-badge.locked{ background:#FFF3E6; color:#B36A2E; }
+  .txn-badge.reversed{ background:#E9F7EF; color:var(--ok); }
+
+  .empty-hint{ font-size:13px; color:#8A948F; padding:8px 2px; }
+  .txn-count-hint{ font-size:11.5px; color:#9AA6A1; margin-top:4px; }
+  .txn-show-more{
+    display:none; width:100%; margin-top:6px; padding:10px; border:1px solid var(--line);
+    border-radius:9px; background:#FBFAF7; color:var(--petrol); cursor:pointer;
+    font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:12.5px;
+    letter-spacing:.03em; text-transform:uppercase;
+  }
+  .load-status{
+    font-size:12px; color:var(--bad); background:#FCEBEB; border:1px solid #F3C6C6;
+    border-radius:7px; padding:7px 10px; margin-bottom:12px; display:none;
+  }
+  .load-status.show{ display:block; }
+
+  /* Modal (same pattern used across the app) */
+  .modal-backdrop{
+    position:fixed; inset:0; background:rgba(15,36,33,.45);
+    display:none; align-items:flex-end; justify-content:center; z-index:1000;
+  }
+  .modal-backdrop.show{ display:flex; }
+  .modal-sheet{
+    background:var(--card); width:100%; max-width:480px;
+    border-radius:16px 16px 0 0; padding:20px 18px 24px;
+    max-height:90vh; overflow-y:auto;
+  }
+  @media (min-width:560px){
+    .modal-backdrop{ align-items:center; }
+    .modal-sheet{ border-radius:16px; }
+  }
+  .modal-sheet h3{
+    font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:19px;
+    color:var(--petrol); margin:0 0 12px;
+  }
+  .modal-error{
+    font-size:12.5px; color:var(--bad); background:#FCEBEB; border:1px solid #F3C6C6;
+    border-radius:7px; padding:7px 10px; margin-bottom:12px; display:none;
+  }
+  .modal-error.show{ display:block; }
+  .modal-progress{
+    font-size:12.5px; color:#2A5A8C; background:#EAF2FB; border:1px solid #BBD6F0;
+    border-radius:7px; padding:7px 10px; margin-bottom:12px; display:none; align-items:center; gap:9px;
+  }
+  .modal-progress.show{ display:flex; }
+  .modal-progress-spinner{
+    width:14px; height:14px; border:2px solid #BBD6F0; border-top-color:#2A5A8C;
+    border-radius:50%; flex-shrink:0; animation: modal-progress-spin 0.7s linear infinite;
+  }
+  @keyframes modal-progress-spin{ to{ transform:rotate(360deg); } }
+  .reverse-summary{ font-size:14.5px; color:var(--ink); font-weight:500; margin-bottom:4px; }
+  .reverse-meta{ font-size:12px; color:var(--muted); margin-bottom:12px; }
+  .reverse-warning{
+    font-size:12px; color:#B36A2E; background:#FFF3E6; border:1px solid #F3D9B8;
+    border-radius:7px; padding:8px 10px; margin-bottom:12px; line-height:1.5;
+  }
+  .reverse-details-label{
+    font-size:11px; font-weight:600; color:var(--muted); text-transform:uppercase;
+    letter-spacing:.04em; margin-bottom:5px;
+  }
+  .reverse-details{
+    font-family:monospace; font-size:11.5px; color:var(--ink); background:#FBFAF7;
+    border:1px solid var(--line); border-radius:8px; padding:9px 10px; white-space:pre-wrap;
+    word-break:break-word; max-height:160px; overflow-y:auto; margin-bottom:14px;
+  }
+  .modal-btn-row{ display:flex; gap:10px; margin-top:4px; }
+  .modal-btn-row button{
+    flex:1; padding:13px; border:none; border-radius:10px;
+    font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:14px;
+    letter-spacing:.03em; text-transform:uppercase; cursor:pointer;
+  }
+  .modal-btn-row button:active{ transform:scale(.98); }
+  .btn-cancel{ background:#EFEAE0; color:var(--petrol); }
+  .btn-delete{ background:var(--bad); color:#fff; }
+  .btn-delete:disabled{ opacity:.6; }
+</style>
+</head>
+<body>
+
+<div id="topbar-mount"></div>
+
+<div class="page-head">
+  <h1>Settings</h1>
+  <div class="sub">AI provider, transaction history, and account options.</div>
+</div>
+
+<main>
+
+  <div class="settings-section">
+    <h2>AI provider</h2>
+    <div class="desc">Used for passport scan, WhatsApp fill, reply draft, odometer read.</div>
+    <div class="settings-toggle">
+      <button type="button" class="settings-pill" data-provider="claude">Claude</button>
+      <button type="button" class="settings-pill" data-provider="gemini">Gemini</button>
+    </div>
+    <div class="settings-status" id="providerStatus"></div>
+  </div>
+
+  <div class="settings-section">
+    <h2>Transaction history</h2>
+    <div class="desc">
+      The last things saved across the app. Reversible entries restore the exact values
+      that were changed. If other rows have since been added or removed on the same
+      sheet, a restore can land on the wrong row -- reverse recent entries promptly,
+      and double-check the result afterward.
+    </div>
+
+    <div class="search-bar">
+      <div class="search-field">
+        <label for="txnFromDate">From</label>
+        <input type="date" id="txnFromDate">
+      </div>
+      <div class="search-field">
+        <label for="txnToDate">To</label>
+        <input type="date" id="txnToDate">
+      </div>
+      <button type="button" class="btn-search" id="txnSearchBtn">Search</button>
+      <button type="button" class="btn-reset-search" id="txnResetSearchBtn">Show recent</button>
+    </div>
+
+    <div class="load-status" id="txnLoadStatus"></div>
+    <div id="txnList"><div class="empty-hint">Loading…</div></div>
+    <button type="button" class="txn-show-more" id="txnShowMoreBtn">Show more</button>
+    <div class="txn-count-hint" id="txnCountHint"></div>
+  </div>
+
+  <div class="settings-section danger">
+    <h2>Data (testing)</h2>
+    <div class="desc">Overwrites the live Drive data with whatever's bundled in the current deploy. Use to recover from bad test data -- stop using this once you trust the live data.</div>
+    <button type="button" class="settings-action-btn" id="resetDataBtn">Reset data from latest deploy</button>
+    <div class="settings-status" id="resetDataStatus"></div>
+  </div>
+
+  <div class="settings-section">
+    <h2>Account</h2>
+    <button type="button" class="settings-signout-btn" id="signOutBtn">Sign out</button>
+  </div>
+
+</main>
+
+<div class="modal-backdrop" id="reverseBackdrop">
+  <div class="modal-sheet">
+    <h3>Reverse this?</h3>
+    <div class="modal-error" id="reverseError"></div>
+    <div class="modal-progress" id="reverseProgress"><span class="modal-progress-spinner"></span><span>Reversing…</span></div>
+    <div class="reverse-summary" id="reverseSummary"></div>
+    <div class="reverse-meta" id="reverseMeta"></div>
+    <div class="reverse-warning">This restores the exact cell values that were changed. It can't be undone from here once done.</div>
+    <div class="reverse-details-label">Technical detail</div>
+    <div class="reverse-details" id="reverseDetails"></div>
+    <div class="modal-btn-row">
+      <button type="button" class="btn-cancel" id="reverseCancelBtn">Cancel</button>
+      <button type="button" class="btn-delete" id="reverseConfirmBtn">Reverse</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  // Same Apps Script web-app URL every page's own inline script points at
+  // -- see nav.js's identical comment. Kept in sync manually.
+  var BUGS_SCRIPT_URL = ''; // DISCONNECTED: see project CLAUDE.md
+
+  // ---- Generic sheet IO (own copy -- this project's convention is no
+  // shared JS between pages other than nav.js's UI chrome). ----
+  async function fetchSheetWithMeta(sheetName, year) {
+    const url = year
+      ? `/api/data/${encodeURIComponent(sheetName)}?year=${encodeURIComponent(year)}`
+      : `/api/data/${encodeURIComponent(sheetName)}`;
+    const r = await fetch(url);
+    if (r.status === 401) throw new Error('Signed out -- please refresh to sign in again.');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const res = await r.json();
+    if (!res.success) throw new Error(res.error || 'Could not load data.');
+    return { rows: res.rows || [], modifiedTime: res.modifiedTime || null };
+  }
+  async function writeSheetJson(sheetName, rows, expectedModifiedTime, year) {
+    const url = year
+      ? `/api/data/${encodeURIComponent(sheetName)}?year=${encodeURIComponent(year)}`
+      : `/api/data/${encodeURIComponent(sheetName)}`;
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rows, expectedModifiedTime })
+    });
+    const res = await r.json().catch(() => ({}));
+    if (r.status === 409) throw new Error(res.error || 'This record was changed by someone else in the meantime -- please try again.');
+    if (!r.ok || !res.success) throw new Error(res.error || ('HTTP ' + r.status));
+    return res;
+  }
+
+  // ---- Transaction log helper (own copy -- see accounts.html's identical
+  // comment on the original). Used here only to log the reversal action
+  // itself, as a non-reversible audit entry. ----
+  async function logTransactionB(entry) {
+    try {
+      entry.id = 'txn_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+      entry.ts = new Date().toISOString();
+      entry.reversed = false;
+      entry.reversedAt = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        let rows, modifiedTime;
+        try {
+          const res = await fetch('/api/data/transactionLog').then(r => r.json());
+          rows = Array.isArray(res.rows) ? res.rows : [];
+          modifiedTime = res.modifiedTime || null;
+        } catch (e) { rows = []; modifiedTime = null; }
+        const newRows = rows.concat([entry]);
+        const r = await fetch('/api/data/transactionLog', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ rows: newRows, expectedModifiedTime: modifiedTime })
+        });
+        if (r.status === 409) continue;
+        return;
+      }
+    } catch (e) {
+      console.warn('Transaction log write failed (non-critical):', e && e.message);
+    }
+  }
+
+  function escapeHtmlS(s) {
+    return (s || '').toString().replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  // =====================================================================
+  // AI provider toggle -- moved here from nav.js's old settings dropdown,
+  // unchanged in behavior (still reads/writes AI_PROVIDER via Code.gs
+  // actions aiProvider / setAiProvider).
+  // =====================================================================
+  var providerLoaded = false;
+  var currentProvider = 'claude';
+
+  function highlightProviderPills() {
+    var pills = document.querySelectorAll('.settings-pill');
+    for (var i = 0; i < pills.length; i++) {
+      pills[i].classList.toggle('active', pills[i].getAttribute('data-provider') === currentProvider);
+    }
+  }
+  function loadProvider() {
+    if (providerLoaded) { highlightProviderPills(); return; }
+    fetch(BUGS_SCRIPT_URL + '?action=aiProvider')
+      .then(function (res) { return res.json(); })
+      .then(function (data) {
+        if (data && data.success && data.provider) {
+          currentProvider = data.provider;
+          providerLoaded = true;
+        }
+        highlightProviderPills();
+      })
+      .catch(function () { highlightProviderPills(); });
+  }
+  function setProvider(provider) {
+    var prev = currentProvider;
+    currentProvider = provider; // optimistic -- corrected below on failure
+    highlightProviderPills();
+    var statusEl = document.getElementById('providerStatus');
+    statusEl.classList.remove('show'); statusEl.textContent = '';
+    fetch(BUGS_SCRIPT_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ action: 'setAiProvider', provider: provider })
+    })
+      .then(function (res) { return res.json(); })
+      .then(function (data) {
+        if (!data || !data.success) {
+          currentProvider = prev;
+          highlightProviderPills();
+          statusEl.classList.add('show');
+          statusEl.textContent = (data && data.error) || 'Could not switch -- please try again.';
+        }
+      })
+      .catch(function (err) {
+        currentProvider = prev;
+        highlightProviderPills();
+        statusEl.classList.add('show');
+        statusEl.textContent = 'Could not switch: ' + err.message;
+      });
+  }
+  function initProviderWidget() {
+    var pills = document.querySelectorAll('.settings-pill');
+    for (var i = 0; i < pills.length; i++) {
+      pills[i].addEventListener('click', function () { setProvider(this.getAttribute('data-provider')); });
+    }
+    loadProvider();
+  }
+
+  // =====================================================================
+  // "Reset data from latest deploy" -- moved here unchanged from nav.js.
+  // =====================================================================
+  function initDataResetWidget() {
+    var btn = document.getElementById('resetDataBtn');
+    if (!btn) return;
+    btn.addEventListener('click', function () {
+      var statusEl = document.getElementById('resetDataStatus');
+      function setStatus(msg, isError) {
+        statusEl.classList.toggle('show', !!msg);
+        statusEl.textContent = msg || '';
+        statusEl.style.color = isError ? '#c0392b' : '#2F855A';
+      }
+      if (!confirm('Overwrite the live Drive data with the version currently deployed? This replaces whatever\'s been saved during testing.')) return;
+      btn.disabled = true;
+      setStatus('Resetting…', false);
+      fetch('/api/admin/reset', { method: 'POST' })
+        .then(function (res) { return res.json(); })
+        .then(function (data) {
+          if (!data || !data.success) {
+            setStatus((data && data.error) || 'Reset failed -- please try again.', true);
+            return;
+          }
+          setStatus('Reset ' + data.filesReset + ' file(s) from the deploy.', false);
+        })
+        .catch(function (err) { setStatus('Reset failed: ' + err.message, true); })
+        .finally(function () { btn.disabled = false; });
+    });
+  }
+
+  // =====================================================================
+  // Sign out -- moved here unchanged from nav.js.
+  // =====================================================================
+  function initSignOutWidget() {
+    var btn = document.getElementById('signOutBtn');
+    if (!btn) return;
+    btn.addEventListener('click', function () {
+      btn.disabled = true;
+      fetch('/api/auth/logout', { method: 'POST' })
+        .catch(function () { /* fall through to redirect regardless */ })
+        .finally(function () { window.location.href = '/login.html'; });
+    });
+  }
+
+  // =====================================================================
+  // Transaction history / reverse-transactions panel.
+  // =====================================================================
+  var allEntries = [];
+  var entriesLoaded = false;
+  var visibleCount = 10;
+  var PAGE_SIZE = 10;
+  var filterFromIso = '';
+  var filterToIso = '';
+  var pendingEntry = null;
+
+  function fmtTs(iso) {
+    var d = new Date(iso);
+    if (!iso || isNaN(d.getTime())) return iso || '—';
+    return d.toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+  }
+
+  function entryMatchesFilter(e) {
+    if (filterFromIso && (!e.ts || e.ts < filterFromIso)) return false;
+    if (filterToIso && (!e.ts || e.ts > filterToIso)) return false;
+    return true;
+  }
+  function currentFilteredSorted() {
+    return allEntries.filter(entryMatchesFilter).slice().sort(function (a, b) {
+      return (b.ts || '').localeCompare(a.ts || '');
+    });
+  }
+
+  function renderTxnRow(e) {
+    var canReverse = !!(e.reversible && !e.reversed);
+    var badge = e.reversed
+      ? '<span class="txn-badge reversed">Reversed ' + escapeHtmlS(fmtTs(e.reversedAt)) + '</span>'
+      : (e.reversible ? '<span class="txn-badge reversible">Reversible</span>' : '<span class="txn-badge locked">Not reversible</span>');
+    var note = (e.writes && e.writes[0] && e.writes[0].note) ? '<div class="meta">' + escapeHtmlS(e.writes[0].note) + '</div>' : '';
+    return (
+      '<div class="row txn-row' + (canReverse ? ' clickable' : '') + '" data-id="' + escapeHtmlS(e.id) + '">' +
+        '<div class="left">' +
+          '<div class="title">' + escapeHtmlS(e.summary || '(no summary)') + '</div>' +
+          '<div class="meta">' + escapeHtmlS(fmtTs(e.ts)) + ' — ' + escapeHtmlS(e.page || '') + (e.action ? (' (' + escapeHtmlS(e.action) + ')') : '') + '</div>' +
+          note +
+        '</div>' +
+        '<div class="txn-right">' + badge + '</div>' +
+      '</div>'
+    );
+  }
+
+  function renderTxnList() {
+    var listEl = document.getElementById('txnList');
+    var filtered = currentFilteredSorted();
+    var shown = filtered.slice(0, visibleCount);
+    if (!filtered.length) {
+      listEl.innerHTML = '<div class="empty-hint">No transactions ' + ((filterFromIso || filterToIso) ? 'in that date range.' : 'logged yet.') + '</div>';
+    } else {
+      listEl.innerHTML = shown.map(renderTxnRow).join('');
+    }
+    document.getElementById('txnShowMoreBtn').style.display = (filtered.length > shown.length) ? 'block' : 'none';
+    document.getElementById('txnCountHint').textContent = filtered.length ? ('Showing ' + shown.length + ' of ' + filtered.length + '.') : '';
+  }
+
+  async function loadTransactionLog(force) {
+    var statusEl = document.getElementById('txnLoadStatus');
+    statusEl.classList.remove('show'); statusEl.textContent = '';
+    if (entriesLoaded && !force) { renderTxnList(); return; }
+    document.getElementById('txnList').innerHTML = '<div class="empty-hint">Loading…</div>';
+    try {
+      const { rows } = await fetchSheetWithMeta('transactionLog');
+      allEntries = Array.isArray(rows) ? rows.filter(Boolean) : [];
+      entriesLoaded = true;
+      visibleCount = PAGE_SIZE;
+      renderTxnList();
+    } catch (e) {
+      document.getElementById('txnList').innerHTML = '';
+      statusEl.classList.add('show');
+      statusEl.textContent = 'Could not load transaction history: ' + e.message;
+    }
+  }
+
+  function initTxnSearch() {
+    document.getElementById('txnSearchBtn').addEventListener('click', function () {
+      var fromVal = document.getElementById('txnFromDate').value;
+      var toVal = document.getElementById('txnToDate').value;
+      filterFromIso = fromVal ? (fromVal + 'T00:00:00.000') : '';
+      filterToIso = toVal ? (toVal + 'T23:59:59.999') : '';
+      visibleCount = PAGE_SIZE;
+      renderTxnList();
+    });
+    document.getElementById('txnResetSearchBtn').addEventListener('click', function () {
+      document.getElementById('txnFromDate').value = '';
+      document.getElementById('txnToDate').value = '';
+      filterFromIso = ''; filterToIso = '';
+      visibleCount = PAGE_SIZE;
+      renderTxnList();
+    });
+    document.getElementById('txnShowMoreBtn').addEventListener('click', function () {
+      visibleCount += PAGE_SIZE;
+      renderTxnList();
+    });
+    document.getElementById('txnList').addEventListener('click', function (e) {
+      var row = e.target.closest ? e.target.closest('.txn-row.clickable') : null;
+      if (!row) return;
+      var id = row.getAttribute('data-id');
+      var entry = allEntries.find(function (x) { return x.id === id; });
+      if (entry) openReverseModal(entry);
+    });
+  }
+
+  function openReverseModal(entry) {
+    pendingEntry = entry;
+    document.getElementById('reverseError').classList.remove('show');
+    document.getElementById('reverseProgress').classList.remove('show');
+    document.getElementById('reverseSummary').textContent = entry.summary || '(no summary)';
+    document.getElementById('reverseMeta').textContent = fmtTs(entry.ts) + ' — ' + (entry.page || '') + (entry.action ? (' (' + entry.action + ')') : '');
+    var details = (entry.writes || []).map(function (w) {
+      return (w.sheet || '') + (w.year ? (' ' + w.year) : '') + ', row ' + w.row + ' — will restore to ' + JSON.stringify(w.before);
+    }).join('\n');
+    document.getElementById('reverseDetails').textContent = details || '(no recorded writes for this entry)';
+    document.getElementById('reverseBackdrop').classList.add('show');
+    document.getElementById('reverseConfirmBtn').disabled = false;
+  }
+  function closeReverseModal() {
+    document.getElementById('reverseBackdrop').classList.remove('show');
+    pendingEntry = null;
+  }
+
+  async function executeReversal() {
+    var entry = pendingEntry;
+    if (!entry) return;
+    var btn = document.getElementById('reverseConfirmBtn');
+    var errEl = document.getElementById('reverseError');
+    var progEl = document.getElementById('reverseProgress');
+    errEl.classList.remove('show'); errEl.textContent = '';
+    progEl.classList.add('show');
+    btn.disabled = true;
+
+    try {
+      // Re-fetch the log fresh right before acting, so two staff clicking
+      // "Reverse" on the same entry at the same time don't both run it.
+      const { rows: logRows } = await fetchSheetWithMeta('transactionLog');
+      var fresh = (logRows || []).find(function (x) { return x && x.id === entry.id; });
+      if (!fresh) throw new Error('This entry no longer exists in the transaction log.');
+      if (fresh.reversed) throw new Error('This was already reversed' + (fresh.reversedAt ? (' at ' + fmtTs(fresh.reversedAt)) : '') + '.');
+      if (!fresh.reversible) throw new Error('This entry is marked as not reversible.');
+
+      var writeErrors = [];
+      var writes = fresh.writes || [];
+      for (var i = 0; i < writes.length; i++) {
+        var w = writes[i];
+        try {
+          const { rows, modifiedTime } = await fetchSheetWithMeta(w.sheet, w.year || undefined);
+          var newRows = rows.map(function (r) { return r.slice(); });
+          var rowIdx = w.row - 1;
+          if (!newRows[rowIdx]) throw new Error('row ' + w.row + ' no longer exists on this sheet');
+          var targetRow = newRows[rowIdx].slice();
+          (w.cols || []).forEach(function (col1, ci) {
+            while (targetRow.length < col1) targetRow.push('');
+            targetRow[col1 - 1] = (w.before || [])[ci];
+          });
+          newRows[rowIdx] = targetRow;
+          await writeSheetJson(w.sheet, newRows, modifiedTime, w.year || undefined);
+        } catch (e) {
+          writeErrors.push((w.sheet || '') + (w.year ? (' ' + w.year) : '') + ' row ' + w.row + ': ' + e.message);
+        }
+      }
+
+      // Mark the entry reversed in the log regardless of partial write
+      // failures above -- so it doesn't stay stuck offering a "Reverse"
+      // button that will never fully succeed. Retries on a write conflict
+      // since another log append could have landed in between.
+      for (var attempt = 0; attempt < 3; attempt++) {
+        const { rows: curRows, modifiedTime: curModifiedTime } = await fetchSheetWithMeta('transactionLog');
+        var curIdx = (curRows || []).findIndex(function (x) { return x && x.id === entry.id; });
+        if (curIdx === -1) break;
+        var updated = curRows.slice();
+        updated[curIdx] = Object.assign({}, updated[curIdx], { reversed: true, reversedAt: new Date().toISOString() });
+        try {
+          await writeSheetJson('transactionLog', updated, curModifiedTime);
+          break;
+        } catch (e) {
+          if (attempt === 2) throw e;
+        }
+      }
+
+      // Log the reversal itself as its own audit entry (not itself
+      // reversible -- undoing an undo isn't supported here).
+      await logTransactionB({
+        page: 'settings.html', action: 'reverseTransactionEntry', reversible: false,
+        summary: 'Reversed: ' + (fresh.summary || fresh.id),
+        writes: []
+      });
+
+      if (writeErrors.length) {
+        throw new Error('Marked as reversed, but some writes had issues: ' + writeErrors.join('; '));
+      }
+
+      closeReverseModal();
+      await loadTransactionLog(true);
+    } catch (e) {
+      progEl.classList.remove('show');
+      errEl.classList.add('show');
+      errEl.textContent = e.message || 'Could not reverse this -- please try again.';
+      btn.disabled = false;
+    }
+  }
+
+  function initReverseModal() {
+    document.getElementById('reverseCancelBtn').addEventListener('click', closeReverseModal);
+    document.getElementById('reverseConfirmBtn').addEventListener('click', executeReversal);
+    var backdrop = document.getElementById('reverseBackdrop');
+    var mouseDownOnBackdrop = false;
+    backdrop.addEventListener('mousedown', function (e) { mouseDownOnBackdrop = (e.target === backdrop); });
+    backdrop.addEventListener('click', function (e) {
+      if (e.target === backdrop && mouseDownOnBackdrop) closeReverseModal();
+      mouseDownOnBackdrop = false;
+    });
+  }
+
+  function init() {
+    initProviderWidget();
+    initDataResetWidget();
+    initSignOutWidget();
+    initTxnSearch();
+    initReverseModal();
+    loadTransactionLog(false);
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+})();
+</script>
+
+</body>
+</html>

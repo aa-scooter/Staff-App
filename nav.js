@@ -336,93 +336,19 @@
     '  }\n' +
     '  .topbar .nav-dropdown a:hover{ color:#fff; background:rgba(255,255,255,.10); }\n' +
     '  .topbar .nav-dropdown a.active{ color:#fff; background:rgba(255,255,255,.16); }\n' +
-    '  .topbar .settings-wrap{\n' +
-    '    position:relative;\n' +
-    '  }\n' +
     '  .topbar .settings-link{\n' +
-    '    all:unset;\n' + // same page-level `button{...}` bleed risk as .bug-link/.nav-cat-btn
-                         // above -- reset everything first, see those comments.
-    '    box-sizing:border-box;\n' +
     '    display:flex;\n' +
     '    align-items:center;\n' +
     '    justify-content:center;\n' +
     '    width:26px; height:26px;\n' +
     '    border-radius:7px;\n' +
     '    background:rgba(255,255,255,.12);\n' +
-    '    cursor:pointer;\n' +
+    '    text-decoration:none;\n' +
     '    font-size:14px;\n' +
     '    color:#CFE3E0;\n' +
     '  }\n' +
     '  .topbar .settings-link:hover{ background:rgba(255,255,255,.22); }\n' +
-    '  .topbar .settings-wrap.open .settings-link{ background:rgba(255,255,255,.28); color:#fff; }\n' +
-    '  .topbar .settings-dropdown{\n' +
-    '    display:none;\n' +
-    '    position:absolute;\n' +
-    '    top:calc(100% + 10px);\n' +
-    '    right:0;\n' +
-    '    background:#fff;\n' +
-    '    border-radius:10px;\n' +
-    '    min-width:210px;\n' +
-    '    padding:12px;\n' +
-    '    box-shadow:0 10px 28px rgba(0,0,0,.28);\n' +
-    '    z-index:600;\n' +
-    '  }\n' +
-    '  .topbar .settings-wrap.open .settings-dropdown{ display:block; }\n' +
-    '  .settings-dropdown-label{\n' +
-    "    font-family:'Barlow Condensed',sans-serif;\n" +
-    '    font-size:12px; font-weight:700; letter-spacing:.06em; text-transform:uppercase;\n' +
-    '    color:#5A6663; margin-bottom:8px;\n' +
-    '  }\n' +
-    '  .settings-toggle{\n' +
-    '    display:flex;\n' +
-    '    background:#F5EFE6;\n' +
-    '    border-radius:8px;\n' +
-    '    padding:3px; gap:3px;\n' +
-    '  }\n' +
-    '  .settings-pill{\n' +
-    '    all:unset;\n' +
-    '    box-sizing:border-box;\n' +
-    '    flex:1;\n' +
-    '    text-align:center;\n' +
-    '    padding:7px 0;\n' +
-    '    border-radius:6px;\n' +
-    '    color:#5A6663;\n' +
-    '    font-size:12.5px;\n' +
-    '    font-weight:600;\n' +
-    '    cursor:pointer;\n' +
-    "    font-family:'Inter',sans-serif;\n" +
-    '  }\n' +
-    '  .settings-pill.active{ background:#FF6B35; color:#fff; }\n' +
-    '  .settings-hint{\n' +
-    '    font-size:11px; color:#9AA6A1; margin-top:8px; line-height:1.4;\n' +
-    '  }\n' +
-    '  .settings-status{\n' +
-    '    font-size:11.5px; color:#c0392b; margin-top:6px;\n' +
-    '  }\n' +
-    '  .settings-divider{\n' +
-    '    height:1px; background:#EFEAE0; margin:12px 0;\n' +
-    '  }\n' +
-    '  .settings-action-btn{\n' +
-    '    all:unset;\n' +
-    '    box-sizing:border-box;\n' +
-    '    display:block; width:100%; text-align:left;\n' +
-    '    padding:8px 9px; border-radius:7px;\n' +
-    '    font-size:12.5px; font-weight:600;\n' +
-    "    font-family:'Inter',sans-serif;\n" +
-    '    color:#5A6663; cursor:pointer;\n' +
-    '  }\n' +
-    '  .settings-action-btn:hover{ background:#F5EFE6; }\n' +
-    '  .settings-action-btn.danger{ color:#B36A2E; }\n' +
-    '  .settings-signout-btn{\n' +
-    '    all:unset;\n' +
-    '    box-sizing:border-box;\n' +
-    '    display:block; width:100%; text-align:left;\n' +
-    '    padding:8px 9px; border-radius:7px;\n' +
-    '    font-size:12.5px; font-weight:600;\n' +
-    "    font-family:'Inter',sans-serif;\n" +
-    '    color:#C53030; cursor:pointer;\n' +
-    '  }\n' +
-    '  .settings-signout-btn:hover{ background:#FCEBEB; }\n';
+    '  .topbar .settings-link.active{ background:rgba(255,255,255,.28); color:#fff; }\n';
 
   function currentPage() {
     var path = window.location.pathname.split('/').pop();
@@ -492,7 +418,6 @@
           e.stopPropagation();
           var isOpen = cat.classList.contains('open');
           closeAllNavDropdowns(cat);
-          closeSettingsDropdown();
           cat.classList.toggle('open', !isOpen);
           btn.setAttribute('aria-expanded', String(!isOpen));
         });
@@ -500,153 +425,7 @@
     }
     document.addEventListener('click', function () {
       closeAllNavDropdowns();
-      closeSettingsDropdown();
     });
-  }
-
-  // =====================================================================
-  // Settings gear -- AI provider toggle (Claude/Gemini). Same accordion-
-  // style click-to-toggle/click-outside-to-close behavior as the nav
-  // category dropdowns above, kept mutually exclusive with them (opening
-  // one closes the other). Reads/writes the AI_PROVIDER script property
-  // via Code.gs actions aiProvider (GET) / setAiProvider (POST) -- see
-  // getAiProvider_ there for what actually consumes this.
-  // =====================================================================
-  var settingsProviderLoaded = false;
-  var settingsCurrentProvider = 'claude';
-
-  function highlightSettingsPills() {
-    var pills = document.querySelectorAll('.settings-pill');
-    for (var i = 0; i < pills.length; i++) {
-      pills[i].classList.toggle('active', pills[i].getAttribute('data-provider') === settingsCurrentProvider);
-    }
-  }
-
-  function loadSettingsProvider() {
-    if (settingsProviderLoaded) { highlightSettingsPills(); return; }
-    fetch(BUGS_SCRIPT_URL + '?action=aiProvider')
-      .then(function (res) { return res.json(); })
-      .then(function (data) {
-        if (data && data.success && data.provider) {
-          settingsCurrentProvider = data.provider;
-          settingsProviderLoaded = true;
-        }
-        highlightSettingsPills();
-      })
-      .catch(function () { highlightSettingsPills(); });
-  }
-
-  function setSettingsProvider(provider) {
-    var prevProvider = settingsCurrentProvider;
-    settingsCurrentProvider = provider; // optimistic -- corrected below on failure
-    highlightSettingsPills();
-
-    var statusEl = document.getElementById('settingsStatus');
-    if (statusEl) { statusEl.style.display = 'none'; statusEl.textContent = ''; }
-
-    fetch(BUGS_SCRIPT_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({ action: 'setAiProvider', provider: provider })
-    })
-      .then(function (res) { return res.json(); })
-      .then(function (data) {
-        if (!data || !data.success) {
-          settingsCurrentProvider = prevProvider;
-          highlightSettingsPills();
-          if (statusEl) {
-            statusEl.style.display = 'block';
-            statusEl.textContent = (data && data.error) || 'Could not switch -- please try again.';
-          }
-        }
-      })
-      .catch(function (err) {
-        settingsCurrentProvider = prevProvider;
-        highlightSettingsPills();
-        if (statusEl) {
-          statusEl.style.display = 'block';
-          statusEl.textContent = 'Could not switch: ' + err.message;
-        }
-      });
-  }
-
-  function closeSettingsDropdown() {
-    var wrap = document.getElementById('settingsWrap');
-    if (wrap) wrap.classList.remove('open');
-  }
-
-  // ---- "Reset data from latest deploy" (Settings dropdown, testing-only
-  // -- see project notes) -- deliberately manual, never automatic on page
-  // load. Overwrites every JSON file on Drive with whatever's bundled in
-  // this deploy's /data folder, via POST /api/admin/reset. ----
-  function initDataResetWidget() {
-    var btn = document.getElementById('resetDataBtn');
-    if (!btn) return;
-    btn.addEventListener('click', function (e) {
-      e.stopPropagation();
-      var statusEl = document.getElementById('resetDataStatus');
-      function setStatus(msg, isError) {
-        if (!statusEl) return;
-        statusEl.style.display = msg ? 'block' : 'none';
-        statusEl.textContent = msg || '';
-        statusEl.style.color = isError ? '#c0392b' : '#2F855A';
-      }
-      if (!confirm('Overwrite the live Drive data with the version currently deployed? This replaces whatever\'s been saved during testing.')) return;
-
-      btn.disabled = true;
-      setStatus('Resetting…', false);
-      fetch('/api/admin/reset', { method: 'POST' })
-        .then(function (res) { return res.json(); })
-        .then(function (data) {
-          if (!data || !data.success) {
-            setStatus((data && data.error) || 'Reset failed -- please try again.', true);
-            return;
-          }
-          setStatus('Reset ' + data.filesReset + ' file(s) from the deploy.', false);
-        })
-        .catch(function (err) { setStatus('Reset failed: ' + err.message, true); })
-        .finally(function () { btn.disabled = false; });
-    });
-  }
-
-  // ---- Sign out -- clears the session cookie server-side (see
-  // api/auth/logout.js) and sends the browser to the sign-in screen. ----
-  function initSignOutWidget() {
-    var btn = document.getElementById('signOutBtn');
-    if (!btn) return;
-    btn.addEventListener('click', function (e) {
-      e.stopPropagation();
-      btn.disabled = true;
-      fetch('/api/auth/logout', { method: 'POST' })
-        .catch(function () { /* fall through to redirect regardless */ })
-        .finally(function () { window.location.href = '/login.html'; });
-    });
-  }
-
-  function initSettingsWidget() {
-    var btn = document.getElementById('settingsIconBtn');
-    var wrap = document.getElementById('settingsWrap');
-    if (!btn || !wrap) return;
-
-    btn.addEventListener('click', function (e) {
-      e.stopPropagation();
-      var isOpen = wrap.classList.contains('open');
-      if (isOpen) {
-        closeSettingsDropdown();
-      } else {
-        closeAllNavDropdowns();
-        wrap.classList.add('open');
-        loadSettingsProvider();
-      }
-    });
-
-    var pills = wrap.querySelectorAll('.settings-pill');
-    for (var i = 0; i < pills.length; i++) {
-      pills[i].addEventListener('click', function (e) {
-        e.stopPropagation();
-        setSettingsProvider(this.getAttribute('data-provider'));
-      });
-    }
   }
 
   function renderTopbar() {
@@ -662,30 +441,14 @@
     var calLinkHtml = '<a class="cal-link' + calActive + '" href="calendar.html" title="Bike returns calendar">📅</a>';
     var bugLinkHtml = '<button type="button" class="bug-link" id="bugsIconBtn" title="Bugs &amp; Features">🐛</button>';
 
-    // Settings gear -- currently just the AI-provider toggle (Claude/
-    // Gemini) used by the four AI-backed features (passport read, WhatsApp
-    // contact fill, reply draft, odometer read). See getAiProvider_/
-    // callAiVision_/callAiText_ in Code.gs.
-    var settingsHtml =
-      '<div class="settings-wrap" id="settingsWrap">\n' +
-      '  <button type="button" class="settings-link" id="settingsIconBtn" title="Settings" aria-label="Settings">&#9881;</button>\n' +
-      '  <div class="settings-dropdown" id="settingsDropdown">\n' +
-      '    <div class="settings-dropdown-label">AI provider</div>\n' +
-      '    <div class="settings-toggle">\n' +
-      '      <button type="button" class="settings-pill" data-provider="claude">Claude</button>\n' +
-      '      <button type="button" class="settings-pill" data-provider="gemini">Gemini</button>\n' +
-      '    </div>\n' +
-      '    <div class="settings-hint">Used for passport scan, WhatsApp fill, reply draft, odometer read.</div>\n' +
-      '    <div class="settings-status" id="settingsStatus" style="display:none;"></div>\n' +
-      '    <div class="settings-divider"></div>\n' +
-      '    <div class="settings-dropdown-label">Data (testing)</div>\n' +
-      '    <button type="button" class="settings-action-btn danger" id="resetDataBtn">Reset data from latest deploy</button>\n' +
-      '    <div class="settings-hint">Overwrites the live Drive data with whatever\'s bundled in the current deploy. Use to recover from bad test data -- stop using this once you trust the live data.</div>\n' +
-      '    <div class="settings-status" id="resetDataStatus" style="display:none;"></div>\n' +
-      '    <div class="settings-divider"></div>\n' +
-      '    <button type="button" class="settings-signout-btn" id="signOutBtn">Sign out</button>\n' +
-      '  </div>\n' +
-      '</div>';
+    // Settings gear -- links to the dedicated settings.html page (AI
+    // provider toggle, transaction history/reverse, data reset, sign out).
+    // Used to be an inline dropdown built here; moved out to its own page
+    // 14/08/2026 once it grew a real feature (reverse transactions) that
+    // needed more room than a small dropdown, and so that page's business
+    // logic didn't have to live in this shared UI-chrome file.
+    var settingsActive = currentPage() === 'settings.html' ? ' active' : '';
+    var settingsHtml = '<a class="settings-link' + settingsActive + '" href="settings.html" title="Settings" aria-label="Settings">&#9881;</a>';
 
     mount.outerHTML =
       '<div class="topbar">\n' +
@@ -705,9 +468,6 @@
 
     initBugsWidget();
     initNavDropdowns();
-    initSettingsWidget();
-    initDataResetWidget();
-    initSignOutWidget();
   }
 
   // =====================================================================
