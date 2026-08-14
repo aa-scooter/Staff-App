@@ -543,8 +543,13 @@ function money(n) {
 // Code.gs for the original comments explaining *why* each rule exists).
 // Known, accepted simplification: expense-type background colors were
 // explicitly excluded from the JSON export (Anton: "just plain colors is
-// fine, just the data"), so every expense here reads as type:'business' --
-// no colored rows/chips will render on this read-only copy.
+// fine, just the data"). 13/08/2026 update: type is now reconstructed from
+// a notes-sidecar marker on column A(1) of each expense row instead (see
+// normalizeExpenseTypeKeyB/setExpenseTypeNoteFromJson below) -- a new
+// mechanism invented to close this gap, NOT something Anton explicitly
+// signed off on; flagged for his review. 'business' (the default/no-fill
+// case) still stores no note, so any row from before this change reads
+// back correctly as 'business' automatically.
 //
 // 13/08/2026 update: action=bikesList and action=deposits (both simple
 // reads, ported below alongside the rest) now also run off the live Drive
@@ -849,7 +854,7 @@ async function getAccountsDataFromJson(monthIndex, year) {
         expense: expenseLabel,
         amount: (eAmountEmpty || isNaN(Number(eAmount))) ? '' : Number(eAmount),
         payment: ePayment,
-        type: 'business', // colors weren't ported into the JSON export -- see the note at the top of this block
+        type: normalizeExpenseTypeKeyB(noteMap.get(sheetRow + ',' + EXPENSE_TYPE_NOTE_COL_B)),
         bikeSplits: parseExpenseBikeSplitsNote(
           noteMap.get(sheetRow + ',2'),
           (eAmountEmpty || isNaN(Number(eAmount))) ? '' : Number(eAmount)
@@ -1028,11 +1033,12 @@ async function getDepositsDataFromJson() {
 
 // ============================================================================
 // ---- WRITE layer (ported 14/08/2026): addExpense/editExpense/addIncome/
-// editIncome/deleteExpense/deleteIncome/transferToBank. bulkSetExpenseType
-// is DELIBERATELY NOT ported -- see the note right before its own call
-// site below for why (expense-type colors have no stored equivalent in
-// this JSON model at all, unlike the other actions here, which only need
-// the type at write time, never a historical read-back).
+// editIncome/deleteExpense/deleteIncome/transferToBank/bulkSetExpenseType.
+// bulkSetExpenseType (and editExpense/deleteExpense's expense-type
+// reconciliation) depend on a real read-back of each row's CURRENT type --
+// see normalizeExpenseTypeKeyB/setExpenseTypeNoteFromJson above for the
+// notes-sidecar marker invented to make that possible now that expense-type
+// colors have no stored equivalent in this JSON model.
 // ============================================================================
 async function fetchSheetWithMeta(sheetName, year) {
   const url = year
@@ -1383,6 +1389,27 @@ function findAccountsFreeRowIdxJson(rows2D, side) {
   return { rows: rows2D.slice(), rowNum: rows2D.length + 1, inserted: false };
 }
 
+// 14/08/2026 fix: when findAccountsFreeRowIdxJson had to INSERT a blank row
+// (rows.splice) rather than reuse an already-blank one, every row from that
+// point down physically shifts by +1 on the main sheet -- but the
+// <monthName>_notes sidecar is a completely separate file, so without this,
+// every bike-split/expense-type note at or below the insertion point would
+// silently stay pinned to its OLD row number and end up describing the
+// WRONG row after the insert (e.g. a bike-split note meant for row 40
+// would suddenly read back as belonging to whatever got pushed down into
+// row 40). This is the same class of bug the row-shift logic in
+// deleteExpenseRowFromJson already guards against on the delete side; this
+// is the missing insert-side counterpart. Best-effort: a failure here
+// shouldn't block the add itself finishing (matches every other notes
+// write in this file), but IS surfaced as a warning since silently
+// misaligned notes are a real data-integrity risk, not a cosmetic one.
+async function shiftNotesForInsertedRowFromJson(monthName, year, insertedRowNum) {
+  const notesSheet = monthName + '_notes';
+  const { rows: noteRows, modifiedTime } = await fetchSheetWithMeta(notesSheet, year);
+  const shifted = (noteRows || []).map(n => (n[0] >= insertedRowNum) ? [n[0] + 1, n[1], n[2]] : n);
+  await writeSheetJson(notesSheet, shifted, modifiedTime, year);
+}
+
 // ---- Bike-split notes (setExpenseBikeSplits -> column B(2); setIncomeBikeSplits
 // -> column G(7)) -- <monthName>_notes sidecar, same [row, col, note] shape
 // used everywhere else. ----
@@ -1462,6 +1489,47 @@ async function updateExpenseTypeTotalRefFromJson(monthName, year, type, refRow, 
   await writeSheetJson(monthName, newRows, modifiedTime, year);
 }
 
+// ---- Expense-type persistence (design decision -- NOT explicitly approved
+// by Anton, flagged for his review). Code.gs stores an expense's type
+// (business/personal/wages/transfer/transferComplete) as a CELL BACKGROUND
+// COLOR on column B of the monthly sheet -- something with no equivalent in
+// the JSON export (Anton's own scoping call: "just plain colors is fine,
+// just the data"). Every expense read back from getAccountsDataFromJson
+// used to hardcode type:'business' as a result, which meant: (1) an edit
+// could only ADD a row to the personal/wages running total, never remove
+// one, and (2) bulkSetExpenseType (the "Complete Transfers" / "Transfer
+// Completed" buttons) couldn't be ported at all, since it fundamentally
+// depends on reading back each row's CURRENT type.
+//
+// This closes that gap with a new notes-sidecar marker on column E(5) of
+// the row -- the one column getAccountsDataFromJson's own read loop never
+// touches at all (A-D/1-4 are the expense date/label/amount/payment
+// fields, F-J/6-10 are the income fields; column E/5 is the untouched gap
+// between them), so this new marker can't collide with any real cell value
+// OR with the existing bike-splits notes (column B(2)/G(7)). 'business'
+// (the default/no-fill case in Code.gs) stores NO note at all, same sparse
+// convention as bike-splits, so every pre-existing un-migrated row still
+// reads back correctly as 'business' automatically. This is a genuinely
+// new mechanism, not a mechanical translation -- Anton should confirm it's
+// an acceptable stand-in for real cell colors when he's back.
+const EXPENSE_TYPE_NOTE_COL_B = 5;
+function normalizeExpenseTypeKeyB(raw) {
+  const s = (raw || '').toString().trim();
+  if (!s) return 'business';
+  const lower = s.toLowerCase();
+  const keys = Object.keys(EXPENSE_TYPE_COLORS);
+  for (const k of keys) { if (k.toLowerCase() === lower) return k; }
+  return 'business';
+}
+async function setExpenseTypeNoteFromJson(monthName, year, row, typeKeyRaw) {
+  const typeKey = normalizeExpenseTypeKeyB(typeKeyRaw);
+  const notesSheet = monthName + '_notes';
+  const { rows: noteRows, modifiedTime } = await fetchSheetWithMeta(notesSheet, year);
+  const filtered = (noteRows || []).filter(n => !(n[0] === row && n[1] === EXPENSE_TYPE_NOTE_COL_B));
+  if (typeKey !== 'business') filtered.push([row, EXPENSE_TYPE_NOTE_COL_B, typeKey]);
+  await writeSheetJson(notesSheet, filtered, modifiedTime, year);
+}
+
 function accountsMonthNameFor(monthIndexRaw) {
   const monthIndex = Math.max(0, Math.min(11, Math.round(Number(monthIndexRaw))));
   const monthName = ACCOUNTS_MONTH_FILES[monthIndex];
@@ -1490,12 +1558,21 @@ async function addExpenseRowFromJson(data) {
   newRows[rowIdx] = r;
   await writeSheetJson(monthName, newRows, modifiedTime, year);
 
+  const warnings = [];
+  // MUST run before any new note is written at `row` below -- shifts
+  // EXISTING notes out of the way first, so a fresh note isn't itself
+  // caught by the same >= row shift. See shiftNotesForInsertedRowFromJson.
+  if (free.inserted) {
+    try { await shiftNotesForInsertedRowFromJson(monthName, year, row); }
+    catch (e) { warnings.push('Notes sidecar row-shift: ' + e.message); }
+  }
+
   const expenseBikeSplits = Array.isArray(data.expenseBikeSplits) ? data.expenseBikeSplits : [];
   try { await setBikeSplitsNoteFromJson(monthName, year, row, 2, expenseBikeSplits); } catch (e) { /* best-effort, matches live setExpenseBikeSplits which never throws */ }
+  try { await setExpenseTypeNoteFromJson(monthName, year, row, data.expenseType); } catch (e) { /* best-effort -- matches live applyExpenseTypeColor which never throws */ }
 
-  const warnings = [];
   const paymentLower = (data.payment || '').toString().trim().toLowerCase();
-  const expenseTypeKey = (data.expenseType || 'business').toString().trim().toLowerCase();
+  const expenseTypeKey = normalizeExpenseTypeKeyB(data.expenseType);
 
   try {
     if (paymentLower === 'cash') await appendCashExpenseRowFromJson(data.expense || '', data.amount);
@@ -1553,10 +1630,18 @@ async function addIncomeRowFromJson(data) {
   newRows[rowIdx] = r;
   await writeSheetJson(monthName, newRows, modifiedTime, year);
 
+  const warnings = [];
+  // See shiftNotesForInsertedRowFromJson's comment in addExpenseRowFromJson
+  // -- same insert-shift fix, needed here too since findAccountsFreeRowIdxJson
+  // is shared between the expense and income add paths.
+  if (free.inserted) {
+    try { await shiftNotesForInsertedRowFromJson(monthName, year, row); }
+    catch (e) { warnings.push('Notes sidecar row-shift: ' + e.message); }
+  }
+
   const incomeBikeSplits = resolveIncomeBikeSplitsB(data.incomeBikeSplits, data.amount);
   try { await setBikeSplitsNoteFromJson(monthName, year, row, 7, incomeBikeSplits); } catch (e) { /* best-effort */ }
 
-  const warnings = [];
   const paidByLower = (data.paidBy || '').toString().trim().toLowerCase();
 
   try {
@@ -1607,20 +1692,16 @@ async function editExpenseRowFromJson(data) {
   const oldAmountRaw = existing[2];
   const oldAmount = (oldAmountRaw === '' || oldAmountRaw === null || oldAmountRaw === undefined || isNaN(Number(oldAmountRaw))) ? '' : Number(oldAmountRaw);
   const oldPaymentLower = (existing[3] || '').toString().trim().toLowerCase();
-  // KNOWN GAP: expense-type colors have no stored equivalent in this JSON
-  // model (every expense always reads back as type:'business' -- see the
-  // read layer's own note above readSummaryItem), so the "old type" this
-  // edit reconciles against is always assumed 'business'. In practice this
-  // means an edit can ADD a row to the personal/wages running total
-  // (picking a new type here) but can never REMOVE one via this form,
-  // since the edit modal itself always starts from "business" too (see
-  // fExpenseType.value = entry.type || 'business'). Staff who need to
-  // reclassify a row OFF personal/wages need to fix the running-total
-  // formula by hand on the sheet.
-  const oldTypeKey = 'business';
+  // 13/08/2026: old type is now read back from the column-A(1) notes-sidecar
+  // marker (see normalizeExpenseTypeKeyB/setExpenseTypeNoteFromJson above)
+  // instead of being hardcoded to 'business' -- this closes the previous
+  // KNOWN GAP where an edit could only ADD a row to the personal/wages
+  // running total, never remove one.
   const notesSheet = monthName + '_notes';
   let oldNoteRows = [];
   try { oldNoteRows = (await fetchSheetWithMeta(notesSheet, year)).rows; } catch (e) { oldNoteRows = []; }
+  const oldTypeNoteEntry = (oldNoteRows || []).find(n => n[0] === row && n[1] === EXPENSE_TYPE_NOTE_COL_B);
+  const oldTypeKey = normalizeExpenseTypeKeyB(oldTypeNoteEntry ? oldTypeNoteEntry[2] : '');
   const oldNoteEntry = (oldNoteRows || []).find(n => n[0] === row && n[1] === 2);
   const oldBikeSplits = parseExpenseBikeSplitsNote(oldNoteEntry ? oldNoteEntry[2] : '', oldAmount);
 
@@ -1628,7 +1709,7 @@ async function editExpenseRowFromJson(data) {
   const newPaymentLower = (data.payment || '').toString().trim().toLowerCase();
   const newExpenseText = (data.expense || '').toString().trim();
   const newBikeSplits = Array.isArray(data.expenseBikeSplits) ? data.expenseBikeSplits : [];
-  const newTypeKey = (data.expenseType || 'business').toString().trim().toLowerCase();
+  const newTypeKey = normalizeExpenseTypeKeyB(data.expenseType);
 
   const wasCash = oldPaymentLower === 'cash';
   const isCash = newPaymentLower === 'cash';
@@ -1653,6 +1734,7 @@ async function editExpenseRowFromJson(data) {
   await writeSheetJson(monthName, newRows, modifiedTime, year);
 
   try { await setBikeSplitsNoteFromJson(monthName, year, row, 2, newBikeSplits); } catch (e) { /* best-effort */ }
+  try { await setExpenseTypeNoteFromJson(monthName, year, row, data.expenseType); } catch (e) { /* best-effort */ }
 
   const warnings = [];
 
@@ -1861,11 +1943,12 @@ async function deleteExpenseRowFromJson(data) {
   const amountRaw = existing[2];
   const amount = (amountRaw === '' || amountRaw === null || amountRaw === undefined || isNaN(Number(amountRaw))) ? '' : Number(amountRaw);
   const paymentLower = (existing[3] || '').toString().trim().toLowerCase();
-  const typeKey = 'business'; // KNOWN GAP -- see editExpenseRowFromJson's identical note
 
   const notesSheet = monthName + '_notes';
   let noteRows = [];
   try { noteRows = (await fetchSheetWithMeta(notesSheet, year)).rows; } catch (e) { noteRows = []; }
+  const typeNoteEntry = (noteRows || []).find(n => n[0] === row && n[1] === EXPENSE_TYPE_NOTE_COL_B);
+  const typeKey = normalizeExpenseTypeKeyB(typeNoteEntry ? typeNoteEntry[2] : '');
   const noteEntry = (noteRows || []).find(n => n[0] === row && n[1] === 2);
   const expenseBikeSplits = parseExpenseBikeSplitsNote(noteEntry ? noteEntry[2] : '', amount);
 
@@ -1924,13 +2007,18 @@ async function deleteExpenseRowFromJson(data) {
   // The notes sidecar is a SEPARATE file keyed by [row, col] -- unlike a
   // real spreadsheet, deleting a row here does NOT automatically shift its
   // cell notes along with it, so that has to be done explicitly: drop this
-  // row's own note, and decrement every later col-2 (expense side) note's
-  // row number by one to match the data that just shifted up.
+  // row's own notes, and decrement every later col-5 (expense-type, see
+  // EXPENSE_TYPE_NOTE_COL_B) and col-2 (expense side bike-splits) note's row
+  // number by one to match the data that just shifted up. Without also
+  // shifting col-5 here, a deleted row's type note would either linger
+  // stale on the wrong row or fail to follow the rows below it, silently
+  // misattributing types after any expense deletion.
   try {
     const { rows: nr, modifiedTime: nmt } = await fetchSheetWithMeta(notesSheet, year);
+    const isExpenseCol = c => c === EXPENSE_TYPE_NOTE_COL_B || c === 2;
     const shifted = (nr || [])
-      .filter(n => !(n[1] === 2 && n[0] === row))
-      .map(n => (n[1] === 2 && n[0] > row) ? [n[0] - 1, n[1], n[2]] : n);
+      .filter(n => !(isExpenseCol(n[1]) && n[0] === row))
+      .map(n => (isExpenseCol(n[1]) && n[0] > row) ? [n[0] - 1, n[1], n[2]] : n);
     await writeSheetJson(notesSheet, shifted, nmt, year);
   } catch (e) { /* best-effort */ }
 
@@ -2029,6 +2117,56 @@ async function deleteIncomeRowFromJson(data) {
   return responsePayload;
 }
 
+// ---- action:'bulkSetExpenseType' port (13/08/2026 -- the "Complete
+// Transfers"/"Transfer Completed" buttons). Byte-for-byte port of Code.gs's
+// bulkSetExpenseType, made possible now that expense type has a real
+// stored equivalent (see normalizeExpenseTypeKeyB/setExpenseTypeNoteFromJson
+// above). fromType/toType are validated with the SAME case-sensitive
+// EXPENSE_TYPE_COLORS.hasOwnProperty check Code.gs uses (the client always
+// sends canonically-cased keys, e.g. 'transferComplete', so this is safe).
+// Each row's CURRENT type is re-read fresh from the notes sidecar right
+// before deciding whether to touch it -- not trusting the client's
+// possibly-stale list -- so a row whose type changed elsewhere in the
+// meantime is skipped rather than blindly overwritten, same as Code.gs's
+// own getRange(row,2).getBackground() re-check.
+async function bulkSetExpenseTypeFromJson(data) {
+  const monthName = accountsMonthNameFor(data.monthIndex);
+  const year = accountsCurrentYear();
+
+  const fromType = (data.fromType || '').toString().trim();
+  const toType = (data.toType || '').toString().trim();
+  if (!Object.prototype.hasOwnProperty.call(EXPENSE_TYPE_COLORS, fromType) ||
+      !Object.prototype.hasOwnProperty.call(EXPENSE_TYPE_COLORS, toType)) {
+    throw new Error('Unrecognized expense type -- nothing was changed.');
+  }
+
+  const rows = Array.isArray(data.rows) ? data.rows : [];
+  const changed = [];
+  const skipped = [];
+
+  for (const rawRow of rows) {
+    const row = parseInt(rawRow, 10);
+    if (!row || row < 2) { skipped.push(rawRow); continue; }
+    let currentType = 'business';
+    try {
+      const notesSheet = monthName + '_notes';
+      const { rows: noteRows } = await fetchSheetWithMeta(notesSheet, year);
+      const entry = (noteRows || []).find(n => n[0] === row && n[1] === EXPENSE_TYPE_NOTE_COL_B);
+      currentType = normalizeExpenseTypeKeyB(entry ? entry[2] : '');
+    } catch (e) { skipped.push(row); continue; }
+    if (currentType !== fromType) { skipped.push(row); continue; }
+    try { await setExpenseTypeNoteFromJson(monthName, year, row, toType); }
+    catch (e) { skipped.push(row); continue; }
+    changed.push(row);
+  }
+
+  const responsePayload = { success: true, changed: changed.length, changedRows: changed, skippedRows: skipped };
+  if (skipped.length) {
+    responsePayload.warning = skipped.length + ' row(s) were skipped because their type had already changed since the list was loaded -- please refresh and try again if needed.';
+  }
+  return responsePayload;
+}
+
 // ---- Single dispatcher for runPendingPayload's save/delete click --
 // matches the live scriptUrl's single-endpoint-many-actions shape so the
 // call site below only needs a one-line swap. ----
@@ -2040,6 +2178,7 @@ async function accountsWriteDispatch(payload) {
     case 'editIncome': return editIncomeRowFromJson(payload);
     case 'deleteExpense': return deleteExpenseRowFromJson(payload);
     case 'deleteIncome': return deleteIncomeRowFromJson(payload);
+    case 'bulkSetExpenseType': return bulkSetExpenseTypeFromJson(payload);
     default: throw new Error('Unrecognized action "' + payload.action + '".');
   }
 }
@@ -2243,21 +2382,13 @@ monthSelect.addEventListener('change', () => loadMonth(Number(monthSelect.value)
 // bulkSetExpenseType in Code.gs), so a row edited elsewhere in between is
 // skipped rather than blindly overwritten.
 //
-// bulkSetExpenseType is DELIBERATELY NOT ported (still hits the
-// disconnected scriptUrl below, same as before this write-layer pass) --
-// unlike every other action ported this pass, it fundamentally depends on
-// reading back each row's CURRENT expense-type color before deciding
-// whether to touch it, and expense-type colors have no stored equivalent
-// anywhere in this JSON model (Anton's own call, "just plain colors is
-// fine, just the data" -- every expense here always reads as
-// type:'business', see the note above getAccountsDataFromJson). Porting
-// this action as written would mean EVERY expense matches
-// fromType==='business' every time, letting a bulk "Transfer -> Transfer
-// Complete" click silently reclassify unrelated personal/business rows
-// too -- worse than leaving it disconnected. A real port would need a new
-// place to persist expense type (e.g. a notes-sidecar marker, similar to
-// the bike-split note) -- a genuinely separate design decision, not a
-// mechanical translation like the rest of this pass.
+// 13/08/2026: bulkSetExpenseType is now ported (see bulkSetExpenseTypeFromJson
+// above), now that expense type has a real stored equivalent via the
+// column-A(1) notes-sidecar marker (normalizeExpenseTypeKeyB/
+// setExpenseTypeNoteFromJson) -- this was a genuinely new mechanism, not a
+// mechanical translation, since expense-type colors themselves still have
+// no stored equivalent anywhere in this JSON model. Flagged for Anton's
+// review, same as the rest of this design decision.
 async function bulkRecolorExpenses(fromType, toType) {
   const matching = currentExpenses.filter(e => (e.type || 'business') === fromType);
   if (!matching.length) {
@@ -2276,16 +2407,13 @@ async function bulkRecolorExpenses(fromType, toType) {
   if (!ok) return;
 
   try {
-    const res = await fetch(scriptUrl, {
-      method: 'POST',
-      body: JSON.stringify({
-        action: 'bulkSetExpenseType',
-        monthIndex: Number(monthSelect.value),
-        rows: matching.map(e => e.row),
-        fromType: fromType,
-        toType: toType
-      })
-    }).then(r => r.json());
+    // DISCONNECTED: writes to the static data/ JSON export instead of the live scriptUrl (see project CLAUDE.md)
+    const res = await bulkSetExpenseTypeFromJson({
+      monthIndex: Number(monthSelect.value),
+      rows: matching.map(e => e.row),
+      fromType: fromType,
+      toType: toType
+    });
 
     if (!res.success) {
       alert('Failed to update: ' + res.error);
