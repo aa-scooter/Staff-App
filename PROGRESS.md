@@ -6,6 +6,71 @@ update its row below in the same commit. This exists because work on this
 project gets picked up across multiple Claude sessions/accounts with no
 shared memory between them — this file is the handoff.
 
+## ✅ FIXED, tested, awaiting Anton's push — accounts.html:
+## "extras"/"deposit" income entries threw a bogus "Totals cascade NOT
+## recalculated" warning (2026-08-14, found live by Anton right after the
+## transaction-log push above)
+
+**The bug (Anton hit this live on staff-app-six-phi.vercel.app):** adding
+an income entry with no bike split checked (e.g. Income="twse", Amount=100,
+no bike) alerted `Saved, but: Bikes sheet (income): Totals cascade
+(expenses/profit/net profit) NOT recalculated for "extras": expected the
+paired row to also be "extras" but found "extras" / "total"`. The write
+itself still succeeded (the alert is non-fatal by design), but the
+income/expenses/profit/net-profit cascade added earlier today (see the
+"bike income/expense summary columns" section further down) silently
+failed for this case every time.
+
+**Root cause:** when no bike is picked, `resolveIncomeBikeSplitsB` (accounts.html
+~line 1610) defaults to a synthetic pseudo-bike `{bike: 'extras', amount}` —
+a catch-all bucket, not a real bike. `addRentalAmountToBikesSheetFromJson`
+then calls `recomputeBikeRowTotalsB`, which assumes every income row has a
+matching expense row exactly 50 array-rows down (true for all 45 real
+bikes — confirmed against `data/bikes.json`: income rows at array idx 1-45
+pair with expense rows at idx 51-95, an exact 50-row offset). But `extras`
+(idx 46) and `deposit` (idx 47) sit in the income block only, right before
+that block's own "totals" row (idx 48) — they were never part of the real
+bike list, so they have no row at all in the expense block. idx46+50=96,
+which lands on the *expense* block's own "total" summary row instead of a
+real paired row — hence "expected... "extras" but found "extras" / "total"".
+Confirmed against real exported data that in the original spreadsheet
+these two rows' "expenses" column was always blank (never a
+`=P<row+50>` formula) — their profit/net-profit just mirrored total
+(profit = total - 0, net profit = profit - cost).
+
+**The fix (accounts.html only — bikes.html's copy of `addRentalAmountToBikesSheetFromJson`
+predates the cascade feature entirely and has no cascade logic, so it isn't
+affected; contract.html/customers.html/deposits.html don't touch the bikes
+sheet at all):**
+- Added `recomputeBikeRowSoloTotalsB(rows, header, rowIdx, isExpenseSection)`
+  right after `recomputeBikeRowTotalsB` — recomputes only the row's own
+  `total` (and, for income-section rows, `profit`/`net profit` derived from
+  whatever's already in its `expenses` cell) instead of reaching for a
+  paired row.
+- `addRentalAmountToBikesSheetFromJson`'s cascade block now checks whether
+  the row 50 away *actually matches this bike's name* before calling the
+  full paired recompute. If it does (every real bike — unchanged, still
+  gets the full income+expense pairing), behavior is identical to before.
+  If it doesn't (extras/deposit/any future non-bike catch-all), it falls
+  back to the solo recompute instead of throwing.
+- Unmatched/genuinely-unknown bike names still throw their original
+  "Could not find a row..." error — unchanged.
+
+**Tested:** new standalone vm-harness test (`test_bikes_cascade.js`, 20/20
+checks) built directly against real `data/bikes.json`, covering: real-bike
+income-side full cascade (regression, unchanged), real-bike expense-side
+full cascade (regression, unchanged), the exact "extras" repro from Anton's
+screenshot (no throw, correct solo recompute, expense block's "total" row
+verified completely untouched), the same for "deposit", and an unrelated
+genuinely-unknown bike name still throwing its original error. Also
+re-ran the existing 33-check `test_accounts2.js` suite — still 33/33, no
+regression from this edit. Syntax-checked via `node --check` on the
+extracted `<script>` block.
+
+**Not yet done:** independent verification on Anton's live dev deployment
+(add an unsplit income entry and confirm no alert) — first thing to do
+after this gets pushed.
+
 ## ✅ DONE, tested, awaiting Anton's push — transaction log write
 ## instrumentation (2026-08-14, phase 1 of the "reverse transactions"
 ## feature Anton asked for)

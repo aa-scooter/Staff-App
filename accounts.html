@@ -1261,6 +1261,62 @@ function recomputeBikeRowTotalsB(rows, header, incomeRowIdx, expenseRowIdx, bike
   rows[expenseRowIdx] = newExpenseRow;
 }
 
+// Found live 14/08/2026: the income block has two pseudo-bike catch-all
+// rows -- "extras" (income's implicit default when no real bike is picked)
+// and "deposit" -- that sit BEFORE the income block's own "totals" row and
+// have NO matching row in the expense block 50 rows down (real bikes fill
+// idx 1..45 there before the expense block's own "total" row -- "extras"/
+// "deposit" were never part of that list). In the original spreadsheet
+// these rows' expenses/profit/net-profit columns were never "=P<row+50>"
+// formulas at all -- confirmed against exported data: "extras"/"deposit"
+// always have an EMPTY expenses cell, with profit/net-profit just mirroring
+// total (i.e. profit = total - 0, net profit = profit - cost). This does
+// the same self-only recompute for a row that has no real paired row,
+// instead of reaching 50 rows down into whatever happens to be there.
+function recomputeBikeRowSoloTotalsB(rows, header, rowIdx, isExpenseSection) {
+  const row = rows[rowIdx];
+  if (!row) throw new Error('expected a row at array index ' + rowIdx + ' but it does not exist');
+  const totalCol = findBikesHeaderColIdxB(header, 'total');
+  if (totalCol === -1) throw new Error('could not find the "total" column header on the "bikes" sheet');
+  const MONTHS_LAST_COL_B = 14;
+  function sumMonths(r, startCol) {
+    let s = 0;
+    for (let c = startCol; c <= MONTHS_LAST_COL_B; c++) {
+      const v = r[c];
+      const n = Number(v);
+      if (v !== '' && v !== null && v !== undefined && !isNaN(n)) s += n;
+    }
+    return s;
+  }
+  const newRow = row.slice();
+  while (newRow.length <= totalCol) newRow.push('');
+  if (isExpenseSection) {
+    // Expense-section rows only ever carry their own "total" (=SUM(B:O)) --
+    // expenses/profit/net-profit are income-row-only columns.
+    newRow[totalCol] = sumMonths(newRow, 1);
+  } else {
+    const expensesCol = findBikesHeaderColIdxB(header, 'expenses');
+    const profitCol = findBikesHeaderColIdxB(header, 'profit');
+    const netProfitCol = findBikesHeaderColIdxB(header, 'net profit');
+    const costCol = findBikesHeaderColIdxB(header, 'cost');
+    const missing = [];
+    if (expensesCol === -1) missing.push('expenses');
+    if (profitCol === -1) missing.push('profit');
+    if (netProfitCol === -1) missing.push('net profit');
+    if (costCol === -1) missing.push('cost');
+    if (missing.length) throw new Error('could not find the "' + missing.join('", "') + '" column header(s) on the "bikes" sheet');
+    const maxCol = Math.max(totalCol, expensesCol, profitCol, netProfitCol, costCol);
+    while (newRow.length <= maxCol) newRow.push('');
+    const total = sumMonths(newRow, 2);
+    const existingExpenses = Number(newRow[expensesCol]) || 0;
+    const cost = Number(newRow[costCol]) || 0;
+    newRow[totalCol] = total;
+    newRow[profitCol] = total - existingExpenses;
+    newRow[netProfitCol] = (total - existingExpenses) - cost;
+  }
+  rows[rowIdx] = newRow;
+}
+
 async function addRentalAmountToBikesSheetFromJson(bikeModel, rawAmount, monthName, sectionStartIdx) {
   const amount = Number(rawAmount);
   if (rawAmount === '' || rawAmount === null || rawAmount === undefined || isNaN(amount) || amount === 0) return;
@@ -1294,11 +1350,24 @@ async function addRentalAmountToBikesSheetFromJson(bikeModel, rawAmount, monthNa
   // still gets saved -- we just surface a warning afterward rather than
   // losing that write entirely.
   const isExpenseSection = startIdx === BIKES_EXPENSE_SECTION_START_IDX_B;
-  const incomeRowIdx = isExpenseSection ? (rowIdx - BIKES_EXPENSE_SECTION_ROW_OFFSET_B) : rowIdx;
-  const expenseRowIdx = isExpenseSection ? rowIdx : (rowIdx + BIKES_EXPENSE_SECTION_ROW_OFFSET_B);
+  const pairedRowIdx = isExpenseSection ? (rowIdx - BIKES_EXPENSE_SECTION_ROW_OFFSET_B) : (rowIdx + BIKES_EXPENSE_SECTION_ROW_OFFSET_B);
+  const incomeRowIdx = isExpenseSection ? pairedRowIdx : rowIdx;
+  const expenseRowIdx = isExpenseSection ? rowIdx : pairedRowIdx;
   let cascadeWarning = null;
   try {
-    recomputeBikeRowTotalsB(newRows, header, incomeRowIdx, expenseRowIdx, bikeNameTrimmed);
+    const pairedRow = newRows[pairedRowIdx];
+    const pairedName = ((pairedRow && pairedRow[0]) || '').toString().trim();
+    const hasRealPair = !!pairedRow && bikeNamesMatchForRentalLogB(pairedName, bikeNameTrimmed);
+    if (hasRealPair) {
+      recomputeBikeRowTotalsB(newRows, header, incomeRowIdx, expenseRowIdx, bikeNameTrimmed);
+    } else {
+      // No paired row 50 rows away actually matches this name (e.g. the
+      // "extras"/"deposit" catch-all rows -- see recomputeBikeRowSoloTotalsB
+      // above) -- recompute this row's own total (and, on the income side,
+      // profit/net-profit) instead of reaching for a paired row that isn't
+      // really this bike's counterpart.
+      recomputeBikeRowSoloTotalsB(newRows, header, rowIdx, isExpenseSection);
+    }
   } catch (e) {
     cascadeWarning = 'Totals cascade (expenses/profit/net profit) NOT recalculated for "' + bikeNameTrimmed + '": ' + e.message;
   }
