@@ -141,7 +141,8 @@
       margin-bottom: 20px;
     }
     .date-field label { display: block; }
-    .date-field input[type="date"] {
+    .date-field input[type="date"],
+    .date-field input[type="number"] {
       width: 100%;
       background: #FBFAF7;
       border: 1.5px solid var(--line);
@@ -152,8 +153,37 @@
       font-family: inherit;
       outline: none;
       margin-top: 8px;
+      box-sizing: border-box;
     }
-    .date-field input[type="date"]:focus{ border-color: var(--petrol-light); background:#fff; }
+    .date-field input[type="date"]:focus,
+    .date-field input[type="number"]:focus{ border-color: var(--petrol-light); background:#fff; }
+
+    /* Rental-length input mode toggle (dates vs. a plain day count) */
+    .mode-toggle {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .mode-btn {
+      flex: 1;
+      background: #FBFAF7;
+      border: 1.5px solid var(--line);
+      border-radius: 10px;
+      padding: 9px 10px;
+      color: var(--muted);
+      font-family:'Barlow Condensed',sans-serif;
+      font-size: 12.5px;
+      font-weight: 700;
+      letter-spacing: .03em;
+      text-transform: uppercase;
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .mode-btn.active {
+      background: var(--petrol);
+      border-color: var(--petrol);
+      color: #fff;
+    }
 
     /* Duration pill */
     .duration-pill {
@@ -317,108 +347,10 @@
     .extra-result-detail { color: var(--muted); font-size: 13px; }
 
     .footer { color: #9AA6A1; font-size: 11px; text-align: center; margin-top: 20px; }
-
-    .lock-screen{
-      position:fixed; inset:0; z-index:9999;
-      background:var(--sand);
-      display:flex; align-items:center; justify-content:center;
-      padding:20px;
-    }
-    .lock-card{
-      background:var(--card);
-      border:1px solid var(--line);
-      border-radius:14px;
-      padding:28px 24px;
-      max-width:320px;
-      width:100%;
-      text-align:center;
-    }
-    .lock-icon{ font-size:32px; margin-bottom:10px; }
-    .lock-card h2{
-      font-family:'Barlow Condensed',sans-serif;
-      font-weight:700;
-      font-size:22px;
-      color:var(--petrol);
-      margin:0 0 6px;
-    }
-    .lock-card p{
-      font-size:13px;
-      color:var(--muted);
-      margin:0 0 18px;
-    }
-    .lock-card input{
-      width:100%;
-      padding:11px 12px;
-      border:1px solid var(--line);
-      border-radius:9px;
-      font-size:15px;
-      font-family:'Inter',sans-serif;
-      background:#FBFAF7;
-      color:var(--ink);
-      margin-bottom:12px;
-      text-align:center;
-      box-sizing:border-box;
-    }
-    .lock-card input:focus{ outline:none; border-color:var(--petrol-light); background:#fff; }
-    .lock-card button{
-      width:100%;
-      padding:12px;
-      border:none;
-      border-radius:10px;
-      background:var(--cone);
-      color:#fff;
-      font-family:'Barlow Condensed',sans-serif;
-      font-weight:700;
-      font-size:15px;
-      letter-spacing:.04em;
-      text-transform:uppercase;
-      cursor:pointer;
-    }
-    .lock-card button:active{ transform:scale(.98); }
-    .lock-error{
-      display:none;
-      margin-top:12px;
-      font-size:12.5px;
-      color:#C53030;
-    }
   </style>
 </head>
 <body>
 
-<div class="lock-screen" id="lockScreen">
-  <div class="lock-card">
-    <div class="lock-icon">🔒</div>
-    <h2>Staff Access</h2>
-    <p>Enter the password to continue</p>
-    <input type="password" id="lockPassword" placeholder="Password" autocomplete="off">
-    <button id="lockSubmit" type="button">Unlock</button>
-    <div class="lock-error" id="lockError">Incorrect password — try again.</div>
-  </div>
-</div>
-<script>
-(function(){
-  var PASSWORD = "Aerox2016";
-  var lock = document.getElementById('lockScreen');
-  if (sessionStorage.getItem('aa_unlocked') === '1') {
-    lock.style.display = 'none';
-  }
-  function tryUnlock(){
-    var val = document.getElementById('lockPassword').value;
-    if (val === PASSWORD) {
-      sessionStorage.setItem('aa_unlocked', '1');
-      lock.style.display = 'none';
-    } else {
-      document.getElementById('lockError').style.display = 'block';
-      document.getElementById('lockPassword').value = '';
-      document.getElementById('lockPassword').focus();
-    }
-  }
-  document.getElementById('lockSubmit').addEventListener('click', tryUnlock);
-  document.getElementById('lockPassword').addEventListener('keydown', function(e){
-    if (e.key === 'Enter') tryUnlock();
-  });
-})();
-</script>
 <div id="topbar-mount"></div>
 
 <div class="page-head">
@@ -443,14 +375,22 @@
     </div>
 
     <span class="section-label">Rental Dates</span>
+    <div class="mode-toggle" id="dateModeToggle">
+      <button type="button" class="mode-btn active" id="modeDatesBtn">Pick Return Date</button>
+      <button type="button" class="mode-btn" id="modeDaysBtn">Enter Number of Days</button>
+    </div>
     <div class="date-grid">
       <div class="date-field">
         <label class="section-label" for="fromDate">Rented From</label>
         <input type="date" id="fromDate" />
       </div>
-      <div class="date-field">
+      <div class="date-field" id="toDateField">
         <label class="section-label" for="toDate">Return Date</label>
         <input type="date" id="toDate" />
+      </div>
+      <div class="date-field" id="daysCountField" style="display:none">
+        <label class="section-label" for="daysCountInput">Number of Days</label>
+        <input type="number" id="daysCountInput" min="1" step="1" inputmode="numeric" placeholder="e.g. 7" />
       </div>
     </div>
 
@@ -714,6 +654,70 @@ document.getElementById('customRateInput').addEventListener('input', (e) => {
   updateBtn();
 });
 
+// ================== Rental-length input mode: dates vs. a plain day count ==================
+// Anton asked for a quicker way to quote a price when staff don't want to
+// pick an exact return date -- just type how many days. Rather than
+// duplicating any pricing math, "days" mode simply computes the Return
+// Date (fromDate + N calendar days) and writes it into the SAME hidden
+// #toDate input every other function already reads -- calculate()/
+// updateBtn()/monthDayBreakdown() etc. are all completely untouched and
+// stay unaware this mode even exists.
+let dateMode = 'dates'; // 'dates' | 'days'
+
+function todayDateString() {
+  const d = new Date();
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function syncToDateFromDaysCount() {
+  const from = document.getElementById('fromDate').value;
+  const daysVal = parseInt(document.getElementById('daysCountInput').value, 10);
+  const toInput = document.getElementById('toDate');
+  if (!from || !daysVal || daysVal <= 0) {
+    toInput.value = '';
+    return;
+  }
+  // Anchor at UTC midnight (same as how `new Date('YYYY-MM-DD')` parses
+  // elsewhere in this file) so adding N days never drifts a day due to
+  // local timezone/DST -- keeps this in exact lockstep with daysBetween()/
+  // monthDayBreakdown()'s own date math.
+  const toD = new Date(from);
+  toD.setUTCDate(toD.getUTCDate() + daysVal);
+  toInput.value = toD.toISOString().slice(0, 10);
+}
+
+function setDateMode(mode) {
+  dateMode = mode;
+  document.getElementById('modeDatesBtn').classList.toggle('active', mode === 'dates');
+  document.getElementById('modeDaysBtn').classList.toggle('active', mode === 'days');
+  document.getElementById('toDateField').style.display = mode === 'dates' ? '' : 'none';
+  document.getElementById('daysCountField').style.display = mode === 'days' ? '' : 'none';
+
+  if (mode === 'days') {
+    // Default "Rented From" to today as a convenience when someone just
+    // wants a quick "starting today, for N days" quote -- doesn't
+    // overwrite a date they'd already picked.
+    if (!document.getElementById('fromDate').value) {
+      document.getElementById('fromDate').value = todayDateString();
+    }
+    syncToDateFromDaysCount();
+  } else {
+    document.getElementById('toDate').value = '';
+  }
+  updateBtn();
+}
+
+document.getElementById('modeDatesBtn').addEventListener('click', () => setDateMode('dates'));
+document.getElementById('modeDaysBtn').addEventListener('click', () => setDateMode('days'));
+document.getElementById('daysCountInput').addEventListener('input', () => {
+  syncToDateFromDaysCount();
+  updateBtn();
+});
+// ================== end rental-length input mode ==================
+
 function daysBetween(from, to) {
   if (!from || !to) return 0;
   const diff = (new Date(to) - new Date(from)) / 86400000;
@@ -897,7 +901,10 @@ function calculateExtraCustom() {
   box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
-document.getElementById('fromDate').addEventListener('change', updateBtn);
+document.getElementById('fromDate').addEventListener('change', () => {
+  if (dateMode === 'days') syncToDateFromDaysCount();
+  updateBtn();
+});
 document.getElementById('toDate').addEventListener('change', updateBtn);
 
 // Register service worker for offline use

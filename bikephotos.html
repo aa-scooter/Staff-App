@@ -255,24 +255,10 @@
 </div>
 
 <script>
-const scriptUrl = ''; // DISCONNECTED: this Vercel copy is intentionally not wired to the live backend (dev/testing only, see project CLAUDE.md)
-
 // ================== JSON-backed data layer (ported 13/08/2026) ==================
 // Only action=parts (the bike-name list feeding the search box) is ported
 // here -- getPartsBikeNamesFromJson below is copied verbatim from
 // contract.html (same per-file convention).
-//
-// NOT ported -- action=bikePhotos, action=photoFolders, action:'uploadPhoto',
-// action:'deletePhoto'. This entire page is a Google Drive PHOTO-FOLDER
-// manager (one Drive folder per bike, photos as actual Drive files) -- a
-// fundamentally different kind of backend than the flat-JSON row store
-// every other page in this project reads/writes. Porting these faithfully
-// needs real Drive-API integration (folder lookup/creation, file
-// upload/list/delete, serving back an image URL) wired into this Vercel
-// backend, which doesn't exist yet -- same category of "needs new
-// infrastructure, not just relocated JS" as contract.html's passport-photo
-// upload/AI-read actions. Deferred as a dedicated future pass; all four
-// still hit the old (disconnected) scriptUrl and fail cleanly.
 //
 // KNOWN GAP (same as bikes.html/contract.html/parts.html): "sold" bike
 // detection via strikethrough font formatting has no JSON equivalent --
@@ -354,8 +340,66 @@ async function getPartsBikeNamesFromJson() {
   return { success: true, headers, rows };
 }
 // ================== end JSON-backed data layer ==================
-// bikePhotos/photoFolders/uploadPhoto/deletePhoto are NOT ported -- see
-// the block comment above.
+
+// ================== Real Google Drive photo storage (14/08/2026) ==================
+// This page is a Drive PHOTO-FOLDER manager -- one Drive folder per bike,
+// under a "Bike Photos" folder in the app's own Drive data folder, photos
+// as actual Drive files (not JSON rows). Backed by api/photos/{folders,
+// list,upload,delete}.js and api/photos/file/[fileId].js on the server
+// side (see lib/googleDrive.js for the underlying Drive helpers) -- same
+// session-gated auth as every other page/API route in this app.
+//
+// Every upload is resized/re-compressed client-side (see
+// resizeImageForUploadB below) BEFORE being base64-encoded and posted --
+// Vercel Functions cap the whole request body at 4.5MB
+// (https://vercel.com/docs/functions/limitations#request-body-size), and
+// base64 inflates binary size by ~33%, so an un-resized modern phone photo
+// (often 3-8MB) would frequently blow past that limit and fail to upload
+// at all. Downscaling first keeps typical uploads in the low hundreds of
+// KB to low single-digit MB, comfortably under the cap, and uploads faster
+// on a phone's data connection too.
+const MAX_UPLOAD_DIMENSION = 1600;
+const UPLOAD_JPEG_QUALITY = 0.82;
+function resizeImageForUploadB(file) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const objectUrl = URL.createObjectURL(file);
+    img.onload = () => {
+      URL.revokeObjectURL(objectUrl);
+      let width = img.naturalWidth || img.width;
+      let height = img.naturalHeight || img.height;
+      if (!width || !height) { reject(new Error('Could not read this image\'s dimensions.')); return; }
+      if (width > MAX_UPLOAD_DIMENSION || height > MAX_UPLOAD_DIMENSION) {
+        if (width >= height) {
+          height = Math.round(height * (MAX_UPLOAD_DIMENSION / width));
+          width = MAX_UPLOAD_DIMENSION;
+        } else {
+          width = Math.round(width * (MAX_UPLOAD_DIMENSION / height));
+          height = MAX_UPLOAD_DIMENSION;
+        }
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, width, height);
+      canvas.toBlob((blob) => {
+        if (!blob) { reject(new Error('Could not process this image.')); return; }
+        resolve(blob);
+      }, 'image/jpeg', UPLOAD_JPEG_QUALITY);
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      reject(new Error('Could not read this image file -- it may not be a valid photo.'));
+    };
+    img.src = objectUrl;
+  });
+}
+function check401(res) {
+  if (res.status === 401) throw new Error('Signed out -- please refresh to sign in again.');
+  return res;
+}
+// ================== end real Drive photo storage ==================
 
 let bikeNames = [];
 let selectedBike = null;
@@ -559,8 +603,8 @@ function loadGallery() {
   if (!selectedBike) return;
   setLoadStatus('galleryLoadStatus', 'Loading photos…');
   gallery.innerHTML = '';
-  fetch(scriptUrl + '?action=bikePhotos&bike=' + encodeURIComponent(selectedBike))
-    .then(res => res.json())
+  fetch('/api/photos/list?bike=' + encodeURIComponent(selectedBike))
+    .then(check401).then(res => res.json())
     .then(data => {
       if (!data.success) throw new Error(data.error || 'Could not load photos');
       setLoadStatus('galleryLoadStatus', null);
@@ -604,12 +648,12 @@ function attachDeleteHandlers() {
       card.style.opacity = '0.4';
       setAllButtonsDisabled(true);
       btn.innerHTML = '<span class="del-spinner"></span>';
-      fetch(scriptUrl, {
+      fetch('/api/photos/delete', {
         method: 'POST',
-        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify({ action: 'deletePhoto', fileId: id })
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fileId: id })
       })
-        .then(res => res.json())
+        .then(check401).then(res => res.json())
         .then(data => {
           setAllButtonsDisabled(false);
           if (!data.success) throw new Error(data.error || 'Could not delete');
@@ -639,18 +683,19 @@ function fileToBase64(file) {
 }
 
 function uploadOne(file) {
-  return fileToBase64(file).then(base64 => {
-    return fetch(scriptUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({
-        action: 'uploadPhoto',
-        bike: selectedBike,
-        filename: file.name,
-        mimeType: file.type || 'image/jpeg',
-        base64: base64
-      })
-    }).then(res => res.json());
+  return resizeImageForUploadB(file).then(blob => {
+    return fileToBase64(blob).then(base64 => {
+      return fetch('/api/photos/upload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          bike: selectedBike,
+          filename: file.name.replace(/\.[^.]+$/, '') + '.jpg',
+          mimeType: 'image/jpeg',
+          base64: base64
+        })
+      }).then(check401).then(res => res.json());
+    });
   });
 }
 
@@ -769,7 +814,7 @@ function runCoverageCheck() {
 
   Promise.all([
     bikeNames.length ? Promise.resolve(bikeNames) : loadBikeNames().then(() => bikeNames),
-    fetch(scriptUrl + '?action=photoFolders').then(r => r.json())
+    fetch('/api/photos/folders').then(check401).then(r => r.json())
   ]).then(([names, folderRes]) => {
     if (!folderRes.success) throw new Error(folderRes.error || 'Could not load photo folders');
     setCoverageStatus(null);

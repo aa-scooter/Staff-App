@@ -6,6 +6,142 @@ update its row below in the same commit. This exists because work on this
 project gets picked up across multiple Claude sessions/accounts with no
 shared memory between them — this file is the handoff.
 
+## ✅ DONE, tested, awaiting Anton's push — pricing.html: removed the
+## leftover client-side login wall, added a "Number of Days" alternative
+## to the return-date picker (2026-08-14)
+
+**Login wall removal:** pricing.html was the only page in the app still
+carrying an old client-side `sessionStorage`/plaintext-password lock screen
+(`PASSWORD = "Aerox2016"`, ~90 lines of markup/CSS/JS) — a leftover from
+before nav.js's server-backed session gate existed. It never actually
+protected anything (any other page was always reachable directly), and
+every real page — this one included, via `<script src="nav.js" defer>` —
+already gets redirected to `login.html` server-side if there's no valid
+Google sign-in (see nav.js's auth-gate IIFE, which checks
+`/api/auth/session`). Removed the whole `#lockScreen`/`.lock-card`/etc.
+block and its script entirely; nothing else in the file referenced it.
+
+**"Number of Days" input, as an alternative to picking a Return Date:** a
+new two-button toggle ("Pick Return Date" / "Enter Number of Days") above
+the date fields. In days mode, the Return Date field is swapped for a
+plain number input; "Rented From" defaults to today (only if not already
+set) as a convenience for a quick "starting today, for N days" quote.
+Deliberately does **not** duplicate any pricing math — entering a day count
+just computes `fromDate + N calendar days` and writes it into the same
+(now-hidden) `#toDate` input every existing function already reads, so
+`calculate()`/`updateBtn()`/`monthDayBreakdown()`/the month-vs-day
+breakdown logic are all completely untouched and stay unaware this mode
+exists. Switching back to "Pick Return Date" clears the derived value
+(rather than leaving a stale auto-computed date sitting there unexplained)
+so the Calculate button correctly goes back to disabled until a real date
+is chosen.
+
+**Tested end-to-end in a real headless browser (Playwright, 18/18 checks)**
+against the actual unmodified file: confirmed zero lock-screen elements
+remain anywhere in the DOM and the page content is visible immediately;
+the existing two-date-picker flow still prices correctly (regression
+check, unchanged); switching to days mode correctly swaps which fields are
+visible and preserves an already-picked "Rented From"; entering a day
+count computes the exact right hidden Return Date and duration text, and
+prices correctly against the fallback rate table; changing "Rented From"
+while in days mode recomputes the Return Date; a fresh page load
+correctly leaves "Rented From" empty until days mode is actually chosen,
+at which point it defaults to today; and switching back to dates mode
+clears the derived Return Date and correctly disables Calculate again.
+
+## ✅ DONE, tested, awaiting Anton's push — bikephotos.html full Google
+## Drive photo storage integration (2026-08-14, replaces the disconnected
+## `scriptUrl`/Apps-Script stub this page had been left on)
+
+**What this replaces:** bikephotos.html previously pointed at
+`const scriptUrl = ''` — a disconnected Apps Script web-app URL, same as
+every other page before its JSON port, except photos were never going to be
+JSON-portable (they're binary files, not sheet rows). Anton explicitly chose
+"full Drive integration now" over a quick friendly-error patch, then
+confirmed this was next ("Let's see the bike photos. It's the most
+important.").
+
+**Architecture:** one Drive folder per bike, nested under a "Bike Photos"
+folder inside the app's existing data folder (same `drive.file`-scoped
+Drive access every other page already uses — the app still can't see
+anything in the signed-in account's Drive that it didn't create itself).
+Photos are served back through the app's own authenticated proxy route
+rather than making any Drive file public, so a photo is exactly as private
+as the rest of this session-gated app.
+
+**New file: `lib/googleDrive.js` additions** (existing file extended, not
+rewritten) — `ensureBikePhotosRootFolder`, `ensureBikeFolder`,
+`findNamedFolder` (lookup-only, never creates — used by `list.js` so
+browsing a bike with no photos yet doesn't create an empty folder as a side
+effect), `listSubfolders`, `listImageFilesInFolder`, `createImageFile`,
+`getFileMetadata`, `getFileMediaBuffer`, `trashFile` (soft delete).
+
+**New files under `api/photos/`:**
+- `folders.js` — GET, returns every bike-photo folder with its image count
+  (used for the coverage check below).
+- `list.js` — GET `?bike=<name>`, returns that bike's photos as
+  `{id, url}` pairs.
+- `upload.js` — POST `{bike, filename, mimeType, base64}`, validates every
+  field (including rejecting a non-image `mimeType`), decodes and writes
+  the file to Drive.
+- `delete.js` — POST `{fileId}`; soft-deletes (trash, not permanent) —
+  and, as a safety guard, first fetches the file's metadata and *refuses*
+  (400) if its `mimeType` isn't an image, so a wrong/mistyped fileId can
+  never trash a real JSON sheet file.
+- `file/[fileId].js` — GET, the authenticated proxy: streams the actual
+  image bytes back with the right `Content-Type` and a private cache
+  header; 404s cleanly for a missing/trashed/non-image file.
+
+**`bikephotos.html` changes:** removed the disconnected `scriptUrl` stub
+entirely. Added `resizeImageForUploadB(file)` — every upload is resized
+client-side (canvas, max 1600px longest edge) and re-encoded as JPEG
+(quality 0.82) *before* being base64-encoded and posted, because Vercel
+caps a serverless function's whole request body at 4.5MB on every plan
+(confirmed against Vercel's current docs) and base64 inflates size by
+~33% — an un-resized modern phone photo (often 3–8MB) would routinely blow
+past that limit otherwise. Gallery load, upload, delete, and the "photo
+coverage check" (which bikes are missing photos — now via
+`/api/photos/folders`) all now call the real endpoints above instead of the
+old stub, each with a `check401` handler so a session that's expired mid-use
+surfaces the same "please refresh to sign in again" message every other
+page's API calls already give.
+
+**Tested at three levels, all against the real, unmodified source files:**
+1. `lib/googleDrive.js`'s new functions (13/13) — against a from-scratch
+   in-memory Google Drive API simulator (mocks only the
+   `drive.files.{list,create,get,update}` surface actually used), since
+   `googleapis` can't be installed in this sandbox and there's no real
+   Google credential available here anyway. Covers folder create-once/
+   reuse, per-bike folder isolation, lookup-without-creating, newest-first
+   image ordering, exact-byte round-trip download, trash-removes-from-
+   listing, and a bike name containing an apostrophe not breaking the Drive
+   query.
+2. `api/photos/*.js` route handlers (22/22) — same simulator, driving the
+   real route files end-to-end via fake req/res objects with a fake
+   `withDrive` auth wrapper. Covers every validation error, a full
+   upload→list→count→download→delete round-trip with exact byte
+   verification, `delete.js`'s mimeType safety check (confirmed a
+   simulated JSON sheet file is refused and NOT trashed), 404s, and
+   cross-bike photo-count isolation (two bikes' counts never bleed into
+   each other).
+3. `bikephotos.html` itself (15/15) — real headless-browser (Playwright)
+   end-to-end test serving the actual unmodified file against a mocked
+   HTTP backend: initial coverage check hits `/api/photos/folders` and
+   correctly shows bikes as missing photos; selecting a bike hits
+   `/api/photos/list`; uploading a real PNG through the file input runs it
+   through the page's *actual* canvas resize/re-encode (confirmed the
+   posted `mimeType` comes back `image/jpeg` and the filename normalized to
+   `.jpg`, not the original PNG) and POSTs to `/api/photos/upload`;
+   deleting POSTs to `/api/photos/delete` with the exact `fileId`; and a
+   fresh page reload after upload+delete still shows correct net-zero
+   coverage.
+
+**One thing that can't be tested from this sandbox:** a real live Drive
+OAuth upload. All three test levels above use a simulated Drive — Anton
+still needs to do one real end-to-end check on the actual deployed app
+after this is pushed (upload a real photo, view it, delete it) as the final
+verification step no amount of mocking here can substitute for.
+
 ## ✅ DONE, tested, awaiting Anton's push — settings.html list-clutter
 ## follow-up (2026-08-14, same day, caught by Anton testing the panel live
 ## right after the push below)
@@ -701,13 +837,13 @@ confirms it landed.
 | add-bikes.html | Done | Done | editBike/addBike/sellBike/unsellBike all ported+tested (see git log `f1b170c`). `fetch(scriptUrl` sweep: 0 real calls. Two purely cosmetic, documented gaps remain (nothing downstream reads either back): sold-row strikethrough styling, and Bike Tax's Status/day-count (G/H) columns for a newly-added bike. |
 | available-bikes.html | Done | n/a (read-only page) | |
 | bike-income.html | Done | n/a (read-only page) | |
-| bikephotos.html | Done | Out of scope | uploadPhoto/deletePhoto are Drive file operations — need a live backend regardless of JSON migration. 4 real calls remain, confirmed Drive-file ops. |
+| bikephotos.html | Done | Done (real Drive integration) | **2026-08-14:** was "Out of scope" (uploadPhoto/deletePhoto need a live backend regardless of JSON migration) — now built and tested. Full Google Drive photo storage: one Drive folder per bike under a "Bike Photos" folder, `lib/googleDrive.js` extended with folder/file helpers, new `api/photos/{folders,list,upload,delete}.js` + `api/photos/file/[fileId].js` (authenticated proxy, photos never made public), client-side resize/re-encode before upload (Vercel's 4.5MB body cap). Tested 13/13 (Drive helpers) + 22/22 (API routes) + 15/15 (real headless-browser end-to-end against the actual file) — see full writeup at the top of this file. Still needs one real live Drive OAuth test from Anton post-push (can't be simulated here). |
 | oilchange.html | Done | n/a (read-only page) | **Corrected 2026-08-14:** this row previously (wrongly) said "Writes: Done" — a full grep found ZERO `writeSheetJson(` calls anywhere in this file, and Code.gs has no `oilChange`-named write action either. It's a pure read-only dashboard (`getPartsDataFromJson`/`getBikeRentalStatusFromJson`, both reads) and always has been — there was never a write to port here. Documentation error only, not a functional gap. |
 | parts.html | Done | Done | Turned out ALREADY PORTED in the cloud sandbox (dated 13/08/2026 in its own code comment) but never pushed — the exact bikes.html near-miss pattern, again. `getPartsDataFromJson`/`updateBikeRowJson` were already fully written and wired to the UI (`saveFields`/`performQuickSave`/`performSave`). Tested via `/tmp/parts_write_test.js` (existing thin test extended 2026-08-14 with: date/numeric/text/blank value-type coercion checks, clearing a field to blank actually clears it, an unknown field name is silently ignored rather than crashing, categoryRows/rates are populated from real Bike_Tax/rates_per_day data, and a malformed rates sheet reports a warning rather than throwing) — all pass. `readOdometerWithAI` correctly stays on the old disconnected path (AI vision call, no backend integration exists for this). Pushed to Mac, confirmed via md5 match (`b451b8a...`). |
 | reply-assistant.html | Done | Done | `addContact` (`addContactFromJson`) is already ported and wired (line ~1212) — the "not yet audited" note was stale. `fetch(scriptUrl` sweep: 2 real calls remain, both confirmed AI-assist (`generateReplyDraft`, `readWhatsAppContactWithAI`) — correctly out of scope. |
 | bike-name-audit.html | Done | Done | `fetch(scriptUrl` sweep (2026-08-14): 0 real calls (1 comment mention only) — the "1 site not yet audited" note was stale, nothing left here. |
 | index.html | n/a | Out of scope (confirmed) | `createMonthSheetFromTemplate` (line ~243) is a TEMP/TEST button that creates a whole new monthly SHEET from a template — structural/month-rotation, not a row-level write against an existing sheet's data, genuinely a different concern from this migration. Recommend leaving as-is; flag to Anton for explicit confirmation before ever touching. |
-| pricing.html | Done | n/a (read-only page) | Turned out ALREADY PORTED in the cloud sandbox (dated 13/08/2026 in its own code comment) but never pushed — same near-miss pattern as bikes.html/parts.html. `loadLiveRates()`/`getRatesDataFromJson()` were already fully written and wired up. Tested via new `/tmp/pricing_write_test.js`: real-data success path, fetch-failure path (confirmed `getRatesDataFromJson`'s internal try/catch means it never actually rejects, so loadLiveRates()'s outer `.catch` "Offline" text is effectively dead code in practice — the real failure message comes through the `.then()` branch instead; not a bug, just documented), the missing/never-written-file case (`rows: null`/`[]` reports a graceful warning, not a throw), a too-sparse rates block, and `isValidRatesTable`'s rejection of every malformed shape (missing day, wrong category count, NaN, string-typed number). All pass. Pushed to Mac, confirmed via md5 match (`1543d97...`). |
+| pricing.html | Done | n/a (read-only page) | Turned out ALREADY PORTED in the cloud sandbox (dated 13/08/2026 in its own code comment) but never pushed — same near-miss pattern as bikes.html/parts.html. `loadLiveRates()`/`getRatesDataFromJson()` were already fully written and wired up. Tested via new `/tmp/pricing_write_test.js`: real-data success path, fetch-failure path (confirmed `getRatesDataFromJson`'s internal try/catch means it never actually rejects, so loadLiveRates()'s outer `.catch` "Offline" text is effectively dead code in practice — the real failure message comes through the `.then()` branch instead; not a bug, just documented), the missing/never-written-file case (`rows: null`/`[]` reports a graceful warning, not a throw), a too-sparse rates block, and `isValidRatesTable`'s rejection of every malformed shape (missing day, wrong category count, NaN, string-typed number). All pass. Pushed to Mac, confirmed via md5 match (`1543d97...`). **2026-08-14 follow-up:** removed the leftover client-side login wall (redundant with nav.js's server-backed session gate) and added a "Number of Days" alternative to the Return Date picker — see full writeup near the top of this file. Tested 18/18 (real headless-browser end-to-end). |
 | login.html | n/a | n/a | No scriptUrl at all. |
 | calendar.html | n/a | Isolated (by design) | Wired to a real but ISOLATED test Google account (`aascooters1@gmail.com`) via a standalone `TestCalendarScript.gs` deployment — NOT a JSON port, and shouldn't be; reminders/calendar events aren't spreadsheet data. Live `aascooterchiangmai@gmail.com` calendar untouched. There was a task (#27) to "assess and port the delivery-link + auto-sync gap" — re-clarify with Anton what specifically was meant here, since the rest of calendar.html is intentionally NOT going through the JSON path. |
 
