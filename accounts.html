@@ -1655,6 +1655,203 @@ function accountsMonthNameFor(monthIndexRaw) {
   return monthName;
 }
 
+// ==== Monthly "Bank" balance / cash / deposit-log recompute cascade ====
+// FIX (14/08/2026): confirmed live by Anton -- adding a "Bank"-paid expense
+// (or any expense/income) left the Expenses/Income/Profit/Cash & Deposits
+// summary strip completely frozen. Root cause matches the already-fixed
+// "bikes" sheet cascade bug exactly: every write function above updates a
+// formula's SOURCE cell (a single expense/income row) but nothing ever
+// recomputes the formula's TARGET cells, so the summary strip just shows
+// whatever was true at the last JSON export forever.
+//
+// These formulas were pulled directly from the real workbook (August tab,
+// data_only=False) as ground truth, not guessed:
+//   I<TER-1> = sum(I2:I<TER-2>)                 "income for month"
+//   C<TER>   = sum(C2:C<TER-1>)                 "total expenses"
+//   I<TER>   = I<TER-1>                         "income less investment"
+//   K<TER>   = I<TER-1> - C<TER>                "net profit"
+//   C<TER+1> = C<TER> - C<personal> - C<wages>  "bussiness expenses"
+//   I<TER+1> = C<TER+1> / I<TER-1>               "% bussiness exp vs income"
+//   K<TER+1> = I<TER> - C<TER+1>                 "actual profit"
+//   I<TER+2> = (C<TER> - C<wages>) / I<TER-1>    "% total exp vs income"
+//   P15/S15/W15 = sum(<col>2:<col>14)            deposit-log column totals
+//   S16 = M11 + S15, W16 = M12 + W15             deposit-log "total wise/revolut"
+//   M5 "deposits all"       = P15 + S15 + W15
+//   M3 "cash"                = cash!G374 (this file's own recomputed total)
+//   M6 "bank"                = (K<TER> + M2) - (M3 - M4) + P15 - M11 - M12
+//   M7 "bank less deposit"   = M6 - P15
+//   M9 "total (cash+bank+wise)" = M3 + M6 + M11 + M12
+// "personal expenses total"/"wages and bike purchase" (C<personal>/C<wages>)
+// and M11/M12 (wise/revolut running totals) are DELIBERATELY read-only here
+// -- those are already kept genuinely live by updateExpenseTypeTotalRefFromJson
+// and processDepositForPaymentFromJson respectively (see the big comment
+// above readSummaryItem). M2/M4/M10 (prior-month snapshots, "bike bank")
+// are plain literals, not formulas -- correctly static intra-month, only
+// touched at month rollover (a separate, not-yet-scoped task).
+//
+// Best-effort by design, same convention as every other cascade in this
+// file: called LAST from every add/edit/delete expense/income function,
+// after every other write (cash sheet, deposit totals, bike splits) has
+// already landed, so it always reads the freshest values. A failure here
+// is caught by the caller and surfaced as a warning -- it never blocks the
+// base transaction write that triggered it.
+const ACCOUNTS_CASCADE_EXTRA_ITEMS_B = {
+  depositsAll:   { row: 5,  labelCol: 12, valueCol: 13, expectedLabel: 'deposits all' },
+  bankLessDep:   { row: 7,  labelCol: 12, valueCol: 13, expectedLabel: 'bank less deposit' },
+  cashPrevious:  { row: 4,  labelCol: 12, valueCol: 13, expectedLabel: 'cash previous' },
+  bankPrevious:  { row: 2,  labelCol: 12, valueCol: 13, expectedLabel: 'bank previous less deposit + wise + rev' }
+};
+const DEPOSIT_LOG_TOTAL_ITEMS_B = [
+  { key: 'scan',    dataCol: 16, row: 15, labelCol: 15, valueCol: 16, expectedLabel: 'total' },    // O/P
+  { key: 'wise',    dataCol: 19, row: 15, labelCol: 18, valueCol: 19, expectedLabel: 'total' },    // R/S
+  { key: 'revolut', dataCol: 23, row: 15, labelCol: 22, valueCol: 23, expectedLabel: 'total' }     // V/W
+];
+const DEPOSIT_LOG_SUBTOTAL_ITEMS_B = [
+  { key: 'wise',    row: 16, labelCol: 18, valueCol: 19, expectedLabel: 'total wise' },    // R16/S16
+  { key: 'revolut', row: 16, labelCol: 22, valueCol: 23, expectedLabel: 'total revolut' }  // V16/W16
+];
+function readCellNumB(rows, row, col) {
+  if (!row || !rows[row - 1]) return 0;
+  let v = rows[row - 1][col - 1];
+  if (typeof v === 'string' && v.charAt(0) === '=') v = evalSummaryFormulaJson(rows, v);
+  const n = Number(v);
+  return isNaN(n) ? 0 : n;
+}
+function writeCellB(rows, row, col, val) {
+  if (!row) return;
+  if (!rows[row - 1]) rows[row - 1] = [];
+  while (rows[row - 1].length < col) rows[row - 1].push('');
+  rows[row - 1][col - 1] = val;
+}
+function sumColumnRangeB(rows, col, fromRow, toRow) {
+  let total = 0;
+  for (let r = fromRow; r <= toRow; r++) {
+    const v = rows[r - 1] ? rows[r - 1][col - 1] : undefined;
+    if (v === '' || v === null || v === undefined) continue;
+    const n = Number(v);
+    if (!isNaN(n)) total += n;
+  }
+  return total;
+}
+// ---- Recomputes cash sheet's income/expenses/total-cash cells
+// (C370/G372/G374 in the real workbook -- self-heals off the "income"
+// label since this is a single, non-monthly, ever-growing ledger). Returns
+// the newly-computed "total cash" figure so the monthly cascade below can
+// use it for M3 without a second fetch. ----
+async function recomputeCashSheetTotalsB() {
+  const { rows, modifiedTime } = await fetchSheetWithMeta('cash');
+  if (!rows || !rows.length) throw new Error('no tab named "cash" was found -- cash totals were NOT recomputed.');
+  const norm = s => (s || '').toString().trim().toLowerCase();
+  // Starts at row 2 (idx 1) deliberately -- row 1 is the header row, and
+  // this sheet's own column B header text is ALSO literally "income" (see
+  // "B1: 'income'" in the real workbook), which would otherwise match
+  // first and be mistaken for the totals-row label further down.
+  let incomeRow = -1;
+  for (let r = 1; r < rows.length; r++) {
+    if (rows[r] && norm(rows[r][1]) === 'income') { incomeRow = r + 1; break; }
+  }
+  if (incomeRow === -1) throw new Error('Could not find the "income" total row (column B) on "cash" -- cash totals were NOT recomputed.');
+  const expensesRow = incomeRow + 2;
+  const totalRow = incomeRow + 4;
+  if (!rows[totalRow - 1] || norm(rows[totalRow - 1][5]) !== 'total cash') {
+    throw new Error('"cash" sheet layout has drifted (expected "total cash" 4 rows below "income") -- cash totals were NOT recomputed.');
+  }
+  const newRows = rows.map(r => r.slice());
+  const incomeTotal = sumColumnRangeB(newRows, 3, 2, incomeRow - 1);
+  const expensesTotal = sumColumnRangeB(newRows, 7, 2, expensesRow - 1);
+  const totalCash = incomeTotal - expensesTotal;
+  writeCellB(newRows, incomeRow, 3, incomeTotal);
+  writeCellB(newRows, expensesRow, 7, expensesTotal);
+  writeCellB(newRows, totalRow, 7, totalCash);
+  await writeSheetJson('cash', newRows, modifiedTime);
+  return totalCash;
+}
+// ---- Recomputes every derived cell on a monthly sheet's Expenses/Income/
+// Profit/Cash & Deposits summary block, plus the deposit-log column
+// totals at the top of the same sheet. See the big comment above this
+// block for the exact formulas and which cells are deliberately excluded. ----
+async function recomputeMonthlySummaryCascadeB(monthName, year) {
+  const cashTotal = await recomputeCashSheetTotalsB();
+  const { rows, modifiedTime } = await fetchSheetWithMeta(monthName, year);
+  if (!rows || !rows.length) throw new Error('No sheet found for "' + monthName + '" -- summary totals were NOT recomputed.');
+  const newRows = rows.map(r => r.slice());
+
+  const terRow = findSummaryRow(newRows, ACCOUNTS_SUMMARY_ITEMS.expense[0]);       // "total expenses"
+  const berRow = findSummaryRow(newRows, ACCOUNTS_SUMMARY_ITEMS.expense[1]);       // "bussiness expenses"
+  const incRow = findSummaryRow(newRows, ACCOUNTS_SUMMARY_ITEMS.income[0]);        // "income for month"
+  const iliRow = findSummaryRow(newRows, ACCOUNTS_SUMMARY_ITEMS.income[1]);        // "income less investment"
+  const pctBerRow = findSummaryRow(newRows, ACCOUNTS_SUMMARY_ITEMS.income[2]);     // "% bussiness exp vs income"
+  const pctTotRow = findSummaryRow(newRows, ACCOUNTS_SUMMARY_ITEMS.income[3]);     // "% total exp vs income"
+  const netProfitRow = findSummaryRow(newRows, ACCOUNTS_SUMMARY_ITEMS.profit[0]);  // "net profit"
+  const actProfitRow = findSummaryRow(newRows, ACCOUNTS_SUMMARY_ITEMS.profit[1]);  // "actual profit"
+  const cashRow = findSummaryRow(newRows, ACCOUNTS_SUMMARY_ITEMS.deposit[0]);      // "cash"
+  const bankRow = findSummaryRow(newRows, ACCOUNTS_SUMMARY_ITEMS.deposit[1]);      // "bank"
+  const wiseRow = findSummaryRow(newRows, ACCOUNTS_SUMMARY_ITEMS.deposit[2]);      // "wise(less deposit)"
+  const revolutRow = findSummaryRow(newRows, ACCOUNTS_SUMMARY_ITEMS.deposit[3]);   // "revolut(less deposit)"
+  const totalRow = findSummaryRow(newRows, ACCOUNTS_SUMMARY_ITEMS.deposit[4]);     // "total (cash+bank+wise)"
+  const personalRow = locateExpenseTypeTotalRowFromJson(newRows, 'personal');
+  const wagesRow = locateExpenseTypeTotalRowFromJson(newRows, 'wages');
+  const depositsAllRow = findSummaryRow(newRows, ACCOUNTS_CASCADE_EXTRA_ITEMS_B.depositsAll);
+  const bankLessDepRow = findSummaryRow(newRows, ACCOUNTS_CASCADE_EXTRA_ITEMS_B.bankLessDep);
+
+  const missing = [];
+  [['total expenses', terRow], ['bussiness expenses', berRow], ['income for month', incRow],
+   ['income less investment', iliRow], ['net profit', netProfitRow], ['actual profit', actProfitRow],
+   ['cash', cashRow], ['bank', bankRow], ['wise(less deposit)', wiseRow], ['revolut(less deposit)', revolutRow],
+   ['total (cash+bank+wise)', totalRow], ['personal expenses total', personalRow], ['wages and bike purchase', wagesRow]
+  ].forEach(([label, row]) => { if (!row) missing.push(label); });
+  if (missing.length) throw new Error('Could not find: ' + missing.join(', ') + ' on "' + monthName + '" -- summary totals were NOT recomputed.');
+
+  // -- Deposit-log column totals (top of sheet) --
+  DEPOSIT_LOG_TOTAL_ITEMS_B.forEach(item => {
+    const row = findSummaryRow(newRows, item) || item.row;
+    const total = sumColumnRangeB(newRows, item.dataCol, 2, 14);
+    writeCellB(newRows, row, item.valueCol, total);
+  });
+  const p15 = readCellNumB(newRows, DEPOSIT_LOG_TOTAL_ITEMS_B[0].row, DEPOSIT_LOG_TOTAL_ITEMS_B[0].valueCol);
+  const s15 = readCellNumB(newRows, DEPOSIT_LOG_TOTAL_ITEMS_B[1].row, DEPOSIT_LOG_TOTAL_ITEMS_B[1].valueCol);
+  const w15 = readCellNumB(newRows, DEPOSIT_LOG_TOTAL_ITEMS_B[2].row, DEPOSIT_LOG_TOTAL_ITEMS_B[2].valueCol);
+  const m11 = readCellNumB(newRows, wiseRow, 13);
+  const m12 = readCellNumB(newRows, revolutRow, 13);
+  DEPOSIT_LOG_SUBTOTAL_ITEMS_B.forEach(item => {
+    const row = findSummaryRow(newRows, item) || item.row;
+    const base = item.key === 'wise' ? m11 : m12;
+    const colTotal = item.key === 'wise' ? s15 : w15;
+    writeCellB(newRows, row, item.valueCol, base + colTotal);
+  });
+
+  // -- Expenses / Income / Profit block --
+  const incomeTotal = sumColumnRangeB(newRows, 9, 2, incRow - 1);
+  writeCellB(newRows, incRow, 9, incomeTotal);
+  const expenseTotal = sumColumnRangeB(newRows, 3, 2, terRow - 1);
+  writeCellB(newRows, terRow, 3, expenseTotal);
+  writeCellB(newRows, iliRow, 9, incomeTotal); // "income less investment" = income for month
+  const netProfit = incomeTotal - expenseTotal;
+  writeCellB(newRows, netProfitRow, 11, netProfit);
+
+  const personalTotal = readCellNumB(newRows, personalRow, 3);
+  const wagesTotal = readCellNumB(newRows, wagesRow, 3);
+  const businessExpenses = expenseTotal - personalTotal - wagesTotal;
+  writeCellB(newRows, berRow, 3, businessExpenses);
+  if (pctBerRow) writeCellB(newRows, pctBerRow, 9, incomeTotal ? (businessExpenses / incomeTotal) : 0);
+  const actualProfit = incomeTotal - businessExpenses;
+  writeCellB(newRows, actProfitRow, 11, actualProfit);
+  if (pctTotRow) writeCellB(newRows, pctTotRow, 9, incomeTotal ? ((expenseTotal - wagesTotal) / incomeTotal) : 0);
+
+  // -- Cash & Deposits block --
+  writeCellB(newRows, cashRow, 13, cashTotal);
+  const m2 = readCellNumB(newRows, ACCOUNTS_CASCADE_EXTRA_ITEMS_B.bankPrevious.row, 13);
+  const m4 = readCellNumB(newRows, ACCOUNTS_CASCADE_EXTRA_ITEMS_B.cashPrevious.row, 13);
+  const bank = (netProfit + m2) - (cashTotal - m4) + p15 - m11 - m12;
+  writeCellB(newRows, bankRow, 13, bank);
+  if (depositsAllRow) writeCellB(newRows, depositsAllRow, 13, p15 + s15 + w15);
+  if (bankLessDepRow) writeCellB(newRows, bankLessDepRow, 13, bank - p15);
+  const totalCashBankWise = cashTotal + bank + m11 + m12;
+  writeCellB(newRows, totalRow, 13, totalCashBankWise);
+
+  await writeSheetJson(monthName, newRows, modifiedTime, year);
+}
+
 // ---- action:'addExpense' port. ----
 async function addExpenseRowFromJson(data) {
   const monthName = accountsMonthNameFor(data.monthIndex);
@@ -1721,6 +1918,9 @@ async function addExpenseRowFromJson(data) {
   }
   if (bikeWarnings.length) warnings.push('Bikes sheet (expense): ' + bikeWarnings.join(' '));
 
+  try { await recomputeMonthlySummaryCascadeB(monthName, year); }
+  catch (cascadeErr) { warnings.push('Summary totals: ' + cascadeErr.message); }
+
   const responsePayload = { success: true, row, shifted: free.inserted };
   if (warnings.length) responsePayload.warning = warnings.join(' ');
   return responsePayload;
@@ -1786,6 +1986,9 @@ async function addIncomeRowFromJson(data) {
     catch (bikeErr) { bikeWarnings.push(bikeErr.message); }
   }
   if (bikeWarnings.length) warnings.push('Bikes sheet (income): ' + bikeWarnings.join(' '));
+
+  try { await recomputeMonthlySummaryCascadeB(monthName, year); }
+  catch (cascadeErr) { warnings.push('Summary totals: ' + cascadeErr.message); }
 
   const responsePayload = { success: true, row, shifted: free.inserted };
   if (warnings.length) responsePayload.warning = warnings.join(' ');
@@ -1915,6 +2118,9 @@ async function editExpenseRowFromJson(data) {
     }
   } catch (e) { warnings.push('Deposit total (applying new): ' + e.message); }
 
+  try { await recomputeMonthlySummaryCascadeB(monthName, year); }
+  catch (cascadeErr) { warnings.push('Summary totals: ' + cascadeErr.message); }
+
   const responsePayload = { success: true, row };
   if (warnings.length) responsePayload.warning = warnings.join(' ');
   return responsePayload;
@@ -2037,6 +2243,9 @@ async function editIncomeRowFromJson(data) {
     }
   } catch (e) { warnings.push('Deposit total (applying new): ' + e.message); }
 
+  try { await recomputeMonthlySummaryCascadeB(monthName, year); }
+  catch (cascadeErr) { warnings.push('Summary totals: ' + cascadeErr.message); }
+
   const responsePayload = { success: true, row };
   if (warnings.length) responsePayload.warning = warnings.join(' ');
   return responsePayload;
@@ -2140,6 +2349,9 @@ async function deleteExpenseRowFromJson(data) {
     await writeSheetJson(notesSheet, shifted, nmt, year);
   } catch (e) { /* best-effort */ }
 
+  try { await recomputeMonthlySummaryCascadeB(monthName, year); }
+  catch (cascadeErr) { warnings.push('Summary totals: ' + cascadeErr.message); }
+
   const responsePayload = { success: true };
   if (warnings.length) responsePayload.warning = warnings.join(' ');
   return responsePayload;
@@ -2229,6 +2441,9 @@ async function deleteIncomeRowFromJson(data) {
       .map(n => (n[1] === 7 && n[0] > row) ? [n[0] - 1, n[1], n[2]] : n);
     await writeSheetJson(notesSheet, shifted, nmt, year);
   } catch (e) { /* best-effort */ }
+
+  try { await recomputeMonthlySummaryCascadeB(monthName, year); }
+  catch (cascadeErr) { warnings.push('Summary totals: ' + cascadeErr.message); }
 
   const responsePayload = { success: true };
   if (warnings.length) responsePayload.warning = warnings.join(' ');
@@ -2324,6 +2539,15 @@ async function transferToBankFromJson(data) {
   } else {
     try { await processDepositForPaymentFromJson(source, -amount, monthName, year); }
     catch (e) { warnings.push('Deposit total: ' + e.message); }
+  }
+
+  // Same summary-cascade gap as add/edit/delete expense/income -- this
+  // draws down cash/wise/revolut, which M6 ("bank")/M9 ("total") both
+  // depend on, so the balance readback just below would otherwise still
+  // show a frozen figure even though the underlying transfer succeeded.
+  if (monthName) {
+    try { await recomputeMonthlySummaryCascadeB(monthName, year); }
+    catch (cascadeErr) { warnings.push('Summary totals: ' + cascadeErr.message); }
   }
 
   let balance = null;

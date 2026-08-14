@@ -6,6 +6,79 @@ update its row below in the same commit. This exists because work on this
 project gets picked up across multiple Claude sessions/accounts with no
 shared memory between them — this file is the handoff.
 
+## ✅ DONE, tested, awaiting Anton's push — monthly "Bank"/cash/deposit
+## totals cascade, accounts.html (2026-08-14, item #2 from the audit below)
+
+**Bug reported live by Anton:** added a ฿10,000 expense paid "Bank" through
+accounts.html — the "Bank" figure on the summary strip (and every other
+summary total) didn't move at all. This is exactly the audit's item #1/#2/#3
+("Monthly ledger 'Bank' balance and its whole upstream chain") confirmed
+live, not just theoretical.
+
+**Root cause, confirmed against the real workbook (`data_only=False`, not
+guessed):** `accounts.html`'s summary strip (`renderSummary`, fed by
+`ACCOUNTS_SUMMARY_ITEMS`/`readSummaryItem`) reads six chained formula cells
+off the monthly sheet — `I<TER-1>` (income for month), `C<TER>` (total
+expenses), `I<TER>` (income less investment), `K<TER>` (net profit),
+`C<TER+1>` (business expenses), `K<TER+1>` (actual profit) — plus the
+Cash & Deposits block's `M3` (`=cash!G374`), `M6` ("bank" —
+`=(K<TER>+M2)-(M3-M4)+P15-M11-M12`), `M9` (total), and the deposit-log's
+own `P15/S15/W15/S16/W16` column totals. **None of these were ever
+recomputed after a write** — same bug class as the already-fixed
+bikes-sheet cascade, just on a much longer chain. Only M11/M12 (wise/
+revolut running totals, via `processDepositForPaymentFromJson`) and the
+personal/wages expense-type subtotals (via `updateExpenseTypeTotalRefFromJson`)
+were already correctly kept live — everything else was frozen at
+JSON-export time forever, including the cash sheet's own `C370`/`G372`/
+`G374` totals that `M3` cross-references.
+
+**Fix:** added `recomputeCashSheetTotalsB()` and
+`recomputeMonthlySummaryCascadeB(monthName, year)` to accounts.html
+(inserted just before `addExpenseRowFromJson`, ~line 1658 pre-insert).
+Both use the file's existing self-healing row-lookup (`findSummaryRow`/
+`ACCOUNTS_SUMMARY_ITEMS`, the same mechanism that already handles
+month-to-month row drift) rather than hardcoded row numbers, so they don't
+break the next time a month's layout drifts by a row or two. Called
+best-effort (try/catch → pushed to `warnings`, never blocks the base
+write) from the END of all 7 write actions that can move money through
+this chain: `addExpenseRowFromJson`, `editExpenseRowFromJson`,
+`deleteExpenseRowFromJson`, `addIncomeRowFromJson`, `editIncomeRowFromJson`,
+`deleteIncomeRowFromJson`, and `transferToBankFromJson` (the last one was
+an extra gap found while implementing this — draws down cash/wise/revolut
+but never recomputed the bank/total figures that depend on them either).
+Deliberately leaves alone: M11/M12 and the personal/wages subtotals
+(already correctly live, see above), and M2/M4/M10 (prior-month snapshots,
+correctly static intra-month — only touched at month rollover, a separate
+not-yet-scoped task, see item #6 in the audit below).
+
+**Found and fixed one bug in my own first draft during testing:** the cash
+sheet's income-total row lookup searched from row 1 and matched the
+column-B HEADER text ("income", row 1) instead of the actual totals-row
+label further down (row 370) — both cells literally say "income". Fixed by
+starting the search at row 2 (confirmed via the real `cash.json` that row 1
+is always the header).
+
+**Tested** via a vm harness running the REAL extracted function source
+(not a re-typed copy) against real `August.json`/`cash.json` data, 26/26
+passing: cash-sheet totals match an independently-computed sum; a
+simulated ฿10,000 Bank expense (Anton's exact repro) correctly moves total
+expenses/net profit/bank/total, while already-live cells (M11/M12,
+personal/wages subtotals, M2/M4/M10) are provably left untouched; deposit-
+log column totals and their wise/revolut subtotals recompute correctly;
+running the cascade twice in a row is idempotent; a corrupted/missing
+summary label throws instead of silently writing wrong numbers. Full-file
+`node --check` also passes.
+
+**Not yet done — same bug, other files:** `bikes.html`, `contract.html`,
+`customers.html` each have their own copies of `appendMonthlyIncomeRowFromJson`/
+`appendCashSheetRowFromJson`/`processDepositForPaymentFromJson` (writing
+income/cash/deposit rows through rentals, not just accounts.html's manual
+entry form), and `deposits.html` has its own add/edit/delete deposit-entry
+functions — all of these feed the exact same frozen summary chain and need
+the identical cascade call ported in, per the no-shared-JS convention
+(each file gets its own copy of the function, not an import). This is the
+direct next step, same task, not yet started as of this entry.
+
 ## ✅ RESOLVED (2026-08-14, later session) — pricing.html push confirmed landed
 
 The commit/push described below (`f879031`, "Push completed pricing.html
@@ -165,6 +238,9 @@ prioritized before any code changes.
    the cash sheet) -- this is Anton's originally-described concern
    exactly. Three sheets, one shared recompute-after-write pattern
    (same shape as the bikes-sheet fix, just chained further).
+   **accounts.html DONE 2026-08-14 (see section near the top of this
+   file) -- bikes.html/contract.html/customers.html/deposits.html still
+   need the identical fix, not started yet.**
 3. **Bike Tax staleness on EDIT** (not just add, which was already known)
    -- add-bikes.html's `editBikeFromJson`; low severity today (nothing
    reads it back yet) but corrects a misleading existing code comment.
@@ -271,7 +347,7 @@ confirms it landed.
 | Page | Reads (JSON) | Writes (JSON) | Notes |
 |---|---|---|---|
 | bikes.html | Done | Done | markReturned/updateReturnPickup, short-extension, swapBike, earlyReturnBike, returnDeposit, long-extension (30+ day) all ported+tested. `fetch(scriptUrl` sweep: 0 real calls (2 comment mentions only). |
-| accounts.html | Done | Done | addExpense/editExpense/deleteExpense/addIncome/editIncome/deleteIncome/transferToBank, plus expense-type persistence + bulkSetExpenseType. New design decision made unilaterally: expense type is now stored as a notes-sidecar marker on column E (`EXPENSE_TYPE_NOTE_COL_B`) since real cell colors have no JSON equivalent — **not explicitly approved by Anton, flagged for review.** `fetch(scriptUrl` sweep: 0 real calls. **2026-08-14 fix 1:** bike-sheet income/expenses/profit/net-profit cascade now recomputed on every bike-split write (see "DONE, tested, awaiting Anton's push" section above) — was previously frozen at JSON-export time. **2026-08-14 fix 2:** Add/Edit Expense/Income modal now requires Date/description/Amount/Payment method before saving (previously saved silently with any of these left blank — confirmed via the live production app + Code.gs that this was never actually enforced anywhere, not a migration regression, but Anton wants it enforced going forward). |
+| accounts.html | Done | Done | addExpense/editExpense/deleteExpense/addIncome/editIncome/deleteIncome/transferToBank, plus expense-type persistence + bulkSetExpenseType. New design decision made unilaterally: expense type is now stored as a notes-sidecar marker on column E (`EXPENSE_TYPE_NOTE_COL_B`) since real cell colors have no JSON equivalent — **not explicitly approved by Anton, flagged for review.** `fetch(scriptUrl` sweep: 0 real calls. **2026-08-14 fix 1:** bike-sheet income/expenses/profit/net-profit cascade now recomputed on every bike-split write (see "DONE, tested, awaiting Anton's push" section above) — was previously frozen at JSON-export time. **2026-08-14 fix 2:** Add/Edit Expense/Income modal now requires Date/description/Amount/Payment method before saving (previously saved silently with any of these left blank — confirmed via the live production app + Code.gs that this was never actually enforced anywhere, not a migration regression, but Anton wants it enforced going forward). **2026-08-14 fix 3:** the whole "Bank"/cash/deposit summary-strip chain now recomputes after every add/edit/delete expense/income and after `transferToBankFromJson` (see "DONE, tested, awaiting Anton's push" section near the top of this file) — was previously frozen at JSON-export time, confirmed live by Anton via a ฿10,000 Bank expense that didn't move any total. |
 | contract.html | Done | Done (Create/Edit/Cancel) | Drive-file actions (findContractDocument, uploadPassportPhoto, generateReceipt, generateChecklist, getFilesForShare, regenerateContract) still hit the old scriptUrl by design — these need a live Drive/PDF backend regardless of the JSON migration, not in scope for this effort. 13 real calls remain, all confirmed Drive-file ops. |
 | customers.html | Done | Done (intake) | Customer-intake write cascade ported, shared with contract.html's doRent path. `fetch(scriptUrl` sweep (2026-08-14): 0 real calls (2 comment mentions only) — the "2 sites not yet audited" note from before was stale, there's nothing left here. |
 | deposits.html | Done | Done | deductDeposit/deductCashDeposit AND addDeposit/editDeposit/deleteDeposit (`addDepositEntryJson`/`editDepositEntryJson`/`deleteDepositEntryJson`) are ALL already ported and already committed+pushed (commit `1dba35c`, whose message only mentioned deductDeposit/deductCashDeposit — misleading, but the diff shows all five). **Confirmed via `fetch(scriptUrl` sweep (2026-08-14): 0 real calls left, and md5 of the container's copy matches the Mac's committed copy exactly.** This row was wrongly marked "Partial" before — no work was actually needed here. |
