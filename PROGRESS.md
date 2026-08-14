@@ -1,10 +1,15 @@
 # AA Scooters — JSON-parity rewrite progress tracker
 
-Last updated: 2026-08-14. Keep this file current — whenever a page's write
-layer gets ported/tested/pushed, update its row below in the same commit.
-This exists because work on this project gets picked up across multiple
-Claude sessions/accounts with no shared memory between them — this file is
-the handoff.
+Last updated: 2026-08-14 (add-bikes.html completed). Keep this file current
+— whenever a page's write layer gets ported/tested/pushed, update its row
+below in the same commit. This exists because work on this project gets
+picked up across multiple Claude sessions/accounts with no shared memory
+between them — this file is the handoff.
+
+**Workflow reminder:** step-by-step, one task at a time, per Anton
+(2026-08-14). Finish a task, test it rigorously, deliver + push, hand
+Anton exact git commands, then STOP and wait for his go-ahead — do not
+start the next task automatically, even if this file lists one as "next."
 
 **Rule of thumb for "done":** ported + tested against real exported data
 (via a `node --check`'d, vm-run test harness) + actually pushed to GitHub
@@ -21,7 +26,7 @@ confirms it landed.
 | contract.html | Done | Done (Create/Edit/Cancel) | Drive-file actions (findContractDocument, uploadPassportPhoto, generateReceipt, generateChecklist, getFilesForShare, regenerateContract) still hit the old scriptUrl by design — these need a live Drive/PDF backend regardless of the JSON migration, not in scope for this effort. |
 | customers.html | Done | Done (intake) | Customer-intake write cascade ported, shared with contract.html's doRent path. 2 remaining scriptUrl call sites not yet audited this pass — check what they are before assuming they're all AI/Drive-related. |
 | deposits.html | Done | Partial | deductDeposit/deductCashDeposit ported+tested. **addDeposit/editDeposit/deleteDeposit still hit the old disconnected scriptUrl — not yet ported.** Found during the 2026-08-14 audit, not previously tracked as a numbered task. |
-| add-bikes.html | Done | **Not started** | addBike/editBike/sellBike/unsellBike all still hit the old scriptUrl. This is the next task (was #26). |
+| add-bikes.html | Done | Done | editBike was already ported before this stretch of sessions began (a correction to this row's earlier state, discovered when this task started). addBike/sellBike/unsellBike ported 2026-08-14: sold/write-off status now stored as a real notes-sidecar record (`bikes_notes`, mirrors Code.gs's cell-note approach) instead of a hardcoded "not sold". Found+fixed a real bug while testing: `getBikeIncomeSummaryFromJson` read `bikes_notes` via `(await fetchSheetJson(...)).rows` — but `fetchSheetJson` already resolves to the plain rows array, not `{rows}`, so `.rows` was always `undefined` and every bike silently read back as "not sold" no matter what. Two purely cosmetic, documented gaps remain (nothing downstream reads either back): sold-row strikethrough styling, and Bike Tax's Status/day-count (G/H) columns for a newly-added bike (real sheet computes these via formulas with no flat-JSON equivalent — explicit warning returned on every addBike call instead of silently wrong). Tested via `/tmp/addbikes_write_test.js` (vm-run harness, real exported data + a controlled synthetic bike set) — addBike (alphabetical mid-insert across all 4 sheets, duplicate-name rejection, append-at-end, Bike_Tax renumbering), sellBike (normal sale, write-off, already-sold guard, invalid-input rejections), unsellBike (reversal of both sale types, no-valid-record rejection) all pass, plus the pre-existing editBike/read-layer tests as regression. Pushed to Mac, confirmed via byte-size match (97034 bytes). |
 | available-bikes.html | Done | n/a (read-only page) | |
 | bike-income.html | Done | n/a (read-only page) | |
 | bikephotos.html | Done | Out of scope | uploadPhoto/deletePhoto are Drive file operations — need a live backend regardless of JSON migration. |
@@ -36,13 +41,11 @@ confirms it landed.
 
 ## Immediate next task
 
-**add-bikes.html**: port `addBike`/`editBike`/`sellBike`/`unsellBike` writes
-to the Drive-JSON model, same pattern as every other page (write the
-`*FromJson` functions, rewire the UI call sites off `fetch(scriptUrl...)`,
-build a vm-run test harness seeded from real exported data, test, deliver,
-push).
+add-bikes.html is done (see table above). Waiting on Anton to confirm the
+git push below before picking the next task — do not self-select and start
+it, per the step-by-step workflow.
 
-## After that
+## Next task once Anton gives the go-ahead
 
 1. **deposits.html**: port `addDeposit`/`editDeposit`/`deleteDeposit` (newly
    found gap, not in the original numbered list).

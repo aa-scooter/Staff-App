@@ -454,42 +454,39 @@
 <script>
 const scriptUrl = ''; // DISCONNECTED: this Vercel copy is intentionally not wired to the live backend (dev/testing only, see project CLAUDE.md)
 
-// ================== JSON-backed data layer (ported 13/08/2026) ==================
+// ================== JSON-backed data layer (ported 13-14/08/2026) ==================
 // Reads ported: action=bikeMakesModels (getBikeMakesModels), action=bikeDetails
-// (getBikeDetails), action=bikeIncomeSummary (getBikeIncomeSummary). Write
+// (getBikeDetails), action=bikeIncomeSummary (getBikeIncomeSummary). Writes
 // ported: action:'editBike' (editBike) -- a clean multi-sheet, in-place
 // cell-overwrite with no formula growth/row insertion, same complexity
-// class as parts.html's updateBike.
+// class as parts.html's updateBike -- and, as of 14/08/2026,
+// action:'addBike' (addNewBike), action:'sellBike' (sellBike),
+// action:'unsellBike' (unsellBike). These three were originally deferred as
+// a harder category (Code.gs leans on Google Sheets' own live formula
+// engine -- growFormulaCell, Range.copyTo({formulaOnly:true}),
+// insertRowAfter() auto-adjusting other formulas' references) with no
+// flat-JSON equivalent. Ported by translating each formula-driven step into
+// the JS-computed-value equivalent every other write action in this
+// project already uses (see addRentalAmountToBikesSheetFromJson in
+// bikes.html for the precedent this follows): sellBike/unsellBike just
+// add/subtract a plain stored number instead of growing a formula string,
+// and addBike computes what a fresh bike's total/expenses/profit/net-profit
+// would evaluate to (all zero, since it has no history yet) instead of
+// copying a same-row SUM/arithmetic formula down.
 //
-// NOT ported -- action:'addBike' (addNewBike), action:'sellBike' (sellBike),
-// action:'unsellBike' (unsellBike). All three are a genuinely HARDER
-// category of deferral than anything else ported so far in this project:
-// Code.gs relies on Google Sheets' own live formula engine to do part of
-// the work -- growing an existing "=x+y"-style formula string when a sale
-// amount is added, Range.copyTo({formulaOnly:true}) to copy a formula down
-// a row and have Sheets auto-adjust its relative references, and
-// sheet.insertRowAfter() automatically re-pointing every OTHER formula on
-// the sheet that referenced rows below the insertion point -- plus
-// addNewBike inserts one new row, in alphabetical order, across FOUR
-// sheets simultaneously (Parts and Oil change, Operation, the "bikes"
-// sheet's two mirrored income/Expenses lists, Bike Tax), with
-// strikethrough/tint "sold" formatting mirrored the same way. None of that
-// has a flat-JSON equivalent -- porting these three faithfully needs an
-// actual computation-model redesign (e.g. recomputing whatever those
-// formulas produce in JS, deciding how/where a "sold" flag lives without
-// cell notes or font formatting), not just relocating existing JS the way
-// every other write action in this project has been. Deferred as a
-// dedicated future pass; these three still hit the old (disconnected)
-// scriptUrl and fail cleanly, same as every other not-yet-ported write
-// action in this app.
+// Two things still have NO equivalent and are NOT ported, both purely
+// cosmetic (nothing downstream reads either one back):
+//   - sellBike/unsellBike's strikethrough/tint "sold" row formatting.
+//   - addBike's Bike Tax Status (G) / day-count (H) formula columns -- see
+//     addBikeFromJson's own comment; surfaced as an explicit warning on
+//     every add rather than silently left wrong.
 //
-// KNOWN GAP (shared by getBikeIncomeSummaryFromJson below): Code.gs flags
-// a sold bike via strikethrough font formatting, and records
-// soldAmount/soldDate/reason as a JSON note on the same cell -- neither
-// survives this app's flat JSON export, so both are hardcoded to their
-// "not sold" defaults below. This only matters in practice once
-// sellBike/unsellBike themselves are ported (see above) -- until then
-// nothing on this page can mark a bike sold anyway.
+// sellBike/unsellBike's sold/soldAmount/soldDate/reason record now has a
+// real home too: Code.gs already stores that as a genuine Google Sheets
+// CELL NOTE (not a color), which maps directly onto this project's existing
+// `<sheet>_notes` sidecar convention -- see BIKES_SOLD_NOTE_COL_B below.
+// getBikeIncomeSummaryFromJson reads it back for real now instead of
+// hardcoding "not sold".
 const addBikesJsonCache = {};
 function fetchSheetJson(sheetName, year) {
   const cacheKey = year ? `${year}/${sheetName}` : sheetName;
@@ -619,6 +616,26 @@ function findBikeRowIdxByNameJson(rows2D, colIdx, bikeName, stopKeywords, startR
     if (cell && bikeNamesAreIdenticalJson(cell, bikeName)) return i;
   }
   return -1;
+}
+// ---- Mirrors Code.gs's findAlphaInsertAfterRow, adapted to return a
+// SPLICE index (0-based array position to insert the new row AT, pushing
+// everything from there down by one) rather than a 1-based "insert after
+// this row number" -- cleaner for Array.prototype.splice than replicating
+// Code.gs's off-by-one row-number arithmetic. Scans bike names top to
+// bottom and returns the index of the first existing bike whose name sorts
+// (case-insensitively) after newName, or (lastIdx + 1) to append at the
+// end if newName sorts after everything already there. If nothing's here
+// yet, returns startRowIdx (the new row becomes the very first one). ----
+function findAlphaInsertIdxJson(rows2D, colIdx, stopKeywords, newName, startRowIdx) {
+  startRowIdx = startRowIdx === undefined ? 1 : startRowIdx;
+  const lastIdx = findLastBikeRowIdxJson(rows2D, colIdx, stopKeywords, startRowIdx);
+  if (lastIdx < startRowIdx) return startRowIdx;
+  const lowerNew = (newName || '').toString().trim().toLowerCase();
+  for (let i = startRowIdx; i <= lastIdx; i++) {
+    const cell = (rows2D[i][colIdx] || '').toString().trim().toLowerCase();
+    if (cell && cell.localeCompare(lowerNew) > 0) return i;
+  }
+  return lastIdx + 1;
 }
 function findRowIdxByExactLabelJson(rows2D, colIdx, label, fromIdx, toIdx) {
   const target = label.toString().trim().toLowerCase();
@@ -830,6 +847,24 @@ async function getBikeIncomeSummaryFromJson() {
     const rows2D = await fetchSheetJson('bikes');
     const headerRow = rows2D[0] || [];
 
+    // sold/soldAmount/soldDate/reason -- see BIKES_SOLD_NOTE_COL_B and the
+    // block comment above for where this note comes from. Best-effort: a
+    // missing/unreadable notes file just means every bike reads as "not
+    // sold" (same as before this was ported), not a failed request.
+    let soldNoteRows = [];
+    // fetchSheetJson resolves to the rows ARRAY directly (see its definition
+    // above -- it already unwraps `.rows` from the API response), unlike
+    // fetchSheetWithMeta which resolves to {rows, modifiedTime}. An earlier
+    // version of this line mistakenly did `(await fetchSheetJson(...)).rows`
+    // -- undefined on a plain array -- which silently made every bike read
+    // back as "not sold" no matter what was actually in the notes sidecar.
+    try { soldNoteRows = (await fetchSheetJson('bikes_notes')) || []; } catch (e) { soldNoteRows = []; }
+    const soldNoteByRow = new Map();
+    soldNoteRows.forEach(n => {
+      if (n[1] !== BIKES_SOLD_NOTE_COL_B) return;
+      try { soldNoteByRow.set(n[0], JSON.parse(n[2])); } catch (e) { /* ignore unparseable note */ }
+    });
+
     const MONTH_NAMES = ['January','February','March','April','May','June','July','August',
       'September','October','November','December'];
     const monthCols = MONTH_NAMES
@@ -863,14 +898,16 @@ async function getBikeIncomeSummaryFromJson() {
 
       const nameLower = name.toLowerCase();
       const isSentinel = (nameLower === 'extras' || nameLower === 'deposit');
+      const soldNote = soldNoteByRow.get(i + 1) || null;
+      const isSold = !!(soldNote && (soldNote.soldAmount || soldNote.reason));
 
       bikes.push({
         name,
         isSentinel,
-        sold: false,        // KNOWN GAP -- see block comment above
-        soldAmount: null,   // KNOWN GAP
-        soldDate: null,     // KNOWN GAP
-        reason: null,        // KNOWN GAP
+        sold: isSold,
+        soldAmount: (isSold && soldNote.soldAmount) ? Number(soldNote.soldAmount) : null,
+        soldDate: (isSold && soldNote.soldDate) ? soldNote.soldDate : null,
+        reason: (isSold && soldNote.reason) ? soldNote.reason : null,
         cost: num(row[costCol]),
         months: monthCols.map(mc => ({ label: mc.label, amount: num(row[mc.col]) })),
         income: num(row[incomeCol]),
@@ -1033,8 +1070,314 @@ async function editBikeFromJson(data) {
   }
   return responsePayload;
 }
+
+// ---- sellBike/unsellBike (ported 14/08/2026). Code.gs records a sale (or
+// write-off) as a real Google Sheets CELL NOTE on the "bikes" sheet's
+// income-list name cell (column A) -- {soldAmount, soldDate, reason} as
+// JSON text -- which maps directly onto this project's existing
+// `<sheet>_notes` sidecar convention (same [row, col, text] shape used
+// everywhere else), no new mechanism needed here unlike accounts.html's
+// expense-type marker. The "total" (column P / header "total") figure
+// Code.gs grows/shrinks via growFormulaCell is, in this flat-JSON model,
+// just a plain stored number -- add/subtract the sell amount directly,
+// same simplification every other bikes-sheet write in this project
+// already makes (see addRentalAmountToBikesSheetFromJson in bikes.html).
+//
+// NOT ported: the strikethrough/background "sold" styling Code.gs applies
+// across all four sheets (setRowSoldFormatting). That's purely cosmetic --
+// cell formatting has no equivalent anywhere in this JSON export (same
+// documented limitation as accounts.html's expense-type colors) -- and
+// unlike accounts.html's case, nothing downstream reads it back, so there's
+// no behavioral gap from leaving it out, just a visual one once this data
+// is eventually synced to a live sheet again. ----
+const BIKES_SOLD_NOTE_COL_B = 1; // column A (1-based), matches Code.gs's nameCell = getRange(incomeRow, 1)
+const BIKE_WRITE_OFF_REASONS_B = ['Stolen', 'Lost', 'Destroyed'];
+function todayDmyJson() {
+  const d = new Date();
+  return pad2Json(d.getDate()) + '/' + pad2Json(d.getMonth() + 1) + '/' + d.getFullYear();
+}
+async function readBikeSoldNoteFromJson(incomeRow1) {
+  let noteRows = [];
+  try { noteRows = (await fetchSheetWithMeta('bikes_notes')).rows; } catch (e) { noteRows = []; }
+  const entry = (noteRows || []).find(n => n[0] === incomeRow1 && n[1] === BIKES_SOLD_NOTE_COL_B);
+  if (!entry) return null;
+  try { return JSON.parse(entry[2]); } catch (e) { return null; }
+}
+async function writeBikeSoldNoteFromJson(incomeRow1, parsedOrNull) {
+  const { rows: noteRows, modifiedTime } = await fetchSheetWithMeta('bikes_notes');
+  const filtered = (noteRows || []).filter(n => !(n[0] === incomeRow1 && n[1] === BIKES_SOLD_NOTE_COL_B));
+  if (parsedOrNull) filtered.push([incomeRow1, BIKES_SOLD_NOTE_COL_B, JSON.stringify(parsedOrNull)]);
+  await writeSheetJson('bikes_notes', filtered, modifiedTime);
+}
+
+// ---- action:'sellBike' -> sellBikeFromJson. data: { bike, sellAmount } for
+// a normal sale, or { bike, reason } (Stolen/Lost/Destroyed) for a
+// write-off -- mutually exclusive, same as Code.gs. ----
+async function sellBikeFromJson(data) {
+  const bikeName = (data.bike || '').toString().trim();
+  if (!bikeName) throw new Error('Bike name is required.');
+
+  const rawReason = (data.reason || '').toString().trim();
+  const reason = rawReason
+    ? BIKE_WRITE_OFF_REASONS_B.filter(r => r.toLowerCase() === rawReason.toLowerCase())[0]
+    : '';
+  if (rawReason && !reason) {
+    throw new Error('Unrecognized write-off reason "' + rawReason + '" -- must be Stolen, Lost, or Destroyed.');
+  }
+  let sellAmount = 0;
+  if (!reason) {
+    sellAmount = Number(data.sellAmount);
+    if (isNaN(sellAmount) || sellAmount <= 0) throw new Error('Enter a valid sell amount.');
+  }
+
+  const bikesStopWords = ['total', 'totals', 'extras', 'deposit'];
+  const { rows, modifiedTime } = await fetchSheetWithMeta('bikes');
+  const incomeRowIdx = findBikeRowIdxByNameJson(rows, 0, bikeName, bikesStopWords, 1);
+  if (incomeRowIdx === -1) {
+    throw new Error('Bike "' + bikeName + '" not found on the "bikes" income list -- bike was NOT marked sold.');
+  }
+  const incomeRow1 = incomeRowIdx + 1;
+
+  const existing = await readBikeSoldNoteFromJson(incomeRow1);
+  if (existing && (existing.soldAmount || existing.reason)) {
+    throw new Error('"' + bikeName + '" already appears to be marked sold (' +
+      (existing.reason || Number(existing.soldAmount).toLocaleString('en-US')) +
+      ') -- unsell it first if this is a mistake.');
+  }
+
+  if (!reason) {
+    const headerRow = rows[0] || [];
+    const totalCol = findHeaderColIdxJson(headerRow, 'total');
+    if (totalCol === -1) throw new Error('Could not find a "total" column header on the "bikes" sheet -- bike was NOT marked sold.');
+    const newRows = rows.map(r => r.slice());
+    const targetRow = newRows[incomeRowIdx].slice();
+    while (targetRow.length <= totalCol) targetRow.push('');
+    const current = Number(targetRow[totalCol]);
+    targetRow[totalCol] = (isNaN(current) ? 0 : current) + sellAmount;
+    newRows[incomeRowIdx] = targetRow;
+    await writeSheetJson('bikes', newRows, modifiedTime);
+  }
+
+  await writeBikeSoldNoteFromJson(incomeRow1, { soldAmount: sellAmount, soldDate: todayDmyJson(), reason: reason || null });
+
+  return { success: true };
+}
+
+// ---- action:'unsellBike' -> unsellBikeFromJson. Exact inverse of
+// sellBikeFromJson: reads the recorded sale/write-off back off the notes
+// sidecar (refusing to proceed if there isn't a valid one), reverses the
+// total column, and clears the note. ----
+async function unsellBikeFromJson(data) {
+  const bikeName = (data.bike || '').toString().trim();
+  if (!bikeName) throw new Error('Bike name is required.');
+
+  const bikesStopWords = ['total', 'totals', 'extras', 'deposit'];
+  const { rows, modifiedTime } = await fetchSheetWithMeta('bikes');
+  const incomeRowIdx = findBikeRowIdxByNameJson(rows, 0, bikeName, bikesStopWords, 1);
+  if (incomeRowIdx === -1) {
+    throw new Error('Bike "' + bikeName + '" not found on the "bikes" income list -- nothing was changed.');
+  }
+  const incomeRow1 = incomeRowIdx + 1;
+
+  const parsed = await readBikeSoldNoteFromJson(incomeRow1);
+  const hasValidAmount = !!(parsed && !isNaN(Number(parsed.soldAmount)) && Number(parsed.soldAmount) > 0);
+  const hasValidReason = !!(parsed && parsed.reason);
+  if (!parsed || (!hasValidAmount && !hasValidReason)) {
+    throw new Error('"' + bikeName + '" doesn\'t have a valid recorded sale (or write-off) to reverse -- nothing was changed. Fix this by hand on the "bikes" sheet if it really was sold.');
+  }
+  const soldAmount = hasValidAmount ? Number(parsed.soldAmount) : 0;
+
+  if (soldAmount > 0) {
+    const headerRow = rows[0] || [];
+    const totalCol = findHeaderColIdxJson(headerRow, 'total');
+    if (totalCol === -1) throw new Error('Could not find a "total" column header on the "bikes" sheet -- nothing was changed.');
+    const newRows = rows.map(r => r.slice());
+    const targetRow = newRows[incomeRowIdx].slice();
+    while (targetRow.length <= totalCol) targetRow.push('');
+    const current = Number(targetRow[totalCol]);
+    targetRow[totalCol] = (isNaN(current) ? 0 : current) - soldAmount;
+    newRows[incomeRowIdx] = targetRow;
+    await writeSheetJson('bikes', newRows, modifiedTime);
+  }
+
+  await writeBikeSoldNoteFromJson(incomeRow1, null);
+
+  return { success: true, reversedAmount: soldAmount };
+}
+
+// ---- action:'addBike' -> addBikeFromJson. Creates a brand-new bike across
+// every tab that keeps its own bike list, same four sheets editBike
+// touches, but INSERTING a new row (alphabetically, via
+// findAlphaInsertIdxJson) instead of overwriting an existing one. Parts and
+// Oil change is the one write this can't function without (throws, writes
+// nothing else, on failure, since that's the master list every dropdown in
+// the app is built from); Operation/bikes/Bike Tax are each wrapped
+// independently and reported back as `warning`, same shape as Code.gs.
+//
+// KNOWN GAP (new, specific to ADD -- editBike doesn't have this issue since
+// it only ever overwrites a row that already has real content): Bike Tax's
+// Status (G) and day-count (H) columns are LIVE FORMULAS in the real sheet
+// that Code.gs copies down from the row above so they auto-adjust. There's
+// no live formula engine here, so a freshly-added bike's G/H are left
+// genuinely blank rather than computed -- surfaced as an explicit warning
+// on every add, not just a code comment, until this data round-trips
+// through a real Sheet again (or someone decides these should be derived
+// in JS from the Por Ror Bor date directly, which hasn't been done here). ----
+async function addBikeFromJson(data) {
+  const bikeName = (data.bike || '').toString().trim();
+  if (!bikeName) throw new Error('Bike name is required.');
+
+  // ---- Parts and Oil change: master list + duplicate guard (critical write). ----
+  const { rows: partsRows, modifiedTime: partsModifiedTime } = await fetchSheetWithMeta('Parts_and_Oil_change');
+  const lastPartsIdx = findLastBikeRowIdxJson(partsRows, 0, []);
+  for (let i = 1; i <= lastPartsIdx; i++) {
+    const existingName = (partsRows[i][0] || '').toString().trim();
+    if (existingName && bikeNamesAreIdenticalJson(existingName, bikeName)) {
+      throw new Error('A bike named "' + existingName + '" already exists on the "Parts and Oil change" tab -- pick a different name, or edit the existing bike instead of adding a new one.');
+    }
+  }
+  const partsColCount = Math.max(1, (partsRows[0] || []).length);
+  const partsInsertIdx = findAlphaInsertIdxJson(partsRows, 0, [], bikeName, 1);
+  const newPartsRows = partsRows.map(r => r.slice());
+  const partsNewRow = new Array(partsColCount).fill('');
+  partsNewRow[0] = bikeName;
+  newPartsRows.splice(partsInsertIdx, 0, partsNewRow);
+  await writeSheetJson('Parts_and_Oil_change', newPartsRows, partsModifiedTime);
+
+  const warnings = [];
+
+  // ---- Operation: odometer starting point. ----
+  try {
+    const { rows: opRows, modifiedTime: opModifiedTime } = await fetchSheetWithMeta('Operation');
+    const opHeaderRow = opRows[0] || [];
+    const opBikeCol = findOperationBikeColIdxJson(opHeaderRow);
+    if (opBikeCol === -1) throw new Error('Could not find a "Bike" column header.');
+    const hasCurrentKm = !(data.currentKm === '' || data.currentKm === undefined || data.currentKm === null || isNaN(Number(data.currentKm)));
+    const currentKm = hasCurrentKm ? Number(data.currentKm) : '';
+    const kmCol = findHeaderColIdxJson(opHeaderRow, 'current km');
+    const dateCheckCol = findHeaderColIdxJson(opHeaderRow, 'date check current km');
+    const lastOilCol = findHeaderColIdxJson(opHeaderRow, 'last oil km');
+    const statusCol = findHeaderColIdxJson(opHeaderRow, 'rental status');
+    const opColCount = Math.max(1, opHeaderRow.length);
+    const opInsertIdx = findAlphaInsertIdxJson(opRows, opBikeCol, [], bikeName, 1);
+    const newOpRows = opRows.map(r => r.slice());
+    const newOpRow = new Array(opColCount).fill('');
+    newOpRow[opBikeCol] = bikeName;
+    if (kmCol !== -1) newOpRow[kmCol] = currentKm;
+    if (dateCheckCol !== -1 && hasCurrentKm) newOpRow[dateCheckCol] = isoDateInputToSheetValue(isoYmd(new Date()));
+    if (lastOilCol !== -1) newOpRow[lastOilCol] = currentKm;
+    if (statusCol !== -1) newOpRow[statusCol] = 'Home';
+    newOpRows.splice(opInsertIdx, 0, newOpRow);
+    await writeSheetJson('Operation', newOpRows, opModifiedTime);
+  } catch (opErr) {
+    warnings.push('"Operation": ' + opErr.message);
+  }
+
+  // ---- bikes: income list + mirrored Expenses list. A fresh bike has no
+  // rental history yet, so total/expenses/profit/net-profit all start at 0
+  // (net profit = 0 - cost, same as profit-minus-cost would evaluate to for
+  // an all-zero row) -- equivalent to what copying Code.gs's same-row
+  // SUM/arithmetic formulas down would themselves evaluate to on a blank
+  // row, just computed directly instead of via a live formula. ----
+  try {
+    const { rows: bikesRows, modifiedTime: bikesModifiedTime } = await fetchSheetWithMeta('bikes');
+    const bikesHeaderRow = bikesRows[0] || [];
+    const bikesStopWords = ['total', 'totals', 'extras', 'deposit'];
+    const costCol = findHeaderColIdxJson(bikesHeaderRow, 'cost');
+    const totalCol = findHeaderColIdxJson(bikesHeaderRow, 'total');
+    const expensesCol = findHeaderColIdxJson(bikesHeaderRow, 'expenses');
+    const profitCol = findHeaderColIdxJson(bikesHeaderRow, 'profit');
+    const netProfitCol = findHeaderColIdxJson(bikesHeaderRow, 'net profit');
+    const hasCost = !(data.cost === '' || data.cost === undefined || data.cost === null || isNaN(Number(data.cost)));
+    const bikesColCount = Math.max(1, bikesHeaderRow.length);
+
+    const incomeInsertIdx = findAlphaInsertIdxJson(bikesRows, 0, bikesStopWords, bikeName, 1);
+    const newBikesRows = bikesRows.map(r => r.slice());
+    const incomeRow = new Array(bikesColCount).fill('');
+    incomeRow[0] = bikeName;
+    if (costCol !== -1 && hasCost) incomeRow[costCol] = Number(data.cost);
+    if (totalCol !== -1) incomeRow[totalCol] = 0;
+    if (expensesCol !== -1) incomeRow[expensesCol] = 0;
+    if (profitCol !== -1) incomeRow[profitCol] = 0;
+    if (netProfitCol !== -1) incomeRow[netProfitCol] = hasCost ? -Number(data.cost) : 0;
+    newBikesRows.splice(incomeInsertIdx, 0, incomeRow);
+
+    let expensesWarning = null;
+    const expensesHeaderIdx = findRowIdxByExactLabelJson(newBikesRows, 0, 'expenses', 0, newBikesRows.length - 1);
+    if (expensesHeaderIdx === -1) {
+      expensesWarning = 'Could not find a cell that says exactly "Expenses" in column A -- bike was added to the income list, but NOT to the Expenses list, so its expense total will be missing until that\'s done by hand.';
+    } else {
+      const expensesInsertIdx = findAlphaInsertIdxJson(newBikesRows, 0, bikesStopWords, bikeName, expensesHeaderIdx + 1);
+      const expensesRow = new Array(bikesColCount).fill('');
+      expensesRow[0] = bikeName;
+      if (totalCol !== -1) expensesRow[totalCol] = 0;
+      // expensesInsertIdx is always strictly below expensesHeaderIdx, which is
+      // itself always below the whole income list -- so incomeInsertIdx (and
+      // the row just written there) is never touched by this second splice.
+      newBikesRows.splice(expensesInsertIdx, 0, expensesRow);
+      if (expensesCol !== -1) newBikesRows[incomeInsertIdx][expensesCol] = 0;
+    }
+
+    await writeSheetJson('bikes', newBikesRows, bikesModifiedTime);
+    if (expensesWarning) warnings.push('"bikes": ' + expensesWarning);
+  } catch (bikesErr) {
+    warnings.push('"bikes": ' + bikesErr.message);
+  }
+
+  // ---- Bike Tax: full registration/insurance/spec row, fixed columns
+  // A..S (see editBikeFromJson's comment on why this tab is fixed-column
+  // rather than header-lookup), then a full top-to-bottom renumber of
+  // column A (a manually-typed sequential index, not a formula) so it
+  // stays correct regardless of where the new row landed alphabetically. ----
+  try {
+    const { rows: taxRows, modifiedTime: taxModifiedTime } = await fetchSheetWithMeta('Bike_Tax');
+    const taxColCount = Math.max(19, (taxRows[0] || []).length);
+    const hasModelYear = !(data.modelYear === '' || data.modelYear === undefined || data.modelYear === null || isNaN(Number(data.modelYear)));
+    const hasDeposit = !(data.deposit === '' || data.deposit === undefined || data.deposit === null || isNaN(Number(data.deposit)));
+    const porRorBorValue = data.porRorBorDate ? (isoDateInputToSheetValue(data.porRorBorDate) || '') : '';
+
+    const taxInsertIdx = findAlphaInsertIdxJson(taxRows, 1, [], bikeName, 1); // column B = index 1 = Bike
+    const newTaxRow = new Array(taxColCount).fill('');
+    newTaxRow[1] = bikeName;                                  // B: Bike
+    newTaxRow[2] = hasModelYear ? Number(data.modelYear) : ''; // C: Model Year
+    newTaxRow[3] = data.plateNo || '';                        // D: Plate No.
+    newTaxRow[4] = porRorBorValue;                            // E: (Por. Ror. Bor)
+    newTaxRow[5] = '-';                                        // F: Tax (static placeholder, matches every existing row)
+    // G (Status) and H (day-count): left blank -- see the KNOWN GAP note above.
+    newTaxRow[9] = data.insurance || '';                       // J: Insurance
+    newTaxRow[10] = data.category || '';                       // K: category
+    newTaxRow[11] = data.make || '';                           // L: make
+    newTaxRow[12] = data.model || '';                          // M: model
+    newTaxRow[13] = data.cc || '';                              // N: CC
+    newTaxRow[14] = data.key || '';                             // O: key
+    newTaxRow[15] = data.abs || '';                             // P: ABS
+    newTaxRow[16] = data.tractionControl || '';                 // Q: Traction Control
+    newTaxRow[17] = hasDeposit ? Number(data.deposit) : '';     // R: Deposit
+    newTaxRow[18] = data.box || '';                              // S: Box
+
+    const newTaxRows = taxRows.map(r => r.slice());
+    newTaxRows.splice(taxInsertIdx, 0, newTaxRow);
+
+    const lastTaxIdx = findLastBikeRowIdxJson(newTaxRows, 1, [], 1);
+    for (let i = 1, n = 1; i <= lastTaxIdx; i++, n++) {
+      const r = newTaxRows[i].slice();
+      r[0] = n;
+      newTaxRows[i] = r;
+    }
+
+    await writeSheetJson('Bike_Tax', newTaxRows, taxModifiedTime);
+    warnings.push('"Bike Tax": the Status and day-count columns (G/H) are formulas in the live sheet with no equivalent here -- they were left blank for this new row. Recompute or fill them in by hand if this bike\'s tax/insurance status needs to show correctly before this data is next synced from a live Sheet.');
+  } catch (taxErr) {
+    warnings.push('"Bike Tax": ' + taxErr.message);
+  }
+
+  const responsePayload = { success: true, bike: bikeName };
+  if (warnings.length) {
+    responsePayload.warning = 'Bike added, but: ' + warnings.join(' ');
+  }
+  return responsePayload;
+}
 // ================== end JSON-backed data layer ==================
-// 'addBike'/'sellBike'/'unsellBike' are NOT ported -- see the block comment above.
 
 const form = document.getElementById('addBikeForm');
 const submitBtn = document.getElementById('submitBtn');
@@ -1293,12 +1636,8 @@ form.addEventListener('submit', async (e) => {
   };
 
   try {
-    const res = await fetch(scriptUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify(payload)
-    });
-    const data = await res.json();
+    // DISCONNECTED: writes to the static data/ JSON export instead of the live scriptUrl (see project CLAUDE.md)
+    const data = await addBikeFromJson(payload);
 
     if (data.success) {
       if (data.warning) {
@@ -1661,11 +2000,8 @@ async function confirmSellBike(bikeName, amount, reason) {
       ? { action: 'sellBike', bike: bikeName, reason: reason }
       : { action: 'sellBike', bike: bikeName, sellAmount: amount };
 
-    const res = await fetch(scriptUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify(payload)
-    }).then(r => r.json());
+    // DISCONNECTED: writes to the static data/ JSON export instead of the live scriptUrl (see project CLAUDE.md)
+    const res = await sellBikeFromJson(payload);
 
     const outcomeLabel = reason ? ('marked ' + reason.toLowerCase()) : ('marked sold for ' + fleetMoney(amount));
 
@@ -1694,11 +2030,8 @@ async function confirmUnsellBike(bikeName) {
   renderFleetList();
   setFleetStatus(null);
   try {
-    const res = await fetch(scriptUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({ action: 'unsellBike', bike: bikeName })
-    }).then(r => r.json());
+    // DISCONNECTED: writes to the static data/ JSON export instead of the live scriptUrl (see project CLAUDE.md)
+    const res = await unsellBikeFromJson({ bike: bikeName });
 
     if (!res.success) {
       setFleetStatus('Could not unsell "' + bikeName + '": ' + (res.error || 'Unknown error.'), 'err');
