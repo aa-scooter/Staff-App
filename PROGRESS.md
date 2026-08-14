@@ -6,6 +6,114 @@ update its row below in the same commit. This exists because work on this
 project gets picked up across multiple Claude sessions/accounts with no
 shared memory between them — this file is the handoff.
 
+## ✅ DONE, tested, awaiting Anton's push — transaction log write
+## instrumentation (2026-08-14, phase 1 of the "reverse transactions"
+## feature Anton asked for)
+
+**What Anton asked for:** a Settings-page "reverse transactions" panel
+showing the last 10 writes across the app (bike rentals, expenses, income,
+deposits, etc.), with the option to look further back, and a click-to-
+reverse flow with a confirmation dialog. He explicitly asked to discuss
+feasibility/difficulty/performance before any implementation, then said
+"let's just do that" and to build the transaction log first.
+
+**Design (agreed with Anton):** every physical row write across the app's
+5 write-heavy pages now logs a small entry to a new `data/transactionLog.json`
+(via the same generic `/api/data/<sheet>` endpoint every other page already
+uses — no new API route needed) right after that write succeeds. Each entry
+captures: `page`, `action`, a human-readable `summary`, `reversible`
+(true/false), and a `writes` array with enough surgical detail per touched
+sheet — `sheet`, `year`, `row`, `cols` (1-based), `before` values, `after`
+values — for a FUTURE generic reversal executor to restore just that one
+physical write, without needing any page-specific business logic. Logging
+is best-effort and additive-only: it retries a couple of times on a write
+conflict (another page logging at the same moment), and never throws or
+delays the write it's describing (wrapped so a logging hiccup can never
+turn an already-successful save into a reported error).
+
+Multi-sheet logical actions (e.g. a bike rental touching Contract, customer,
+monthly accounts, bikes, cash) are NOT logged as one bundled "transaction" —
+each physical row write gets its own independent, independently-reversible
+log entry. This was a deliberate simplification agreed as part of the
+feasibility discussion: it avoids having to hand-write a "reversal recipe"
+per action type, at the cost of the UI eventually needing to show related
+writes grouped together and let staff reverse more than one if a whole
+logical action needs undoing.
+
+Row-shift deletes (accounts.html's `deleteExpenseRowFromJson`/
+`deleteIncomeRowFromJson`, which shift every row below up by one rather than
+just clearing cells) are logged with `reversible: false` — the before-values
+are still captured for manual reference, but a generic cell-restore
+executor can't safely undo a shift, so these are flagged rather than
+offered as a broken "Reverse" button later.
+
+**Instrumented (35 log call sites total):**
+- `accounts.html` (10): `addExpenseRowFromJson`, `addIncomeRowFromJson`,
+  `editExpenseRowFromJson`, `editIncomeRowFromJson`,
+  `deleteExpenseRowFromJson` (reversible:false), `deleteIncomeRowFromJson`
+  (reversible:false), `appendCashSheetRowFromJson`,
+  `appendCashExpenseRowFromJson`, `processDepositForPaymentFromJson`,
+  `consumeDepositFromJson`. `transferToBankFromJson` deliberately has no
+  direct call — it delegates entirely to `appendCashExpenseRowFromJson`/
+  `processDepositForPaymentFromJson`, both instrumented, so its writes are
+  covered automatically without double-logging.
+- `bikes.html` (11): `appendMonthlyIncomeRowFromJson`,
+  `appendCashSheetRowFromJson`, `processDepositForPaymentFromJson`,
+  `appendSwapUpgradeIncomeRowFromJson`,
+  `appendEarlyReturnRefundIncomeRowFromJson`, `appendCashExpenseRowFromJson`,
+  `writeDepositTransferIncomeRowFromJson`,
+  `writeDepositTransferExpenseRowFromJson`, `logSecurityDepositFromJson`,
+  and both `returnDepositFromJson` write blocks (clearing the deposit entry,
+  logging the deduction income). The clear-step required adding a new
+  `clearedBefore` capture (the existing code overwrote its row variable in
+  place before the log point) — same fix pattern as deposits.html below.
+- `contract.html` (4) / `customers.html` (4): `appendMonthlyIncomeRowFromJson`,
+  `appendCashSheetRowFromJson`, `processDepositForPaymentFromJson`,
+  `logSecurityDepositFromJson` — identical shape in both files per this
+  project's per-file convention.
+- `deposits.html` (6): `addDepositEntryJson`, `editDepositEntryJson`,
+  `deleteDepositEntryJson`, `processDepositForPaymentFromJson`,
+  `consumeDepositFromJson`, `appendIncomeRowFromJson`. `editDepositEntryJson`
+  and `deleteDepositEntryJson` previously threw away the deposit row's old
+  amount/name the moment they overwrote it — neither one had ever captured
+  a "before" snapshot for anything other than the totals-row guard check.
+  Added explicit `beforeAmount`/`beforeName` (edit) and `clearedAmount`/
+  `clearedName` (delete) reads from the untouched `rows` array (proven safe
+  since `newRows = rows.map(r => r.slice())` never mutates `rows` itself)
+  right before the overwrite, so the log entry has real values instead of
+  blanks.
+
+**Bug caught during testing (fixed before delivery):** every one of the 35
+`logTransactionB(...)` calls was originally written WITHOUT `await` —
+fire-and-forget. Since `logTransactionB` does its own internal `fetch`
+calls, the enclosing write function could return (and the page could move
+on/reload data) before the log entry actually finished saving, silently
+dropping entries under real-world timing. Fixed by prefixing all 35 calls
+with `await` (`await logTransactionB({...})`) — confirmed via a dedicated
+test that it still never throws even on a write conflict (retries
+internally, matching the design).
+
+**Tested against real August.json/cash.json data:**
+`accounts.html` — 33/33 checks (add/edit/delete expense, add/edit/delete
+income, cash income/expense, deposit-total edit, deposit consumption, plus
+`logTransactionB`'s own retry-on-409 behavior). `deposits.html` — 20/20
+checks, specifically targeting the new before-capture fix (confirmed the
+logged "before" values are the REAL pre-edit numbers off the real sheet,
+not blank/undefined, for both edit and delete). `bikes.html`,
+`contract.html`, `customers.html` were code-reviewed against the same
+verified pattern (identical `logTransactionB`/`writeSheetJson` shape,
+confirmed via direct file reads of each call site) but not independently
+re-run through the vm test harness in this pass — flagged here so a future
+session knows the exact test coverage line if anything looks off.
+
+**Deliberately NOT built yet (next task, pending Anton's go-ahead):** the
+Settings-page "Reverse Transactions" panel itself (closeable box, last-10
+list, search further back by date) and the actual reversal execution/
+confirmation flow. The design above (self-describing `writes[]` entries)
+means the reversal executor can be generic and page-agnostic once built —
+it doesn't need to be duplicated per page the way the write-side logging
+does.
+
 ## ✅ DONE, tested, awaiting Anton's push — monthly "Bank"/cash/deposit
 ## totals cascade, accounts.html (2026-08-14, item #2 from the audit below)
 

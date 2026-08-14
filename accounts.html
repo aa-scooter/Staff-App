@@ -1069,6 +1069,47 @@ async function writeSheetJson(sheetName, rows, expectedModifiedTime, year) {
   delete accountsJsonCache[cacheKey];
   return res;
 }
+
+// ---- Transaction log (added 14/08/2026) -- best-effort, additive-only.
+// Every meaningful data write in the app calls this right after it
+// succeeds, so Settings > Reverse Transactions can show a history and undo
+// simple single-row writes later. Logging must NEVER fail or delay the
+// write it's describing -- everything in here is wrapped so a logging
+// hiccup can't turn an already-successful save into a reported error to
+// the person using the page. Retries a couple of times on a 409 (someone
+// else's write landed in the log in between) -- this is a pure append, so
+// re-reading and re-appending is always safe, unlike a real business write
+// where a conflict has to be surfaced rather than silently retried.
+async function logTransactionB(entry) {
+  try {
+    entry.id = 'txn_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+    entry.ts = new Date().toISOString();
+    entry.reversed = false;
+    entry.reversedAt = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      let rows, modifiedTime;
+      try {
+        const res = await fetch('/api/data/transactionLog').then(r => r.json());
+        rows = Array.isArray(res.rows) ? res.rows : [];
+        modifiedTime = res.modifiedTime || null;
+      } catch (e) { rows = []; modifiedTime = null; }
+      const newRows = rows.concat([entry]);
+      const r = await fetch('/api/data/transactionLog', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rows: newRows, expectedModifiedTime: modifiedTime })
+      });
+      if (r.status === 409) continue; // someone else logged in between -- retry
+      return;
+    }
+  } catch (e) {
+    console.warn('Transaction log write failed (non-critical):', e && e.message);
+  }
+}
+function fmtMoneyB(n) {
+  const v = Number(n);
+  return '฿' + (isNaN(v) ? '0' : v.toLocaleString('en-US'));
+}
 function pad2Json(n) { return String(n).padStart(2, '0'); }
 function isoDateInputToSheetValue(isoDate) {
   const m = String(isoDate || '').trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
@@ -1288,6 +1329,11 @@ async function processDepositForPaymentFromJson(paidByLower, rawAmount, monthNam
   targetRow[12] = (isNaN(current) ? 0 : current) + delta;
   newRows[rowIdx] = targetRow;
   await writeSheetJson(monthName, newRows, modifiedTime, year);
+  await logTransactionB({
+    page: 'accounts.html', action: 'processDepositForPaymentFromJson', reversible: true,
+    summary: (delta >= 0 ? 'Deposit total +' : 'Deposit total ') + fmtMoneyB(delta) + ' — ' + paidByLower + ' (' + monthName + ' ' + year + ')',
+    writes: [{ sheet: monthName, year: year, row: rowIdx + 1, cols: [13], before: [isNaN(current) ? 0 : current], after: [targetRow[12]] }]
+  });
 }
 
 // JSON port of consumeDeposit (see deposits.html's identical copy for the
@@ -1332,6 +1378,11 @@ async function consumeDepositFromJson(cat, depositRow, deductAmount, monthName, 
   }
   newRows[rowIdx] = newRow;
   await writeSheetJson(monthName, newRows, modifiedTime, year);
+  await logTransactionB({
+    page: 'accounts.html', action: 'consumeDepositFromJson', reversible: true,
+    summary: 'Spent ' + fmtMoneyB(deductAmount) + ' of ' + cat.label + ' deposit' + (nameVal ? (' — ' + nameVal) : '') + ' (' + monthName + ' ' + year + ')',
+    writes: [{ sheet: monthName, year: year, row: rowIdx + 1, cols: [cat.dateCol, cat.amountCol, cat.nameCol], before: [dateVal, amtVal, nameVal], after: [newRow[cat.dateCol - 1], newRow[cat.amountCol - 1], newRow[cat.nameCol - 1]] }]
+  });
 }
 
 // ---- "cash" sheet helpers -- a single running ledger (not month-scoped),
@@ -1365,6 +1416,11 @@ async function appendCashSheetRowFromJson(incomeText, rawAmount) {
   row[2] = amountValue;
   newRows[targetIdx] = row;
   await writeSheetJson('cash', newRows, modifiedTime);
+  await logTransactionB({
+    page: 'accounts.html', action: 'appendCashSheetRowFromJson', reversible: true,
+    summary: 'Cash income ' + fmtMoneyB(amountValue) + ' — ' + (incomeText || '(no description)'),
+    writes: [{ sheet: 'cash', year: null, row: targetIdx + 1, cols: [1, 2, 3], before: ['', '', ''], after: [row[0], row[1], row[2]] }]
+  });
   return targetIdx + 1;
 }
 async function appendCashExpenseRowFromJson(expenseText, rawAmount) {
@@ -1381,6 +1437,11 @@ async function appendCashExpenseRowFromJson(expenseText, rawAmount) {
   row[6] = amountValue;
   newRows[targetIdx] = row;
   await writeSheetJson('cash', newRows, modifiedTime);
+  await logTransactionB({
+    page: 'accounts.html', action: 'appendCashExpenseRowFromJson', reversible: true,
+    summary: 'Cash expense ' + fmtMoneyB(amountValue) + ' — ' + (expenseText || '(no description)'),
+    writes: [{ sheet: 'cash', year: null, row: targetIdx + 1, cols: [5, 6, 7], before: ['', '', ''], after: [row[4], row[5], row[6]] }]
+  });
   return targetIdx + 1;
 }
 function accountsTodayIso() {
@@ -1921,6 +1982,12 @@ async function addExpenseRowFromJson(data) {
   try { await recomputeMonthlySummaryCascadeB(monthName, year); }
   catch (cascadeErr) { warnings.push('Summary totals: ' + cascadeErr.message); }
 
+  await logTransactionB({
+    page: 'accounts.html', action: 'addExpenseRowFromJson', reversible: true,
+    summary: 'Expense ' + fmtMoneyB(amountVal) + ' — ' + (data.expense || '(no description)') + ' (' + monthName + ' ' + year + ')',
+    writes: [{ sheet: monthName, year: year, row: row, cols: [1, 2, 3, 4], before: ['', '', '', ''], after: [r[0], r[1], r[2], r[3]] }]
+  });
+
   const responsePayload = { success: true, row, shifted: free.inserted };
   if (warnings.length) responsePayload.warning = warnings.join(' ');
   return responsePayload;
@@ -1989,6 +2056,12 @@ async function addIncomeRowFromJson(data) {
 
   try { await recomputeMonthlySummaryCascadeB(monthName, year); }
   catch (cascadeErr) { warnings.push('Summary totals: ' + cascadeErr.message); }
+
+  await logTransactionB({
+    page: 'accounts.html', action: 'addIncomeRowFromJson', reversible: true,
+    summary: 'Income ' + fmtMoneyB(amountVal) + ' — ' + (data.income || '(no description)') + (data.name ? (' from ' + data.name) : '') + ' (' + monthName + ' ' + year + ')',
+    writes: [{ sheet: monthName, year: year, row: row, cols: [6, 7, 8, 9, 10], before: ['', '', '', '', ''], after: [r[5], r[6], r[7], r[8], r[9]] }]
+  });
 
   const responsePayload = { success: true, row, shifted: free.inserted };
   if (warnings.length) responsePayload.warning = warnings.join(' ');
@@ -2121,6 +2194,12 @@ async function editExpenseRowFromJson(data) {
   try { await recomputeMonthlySummaryCascadeB(monthName, year); }
   catch (cascadeErr) { warnings.push('Summary totals: ' + cascadeErr.message); }
 
+  await logTransactionB({
+    page: 'accounts.html', action: 'editExpenseRowFromJson', reversible: true,
+    summary: 'Edited expense ' + fmtMoneyB(oldAmount) + ' → ' + fmtMoneyB(newAmount) + ' — ' + (newExpenseText || oldExpense || '(no description)') + ' (' + monthName + ' ' + year + ')',
+    writes: [{ sheet: monthName, year: year, row: row, cols: [1, 2, 3, 4], before: [existing[0], existing[1], existing[2], existing[3]], after: [r[0], r[1], r[2], r[3]] }]
+  });
+
   const responsePayload = { success: true, row };
   if (warnings.length) responsePayload.warning = warnings.join(' ');
   return responsePayload;
@@ -2246,6 +2325,12 @@ async function editIncomeRowFromJson(data) {
   try { await recomputeMonthlySummaryCascadeB(monthName, year); }
   catch (cascadeErr) { warnings.push('Summary totals: ' + cascadeErr.message); }
 
+  await logTransactionB({
+    page: 'accounts.html', action: 'editIncomeRowFromJson', reversible: true,
+    summary: 'Edited income ' + fmtMoneyB(oldAmount) + ' → ' + fmtMoneyB(newAmount) + ' — ' + (newIncomeText || oldIncome || '(no description)') + (data.name ? (' from ' + data.name) : '') + ' (' + monthName + ' ' + year + ')',
+    writes: [{ sheet: monthName, year: year, row: row, cols: [6, 7, 8, 9, 10], before: [existing[5], existing[6], existing[7], existing[8], existing[9]], after: [r[5], r[6], r[7], r[8], r[9]] }]
+  });
+
   const responsePayload = { success: true, row };
   if (warnings.length) responsePayload.warning = warnings.join(' ');
   return responsePayload;
@@ -2352,6 +2437,12 @@ async function deleteExpenseRowFromJson(data) {
   try { await recomputeMonthlySummaryCascadeB(monthName, year); }
   catch (cascadeErr) { warnings.push('Summary totals: ' + cascadeErr.message); }
 
+  await logTransactionB({
+    page: 'accounts.html', action: 'deleteExpenseRowFromJson', reversible: false,
+    summary: 'Deleted expense ' + fmtMoneyB(amount) + ' — ' + (expense || '(no description)') + ' (' + monthName + ' ' + year + ')',
+    writes: [{ sheet: monthName, year: year, row: row, cols: [1, 2, 3, 4], before: [existing[0], existing[1], existing[2], existing[3]], after: ['', '', '', ''], note: 'Row was removed with a shift-up of everything below it -- not auto-reversible yet. Before-values kept here for manual reference.' }]
+  });
+
   const responsePayload = { success: true };
   if (warnings.length) responsePayload.warning = warnings.join(' ');
   return responsePayload;
@@ -2444,6 +2535,12 @@ async function deleteIncomeRowFromJson(data) {
 
   try { await recomputeMonthlySummaryCascadeB(monthName, year); }
   catch (cascadeErr) { warnings.push('Summary totals: ' + cascadeErr.message); }
+
+  await logTransactionB({
+    page: 'accounts.html', action: 'deleteIncomeRowFromJson', reversible: false,
+    summary: 'Deleted income ' + fmtMoneyB(amount) + ' — ' + (income || '(no description)') + ' (' + monthName + ' ' + year + ')',
+    writes: [{ sheet: monthName, year: year, row: row, cols: [6, 7, 8, 9, 10, 11], before: [existing[5], existing[6], existing[7], existing[8], existing[9], existing[10]], after: ['', '', '', '', '', ''], note: 'Row was removed with a shift-up of everything below it -- not auto-reversible yet. Before-values kept here for manual reference.' }]
+  });
 
   const responsePayload = { success: true };
   if (warnings.length) responsePayload.warning = warnings.join(' ');

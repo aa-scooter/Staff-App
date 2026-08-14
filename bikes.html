@@ -867,6 +867,41 @@ async function writeSheetJson(sheetName, rows, expectedModifiedTime, year) {
   return res; // { success, sheet, year, fileId, modifiedTime }
 }
 
+// ---- Transaction log (added 14/08/2026, same per-file convention as the
+// recompute cascade above -- ported verbatim from accounts.html's copy).
+// Best-effort, additive-only -- see accounts.html's copy for the full
+// comment on why logging must never fail/delay the write it's describing.
+async function logTransactionB(entry) {
+  try {
+    entry.id = 'txn_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+    entry.ts = new Date().toISOString();
+    entry.reversed = false;
+    entry.reversedAt = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      let rows, modifiedTime;
+      try {
+        const res = await fetch('/api/data/transactionLog').then(r => r.json());
+        rows = Array.isArray(res.rows) ? res.rows : [];
+        modifiedTime = res.modifiedTime || null;
+      } catch (e) { rows = []; modifiedTime = null; }
+      const newRows = rows.concat([entry]);
+      const r = await fetch('/api/data/transactionLog', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rows: newRows, expectedModifiedTime: modifiedTime })
+      });
+      if (r.status === 409) continue;
+      return;
+    }
+  } catch (e) {
+    console.warn('Transaction log write failed (non-critical):', e && e.message);
+  }
+}
+function fmtMoneyB(n) {
+  const v = Number(n);
+  return '฿' + (isNaN(v) ? '0' : v.toLocaleString('en-US'));
+}
+
 // ==== Monthly "Bank" balance / cash / deposit-log recompute cascade ====
 // FIX (14/08/2026): ported verbatim from accounts.html's own copy (same
 // per-file convention as every other duplicated helper in this codebase --
@@ -1386,6 +1421,11 @@ async function appendMonthlyIncomeRowFromJson(data, dayCount) {
   newRows[targetIdx] = row;
   await writeSheetJson(monthName, newRows, modifiedTime, year);
   await recomputeCurrentMonthSummaryCascadeB();
+  await logTransactionB({
+    page: 'bikes.html', action: 'appendMonthlyIncomeRowFromJson', reversible: true,
+    summary: 'Income ' + fmtMoneyB(amountValue) + ' — ' + (incomeText || '(no description)') + (data.name ? (' from ' + data.name) : '') + ' (' + monthName + ' ' + year + ')',
+    writes: [{ sheet: monthName, year: year, row: targetIdx + 1, cols: [6, 7, 8, 9, 10], before: ['', '', '', '', ''], after: [row[5], row[6], row[7], row[8], row[9]] }]
+  });
 }
 async function appendCashSheetRowFromJson(incomeText, rawAmount) {
   const { rows, modifiedTime } = await fetchSheetWithMeta('cash');
@@ -1406,6 +1446,11 @@ async function appendCashSheetRowFromJson(incomeText, rawAmount) {
   newRows[targetIdx] = row;
   await writeSheetJson('cash', newRows, modifiedTime);
   await recomputeCurrentMonthSummaryCascadeB();
+  await logTransactionB({
+    page: 'bikes.html', action: 'appendCashSheetRowFromJson', reversible: true,
+    summary: 'Cash income ' + fmtMoneyB(amountValue) + ' — ' + (incomeText || '(no description)'),
+    writes: [{ sheet: 'cash', year: null, row: targetIdx + 1, cols: [1, 2, 3], before: ['', '', ''], after: [row[0], row[1], row[2]] }]
+  });
 }
 async function addRentalAmountToBikesSheetFromJson(bikeModel, rawAmount) {
   const amount = Number(rawAmount);
@@ -1458,6 +1503,11 @@ async function processDepositForPaymentFromJson(paidByLower, rawAmount) {
   newRows[rowIdx] = targetRow;
   await writeSheetJson(monthName, newRows, modifiedTime, year);
   await recomputeCurrentMonthSummaryCascadeB();
+  await logTransactionB({
+    page: 'bikes.html', action: 'processDepositForPaymentFromJson', reversible: true,
+    summary: (delta >= 0 ? 'Deposit total +' : 'Deposit total ') + fmtMoneyB(delta) + ' — ' + paidByLower + ' (' + monthName + ' ' + year + ')',
+    writes: [{ sheet: monthName, year: year, row: rowIdx + 1, cols: [13], before: [isNaN(current) ? 0 : current], after: [targetRow[12]] }]
+  });
 }
 
 // ---- Adds addAmount onto the Contract row's OWN existing total (column
@@ -1806,6 +1856,11 @@ async function appendSwapUpgradeIncomeRowFromJson(bikeModel, name, amount, paidB
   newRows[targetIdx] = row;
   await writeSheetJson(monthName, newRows, modifiedTime, year);
   await recomputeCurrentMonthSummaryCascadeB();
+  await logTransactionB({
+    page: 'bikes.html', action: 'appendSwapUpgradeIncomeRowFromJson', reversible: true,
+    summary: 'Income ' + fmtMoneyB(row[8]) + ' — ' + description + (name ? (' from ' + name) : '') + ' (' + monthName + ' ' + year + ')',
+    writes: [{ sheet: monthName, year: year, row: targetIdx + 1, cols: [6, 7, 8, 9, 10], before: ['', '', '', '', ''], after: [row[5], row[6], row[7], row[8], row[9]] }]
+  });
   return description;
 }
 
@@ -2142,6 +2197,11 @@ async function appendEarlyReturnRefundIncomeRowFromJson(bikeModel, customerName,
   newRows[targetIdx] = row;
   await writeSheetJson(monthName, newRows, modifiedTime, year);
   await recomputeCurrentMonthSummaryCascadeB();
+  await logTransactionB({
+    page: 'bikes.html', action: 'appendEarlyReturnRefundIncomeRowFromJson', reversible: true,
+    summary: 'Income ' + fmtMoneyB(row[8]) + ' — ' + description + (customerName ? (' from ' + customerName) : '') + ' (' + monthName + ' ' + year + ')',
+    writes: [{ sheet: monthName, year: year, row: targetIdx + 1, cols: [6, 7, 8, 9, 10], before: ['', '', '', '', ''], after: [row[5], row[6], row[7], row[8], row[9]] }]
+  });
   return description;
 }
 
@@ -2352,6 +2412,11 @@ async function appendCashExpenseRowFromJson(expenseText, rawAmount) {
   newRows[targetIdx] = row;
   await writeSheetJson('cash', newRows, modifiedTime);
   await recomputeCurrentMonthSummaryCascadeB();
+  await logTransactionB({
+    page: 'bikes.html', action: 'appendCashExpenseRowFromJson', reversible: true,
+    summary: 'Cash expense ' + fmtMoneyB(amountValue) + ' — ' + (expenseText || '(no description)'),
+    writes: [{ sheet: 'cash', year: null, row: targetIdx + 1, cols: [5, 6, 7], before: ['', '', ''], after: [row[4], row[5], row[6]] }]
+  });
 }
 
 // ---- "Release"/"payout" halves of a cross-method deposit return -- see
@@ -2387,6 +2452,11 @@ async function writeDepositTransferIncomeRowFromJson(paidByLabel, amount, custom
   newRows[targetIdx] = row;
   await writeSheetJson(monthName, newRows, modifiedTime, year);
   await recomputeCurrentMonthSummaryCascadeB();
+  await logTransactionB({
+    page: 'bikes.html', action: 'writeDepositTransferIncomeRowFromJson', reversible: true,
+    summary: 'Income ' + fmtMoneyB(row[8]) + ' — ' + (description || '(no description)') + (customerName ? (' from ' + customerName) : '') + ' (' + monthName + ' ' + year + ')',
+    writes: [{ sheet: monthName, year: year, row: targetIdx + 1, cols: [6, 7, 8, 9, 10], before: ['', '', '', '', ''], after: [row[5], row[6], row[7], row[8], row[9]] }]
+  });
 
   const paidByLower = (paidByLabel || '').toString().trim().toLowerCase();
   if (paidByLower === 'cash') {
@@ -2416,6 +2486,11 @@ async function writeDepositTransferExpenseRowFromJson(paidByLabel, amount, descr
   newRows[targetIdx] = row;
   await writeSheetJson(monthName, newRows, modifiedTime, year);
   await recomputeCurrentMonthSummaryCascadeB();
+  await logTransactionB({
+    page: 'bikes.html', action: 'writeDepositTransferExpenseRowFromJson', reversible: true,
+    summary: 'Expense ' + fmtMoneyB(row[2]) + ' — ' + (description || '(no description)') + ' (' + monthName + ' ' + year + ')',
+    writes: [{ sheet: monthName, year: year, row: targetIdx + 1, cols: [1, 2, 3, 4], before: ['', '', '', ''], after: [row[0], row[1], row[2], row[3]] }]
+  });
   // KNOWN GAP: Code.gs also calls applyExpenseTypeColor(expenseSheet, row,
   // 'business') at this point -- see the block comment above.
 
@@ -2474,11 +2549,20 @@ async function returnDepositFromJson(data) {
       const targetRow = newRows[depositRowRaw - 1] ? newRows[depositRowRaw - 1].slice() : null;
       if (!targetRow) throw new Error('row ' + depositRowRaw + ' does not exist on the "' + monthName + '" sheet -- the deposit was NOT cleared.');
       while (targetRow.length < cat.nameCol) targetRow.push('');
+      // Captured BEFORE mutating targetRow below -- needed for the
+      // transaction log's before/after snapshot (targetRow gets overwritten
+      // in place, so reading it after the fact would only ever show blanks).
+      const clearedBefore = [targetRow[cat.dateCol - 1], targetRow[cat.amountCol - 1], targetRow[cat.nameCol - 1]];
       targetRow[cat.dateCol - 1] = '';
       targetRow[cat.amountCol - 1] = '';
       targetRow[cat.nameCol - 1] = '';
       newRows[depositRowRaw - 1] = targetRow;
       await writeSheetJson(monthName, newRows, modifiedTime, year);
+      await logTransactionB({
+        page: 'bikes.html', action: 'returnDepositFromJson:clear', reversible: true,
+        summary: 'Cleared ' + cat.label + ' deposit' + (clearedBefore[2] ? (' — ' + clearedBefore[2]) : '') + ' (' + monthName + ' ' + year + ')',
+        writes: [{ sheet: monthName, year: year, row: depositRowRaw, cols: [cat.dateCol, cat.amountCol, cat.nameCol], before: clearedBefore, after: ['', '', ''] }]
+      });
     } catch (clearErr) { warnings.push('Clearing deposit: ' + clearErr.message); }
     await recomputeCurrentMonthSummaryCascadeB();
   }
@@ -2514,6 +2598,11 @@ async function returnDepositFromJson(data) {
       newRows[targetIdx] = row;
       incomeRowNum = targetIdx + 1;
       await writeSheetJson(monthName, newRows, modifiedTime, year);
+      await logTransactionB({
+        page: 'bikes.html', action: 'returnDepositFromJson:deductionIncome', reversible: true,
+        summary: 'Income ' + fmtMoneyB(deduction) + ' — ' + description + (data.customerName ? (' from ' + data.customerName) : '') + ' (' + monthName + ' ' + year + ')',
+        writes: [{ sheet: monthName, year: year, row: incomeRowNum, cols: [6, 7, 8, 9, 10], before: ['', '', '', '', ''], after: [row[5], row[6], row[7], row[8], row[9]] }]
+      });
 
       try {
         await setBikeSplitsNoteFromJsonB(monthName, year, incomeRowNum, 7, [{ bike: data.bikeModel || '', amount: deduction }]);
@@ -2710,6 +2799,11 @@ async function logSecurityDepositFromJson(methodLower, rawAmount, customerName) 
   newRows[targetIdx] = row;
   await writeSheetJson(monthName, newRows, modifiedTime, year);
   await recomputeCurrentMonthSummaryCascadeB();
+  await logTransactionB({
+    page: 'bikes.html', action: 'logSecurityDepositFromJson', reversible: true,
+    summary: cat.label + ' deposit ' + fmtMoneyB(row[cat.amountCol - 1]) + (customerName ? (' — ' + customerName) : '') + ' (' + monthName + ' ' + year + ')',
+    writes: [{ sheet: monthName, year: year, row: targetIdx + 1, cols: [cat.dateCol, cat.amountCol, cat.nameCol], before: ['', '', ''], after: [row[cat.dateCol - 1], row[cat.amountCol - 1], row[cat.nameCol - 1]] }]
+  });
 }
 
 // ---- Ports customer-intake (Code.gs's doPost default branch) -- the SAME
