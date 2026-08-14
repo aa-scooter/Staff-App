@@ -338,6 +338,275 @@
 // serves/updates the "Parts and Oil change" tab via the `action` field.
 const scriptUrl = ''; // DISCONNECTED: this Vercel copy is intentionally not wired to the live backend (dev/testing only, see project CLAUDE.md)
 
+// ================== JSON-backed data layer (ported 13/08/2026) ==================
+// Read: action=parts (same getPartsData port as bikes.html/customers.html).
+// Write: 'updateBike' (matches a bike by name in column A, overwrites
+// whichever header-named fields were sent) -- a clean single-row,
+// multi-column write, no cascading math, ported this pass. NOT ported:
+// 'readOdometerWithAI' (the crop/OCR "read this odometer photo" flow) --
+// that's a server-side AI vision call, not a data read/write, and this
+// backend has no AI-provider integration at all yet; still hits the old
+// (disconnected) scriptUrl and fails cleanly, falling back to manual entry
+// (which the page already does gracefully on any OCR failure).
+//
+// KNOWN GAP (same as bikes.html): "sold" bike detection via strikethrough
+// font formatting has no JSON equivalent -- __struck is hardcoded false.
+const partsJsonCache = {};
+function fetchSheetJson(sheetName, year) {
+  const cacheKey = year ? `${year}/${sheetName}` : sheetName;
+  const url = year
+    ? `/api/data/${encodeURIComponent(sheetName)}?year=${encodeURIComponent(year)}`
+    : `/api/data/${encodeURIComponent(sheetName)}`;
+  if (!partsJsonCache[cacheKey]) {
+    partsJsonCache[cacheKey] = fetch(url).then(r => {
+      if (r.status === 401) throw new Error('Signed out -- please refresh to sign in again.');
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    }).then(res => {
+      if (!res.success) throw new Error(res.error || 'Could not load data.');
+      return res.rows || [];
+    }).catch(err => {
+      // A cached PROMISE stays truthy whether it resolved or rejected --
+      // clear the entry on failure so the next call actually retries
+      // instead of replaying the same stale failure forever.
+      delete partsJsonCache[cacheKey];
+      throw err;
+    });
+  }
+  return partsJsonCache[cacheKey];
+}
+function decodeSheetDate(val) {
+  if (val === null || val === undefined) return null;
+  if (typeof val !== 'string') return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(val)) {
+    const m = val.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  }
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(val)) {
+    const m = val.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/);
+    return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6]));
+  }
+  return null;
+}
+function pad2Json(n) { return String(n).padStart(2, '0'); }
+function formatDmyJson(date) {
+  if (!date) return '';
+  return pad2Json(date.getDate()) + '/' + pad2Json(date.getMonth() + 1) + '/' + date.getFullYear();
+}
+function partsCellToString(val) {
+  if (val === null || val === undefined) return '';
+  const d = decodeSheetDate(val);
+  if (d) return formatDmyJson(d);
+  return String(val);
+}
+// Mirrors Code.gs's columnLetter() -- 1 -> "A", 27 -> "AA" -- the fallback
+// object-key label for a blank header cell (matches getPartsData()'s own
+// convention; the "Parts and Oil change" sheet genuinely has several blank
+// trailing/spacer header cells, so this isn't just a theoretical case).
+function columnLetterJson(col) {
+  let letter = '';
+  while (col > 0) {
+    const rem = (col - 1) % 26;
+    letter = String.fromCharCode(65 + rem) + letter;
+    col = Math.floor((col - 1) / 26);
+  }
+  return letter;
+}
+
+// ---- Ports getBikeTaxCategories() -- same as bikes.html/customers.html
+// (unused by this page's own UI, but included so partsData's shape exactly
+// matches what action=parts used to return). ----
+function getBikeTaxCategoriesFromJson(rows2D) {
+  try {
+    if (!rows2D || !rows2D.length) return [];
+    const headerRow = rows2D[0].map(h => (h || '').toString().trim().toLowerCase());
+    let bikeCol = headerRow.indexOf('bike model');
+    if (bikeCol === -1) bikeCol = headerRow.indexOf('bike');
+    const catCol = headerRow.indexOf('category');
+    if (bikeCol === -1 || catCol === -1) return [];
+    const makeCol = headerRow.indexOf('make');
+    const modelYearCol = headerRow.indexOf('model year');
+    const searchFrom = makeCol > -1 ? makeCol : 0;
+    const modelCol = headerRow.indexOf('model', searchFrom);
+    const ccCol = headerRow.indexOf('cc', searchFrom);
+    const keyCol = headerRow.indexOf('key', searchFrom);
+    let depositCol = headerRow.indexOf('deposit', searchFrom);
+    if (depositCol === -1) depositCol = headerRow.indexOf('deposit');
+    let boxCol = headerRow.indexOf('box', searchFrom);
+    if (boxCol === -1) boxCol = headerRow.indexOf('box');
+    let absCol = headerRow.indexOf('abs', searchFrom);
+    if (absCol === -1) absCol = headerRow.indexOf('abs');
+    let tractionCol = headerRow.indexOf('traction control', searchFrom);
+    if (tractionCol === -1) tractionCol = headerRow.indexOf('traction control');
+    let plateCol = -1;
+    for (let pc = 0; pc < headerRow.length; pc++) {
+      if (headerRow[pc].indexOf('plate') !== -1) { plateCol = pc; break; }
+    }
+    const rows = [];
+    for (let i = 1; i < rows2D.length; i++) {
+      const bike = (rows2D[i][bikeCol] || '').toString().trim();
+      if (!bike) continue;
+      const cat = (rows2D[i][catCol] || '').toString().trim();
+      const modelYearRaw = modelYearCol > -1 ? rows2D[i][modelYearCol] : '';
+      rows.push({
+        bike, category: cat,
+        modelYear: (modelYearRaw === '' || modelYearRaw === null || isNaN(Number(modelYearRaw))) ? '' : Number(modelYearRaw),
+        make: makeCol > -1 ? (rows2D[i][makeCol] || '').toString().trim() : '',
+        model: modelCol > -1 ? (rows2D[i][modelCol] || '').toString().trim() : '',
+        cc: ccCol > -1 ? (rows2D[i][ccCol] || '').toString().trim() : '',
+        key: keyCol > -1 ? (rows2D[i][keyCol] || '').toString().trim() : '',
+        deposit: depositCol > -1 ? (rows2D[i][depositCol] || '').toString().trim() : '',
+        box: boxCol > -1 ? (rows2D[i][boxCol] || '').toString().trim() : '',
+        abs: absCol > -1 ? (rows2D[i][absCol] || '').toString().trim() : '',
+        tractionControl: tractionCol > -1 ? (rows2D[i][tractionCol] || '').toString().trim() : '',
+        plate: plateCol > -1 ? (rows2D[i][plateCol] || '').toString().trim() : ''
+      });
+    }
+    return rows;
+  } catch (err) {
+    return [];
+  }
+}
+function readRatesPerDayTableFromJson(rows2D) {
+  try {
+    if (!rows2D || rows2D.length < 39) {
+      throw new Error('The "rates per day" sheet does not have the expected 30-day block at rows 10-39.');
+    }
+    const block = rows2D.slice(9, 39);
+    const rates = {};
+    for (let i = 0; i < block.length; i++) {
+      const row = block[i];
+      const day = Number(row[0]);
+      if (!day || isNaN(day)) continue;
+      const perCategory = [];
+      for (let c = 1; c <= 6; c++) {
+        const raw = row[c];
+        const v = (raw === '' || raw === null || raw === undefined) ? NaN : Number(raw);
+        perCategory.push(isNaN(v) ? null : v);
+      }
+      rates[day] = perCategory;
+    }
+    let completeDays = 0;
+    for (let d = 1; d <= 30; d++) {
+      if (rates[d] && rates[d].every(v => v !== null)) completeDays++;
+    }
+    if (completeDays < 25) {
+      throw new Error('The "rates per day" sheet doesn\'t look like the expected 30-day rate table (only ' + completeDays + ' of 30 days read cleanly) -- check it hasn\'t been moved, renamed, or restructured.');
+    }
+    return { rates, warning: null };
+  } catch (err) {
+    return { rates: null, warning: err.message };
+  }
+}
+async function getPartsDataFromJson() {
+  const [partsRows2D, bikeTaxRows2D, ratesRows2D] = await Promise.all([
+    fetchSheetJson('Parts_and_Oil_change'),
+    fetchSheetJson('Bike_Tax'),
+    fetchSheetJson('rates_per_day')
+  ]);
+  const rawHeaders = partsRows2D[0] || [];
+  const headers = rawHeaders.map((h, i) => {
+    const key = (h || '').toString().trim();
+    return key || ('Column ' + columnLetterJson(i + 1));
+  });
+  const rows = partsRows2D.slice(1).map(row => {
+    const obj = {};
+    headers.forEach((h, i2) => { obj[h] = partsCellToString(row[i2]); });
+    obj.__struck = false; // see KNOWN GAP note above
+    return obj;
+  }).filter(r => (r[headers[0]] || '').toString().trim() !== '');
+  const categoryRows = getBikeTaxCategoriesFromJson(bikeTaxRows2D);
+  const ratesResult = readRatesPerDayTableFromJson(ratesRows2D);
+  return { success: true, headers, rows, categoryRows, rates: ratesResult.rates, ratesWarning: ratesResult.warning };
+}
+
+// ---- WRITE plumbing -- same pattern as bikes.html/deposits.html. ----
+async function fetchSheetWithMeta(sheetName, year) {
+  const url = year
+    ? `/api/data/${encodeURIComponent(sheetName)}?year=${encodeURIComponent(year)}`
+    : `/api/data/${encodeURIComponent(sheetName)}`;
+  const r = await fetch(url);
+  if (r.status === 401) throw new Error('Signed out -- please refresh to sign in again.');
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  const res = await r.json();
+  if (!res.success) throw new Error(res.error || 'Could not load data.');
+  return { rows: res.rows || [], modifiedTime: res.modifiedTime || null };
+}
+async function writeSheetJson(sheetName, rows, expectedModifiedTime, year) {
+  const url = year
+    ? `/api/data/${encodeURIComponent(sheetName)}?year=${encodeURIComponent(year)}`
+    : `/api/data/${encodeURIComponent(sheetName)}`;
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ rows, expectedModifiedTime })
+  });
+  const res = await r.json().catch(() => ({}));
+  if (r.status === 409) {
+    throw new Error(res.error || 'This record was changed by someone else in the meantime -- please reload and try again.');
+  }
+  if (!r.ok || !res.success) throw new Error(res.error || ('HTTP ' + r.status));
+  const cacheKey = year ? `${year}/${sheetName}` : sheetName;
+  delete partsJsonCache[cacheKey];
+  return res;
+}
+// A field value coming from this page's edit form is either: a "dd/mm/yyyy"
+// string (client-side already converts date-picker values to this via
+// inputValueToDdMmYyyy, matching exactly what Code.gs's updateBikeRow was
+// always handed) -- converted here to the JSON sheet's ISO date encoding so
+// it round-trips through decodeSheetDate correctly on the next read; a
+// plain numeric string (km readings etc.) -- converted to a real number, so
+// it round-trips as a number the same way Sheets' own auto-detection would
+// have stored it; or plain text/blank, passed through unchanged.
+function coerceBikeFieldValueForSheet(raw) {
+  if (raw === null || raw === undefined) return null;
+  if (typeof raw === 'string') {
+    const dm = raw.trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if (dm) {
+      return `${dm[3]}-${pad2Json(dm[2])}-${pad2Json(dm[1])}T00:00:00`;
+    }
+    const trimmed = raw.trim();
+    if (trimmed !== '' && /^-?\d+(\.\d+)?$/.test(trimmed)) {
+      return Number(trimmed);
+    }
+  }
+  return raw;
+}
+// ---- Ports updateBikeRow(). data: { bike, fields: {headerName: value} }.
+// Matches the bike by exact name in column A (across ALL rows, same as
+// Code.gs -- not bounded to the "real" bike-list section), then overwrites
+// only the given header-named columns. No cascading math, nothing else on
+// the sheet touched. ----
+async function updateBikeRowJson(data) {
+  const { rows, modifiedTime } = await fetchSheetWithMeta('Parts_and_Oil_change');
+  const headerRow = rows[0] || [];
+  const headerToCol = {};
+  headerRow.forEach((h, i) => {
+    let key = (h || '').toString().trim();
+    if (!key) key = 'Column ' + columnLetterJson(i + 1);
+    headerToCol[key] = i + 1;
+  });
+
+  const bikeTarget = (data.bike || '').toString().trim();
+  let targetRowIdx = -1;
+  for (let r = 0; r < rows.length; r++) {
+    if ((rows[r][0] || '').toString().trim() === bikeTarget) { targetRowIdx = r; break; }
+  }
+  if (targetRowIdx === -1) throw new Error('Bike "' + data.bike + '" not found in "Parts and Oil change".');
+
+  const newRows = rows.map(r => r.slice());
+  const fields = data.fields || {};
+  Object.keys(fields).forEach(headerName => {
+    const col = headerToCol[headerName];
+    if (col) newRows[targetRowIdx][col - 1] = coerceBikeFieldValueForSheet(fields[headerName]);
+  });
+
+  await writeSheetJson('Parts_and_Oil_change', newRows, modifiedTime);
+  return { success: true };
+}
+// ================== end JSON-backed data layer ==================
+// 'readOdometerWithAI' is NOT ported -- see the block comment above.
+
 let partsData = null;     // { headers: [...], rows: [...] }
 let keyHeader = null;     // the header used as the unique bike identifier (first column)
 let rowsPromise = null;
@@ -357,8 +626,7 @@ function setLoadStatus(msg) {
 function loadParts() {
   if (rowsPromise) return rowsPromise;
   setLoadStatus('Loading bikes…');
-  rowsPromise = fetch(scriptUrl + '?action=parts')
-    .then(res => res.json())
+  rowsPromise = getPartsDataFromJson()
     .then(data => {
       if (!data.success) throw new Error(data.error || 'Could not load data');
       partsData = data;
@@ -1092,12 +1360,7 @@ async function saveFields(fields, btn, statusBox, idleLabel) {
   }, 500);
 
   try {
-    const res = await fetch(scriptUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify(payload)
-    });
-    const data = await res.json();
+    const data = await updateBikeRowJson(payload);
     clearTimeout(stageTimer);
     if (data.success) {
       if (data.warning) {
