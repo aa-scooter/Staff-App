@@ -6,6 +6,56 @@ This exists because work on this project gets picked up across multiple
 Claude sessions/accounts with no shared memory between them — this file is
 the handoff.
 
+## ⚠️ IMPORTANT — this Vercel project is on the Hobby plan: hard cap of 12
+## Serverless Functions per deployment (2026-08-15)
+
+**What happened:** the contracts-documents feature's first push (commit
+`f8eb403`) built fine but the DEPLOY step failed —
+`errorCode: exceeded_serverless_functions_per_deployment`,
+`"No more than 12 Serverless Functions can be added to a Deployment on the
+Hobby plan."` This isn't a code bug: every `.js` file under `api/` (this
+project uses Vercel's plain, non-framework builder, one function per file)
+counts against the cap, and the 4 new `api/contracts/*.js` files pushed the
+project from 11 to 15. The site kept running fine on the last GOOD
+deployment the whole time — a failed deploy doesn't take down what's
+already live.
+
+**The fix:** collapsed the 4 new contract-document routes (`documents.js`,
+`confirmMatch.js`, `upload.js`, `file/[fileId].js`) into ONE catch-all
+function, `api/contracts/[...path].js`, dispatching on the URL's path
+segments + method internally. Zero client-side change needed —
+`contract.html` still calls the exact same 4 URLs
+(`/api/contracts/documents`, `/confirmMatch`, `/upload`, `/file/<id>`);
+Vercel's catch-all routing (`[...path]`) matches all of them to this one
+function. Brings the project back to exactly 12 functions (the hard cap,
+zero headroom) — see the note below.
+
+**⚠️ Headroom is now ZERO.** The next new `api/*.js` file added ANYWHERE in
+this project (not just contracts) will hit this same error again. Two ways
+to add API surface from here on without another deploy failure: (a) always
+fold a new small route into an existing catch-all/dispatcher file instead
+of adding a new top-level `.js` file — `api/contracts/[...path].js` is the
+template to copy; or (b) upgrade the Vercel project to a Pro plan, which
+removes the 12-function cap entirely. Whichever a future session picks,
+check the current function count first (`find api -name "*.js" | wc -l` in
+the repo, or ask the Vercel MCP connector's `list_deployments` /
+`get_deployment` on the latest deploy) before assuming a new route is safe
+to add as its own file.
+
+**Testing:** the merge is a pure refactor — no route's request/response
+shape changed. Re-ran the existing 22-test fake-Drive suite unchanged
+against the new consolidated file (still 22/22), and added 7 NEW tests for
+the file-serving route (`/file/<id>`), which had never had test coverage
+even back when it was its own separate file — image success (right bytes +
+Content-Type), PDF success, a non-servable id (a folder, not a file)
+correctly 404ing instead of trying to stream a folder, and an unknown id
+404ing cleanly. 29/29 total. Syntax-checked clean.
+
+**Files changed:** new `api/contracts/[...path].js`; deleted
+`api/contracts/documents.js`, `api/contracts/confirmMatch.js`,
+`api/contracts/upload.js`, `api/contracts/file/[fileId].js` (logic moved
+into the new file, not lost).
+
 ## ✅ NEW FEATURE, tested, awaiting Anton's push — contract.html: view +
 ## upload documents (passport photo, and anything else manually copied in)
 ## from the "AA Scooters Contracts" Drive folder, right from the edit-

@@ -1,0 +1,284 @@
+// Single catch-all function for every /api/contracts/* route --
+// /documents, /confirmMatch, /upload, and /file/<fileId> -- dispatched by
+// path + method below, instead of one file per route (see git history for
+// the original 4-file version). Collapsed 2026-08-15: Vercel's Hobby plan
+// caps a deployment at 12 Serverless Functions total, and having these as
+// 4 separate files pushed this project to 15 and broke the deploy
+// (errorCode "exceeded_serverless_functions_per_deployment"). A catch-all
+// dynamic segment ([...path].js) still matches every one of these exact
+// URLs with NO client-side change needed in contract.html -- Vercel's
+// file-system router treats `/api/contracts/documents`,
+// `/api/contracts/confirmMatch`, `/api/contracts/upload`, and
+// `/api/contracts/file/<id>` as all landing on this one function, with the
+// matched segments available as req.query.path (an array).
+//
+// Each route's own business logic below is otherwise UNCHANGED from its
+// original single-file version -- see each section's own comment for what
+// it does and why.
+const { withDrive } = require('../../lib/apiAuth');
+const {
+  ensureAppFolder, ensureContractsRootFolder, ensureContractCustomerFolder,
+  readJsonFile, writeJsonFile, buildContractMatchKey, findContractFolderMatches,
+  listAllFilesInFolder, getFileMetadata, getFileMediaBuffer, createImageFile
+} = require('../../lib/googleDrive');
+
+const SIDECAR_FILENAME = 'contract_docs.json';
+
+function sendJson(res, status, body) {
+  res.statusCode = status;
+  res.setHeader('Content-Type', 'application/json');
+  res.end(JSON.stringify(body));
+}
+
+function readJsonBody(req) {
+  if (req.body !== undefined && req.body !== null) {
+    if (typeof req.body === 'string') return Promise.resolve(req.body.length ? JSON.parse(req.body) : {});
+    return Promise.resolve(req.body);
+  }
+  return new Promise((resolve, reject) => {
+    let raw = '';
+    req.on('data', (chunk) => { raw += chunk; });
+    req.on('end', () => {
+      try { resolve(raw.length ? JSON.parse(raw) : {}); }
+      catch (err) { reject(new Error('Invalid JSON body: ' + err.message)); }
+    });
+    req.on('error', reject);
+  });
+}
+
+function toFileSummary(f) {
+  return { id: f.id, name: f.name, mimeType: f.mimeType };
+}
+
+function extFromMimeType(mimeType) {
+  const m = (mimeType || '').toLowerCase();
+  if (m.indexOf('png') !== -1) return '.png';
+  if (m.indexOf('webp') !== -1) return '.webp';
+  if (m.indexOf('heic') !== -1) return '.heic';
+  if (m.indexOf('gif') !== -1) return '.gif';
+  return '.jpg';
+}
+
+function isServableType(mimeType) {
+  return /^image\//.test(mimeType || '') || mimeType === 'application/pdf';
+}
+
+// ---- GET /api/contracts/documents?name=&phone= -- see the original
+// documents.js's comment: sidecar-first lookup, live fuzzy search fallback
+// (auto-remembering a confident match), candidates list otherwise. ----
+async function handleDocuments(req, res, { drive, folderId }, url) {
+  if (req.method !== 'GET') { sendJson(res, 405, { success: false, error: 'Method not allowed.' }); return; }
+  const name = ((req.query && req.query.name) || url.searchParams.get('name') || '').toString().trim();
+  const phone = ((req.query && req.query.phone) || url.searchParams.get('phone') || '').toString().trim();
+  if (!name) { sendJson(res, 400, { success: false, error: 'Missing "name".' }); return; }
+
+  const effectiveFolderId = folderId || await ensureAppFolder(drive);
+  const contractsRootId = await ensureContractsRootFolder(drive, effectiveFolderId);
+  const matchKey = buildContractMatchKey(name, phone);
+
+  const { data: sidecarRows } = await readJsonFile(drive, effectiveFolderId, SIDECAR_FILENAME);
+  const rows = sidecarRows || [];
+  const existing = rows.find((r) => r[0] === matchKey);
+
+  if (existing) {
+    let entry = null;
+    try { entry = JSON.parse(existing[1]); } catch (e) { entry = null; }
+    if (entry && entry.folderId) {
+      try {
+        const meta = await getFileMetadata(drive, entry.folderId);
+        if (meta && !meta.trashed) {
+          const files = await listAllFilesInFolder(drive, entry.folderId);
+          sendJson(res, 200, {
+            success: true, matched: true, confident: true, remembered: true,
+            folderId: entry.folderId, folderName: entry.folderName || meta.name,
+            files: files.map(toFileSummary)
+          });
+          return;
+        }
+      } catch (e) { /* stale/deleted folder reference -- fall through to a live search */ }
+    }
+  }
+
+  const { confident, candidates } = await findContractFolderMatches(drive, contractsRootId, name, phone);
+  if (confident) {
+    const newRows = rows.filter((r) => r[0] !== matchKey);
+    newRows.push([matchKey, JSON.stringify({ folderId: confident.id, folderName: confident.name })]);
+    try { await writeJsonFile(drive, effectiveFolderId, SIDECAR_FILENAME, newRows, null); }
+    catch (e) { /* best-effort remember */ }
+
+    const files = await listAllFilesInFolder(drive, confident.id);
+    sendJson(res, 200, {
+      success: true, matched: true, confident: true, remembered: false,
+      folderId: confident.id, folderName: confident.name,
+      files: files.map(toFileSummary)
+    });
+    return;
+  }
+
+  sendJson(res, 200, { success: true, matched: false, candidates });
+}
+
+// ---- POST /api/contracts/confirmMatch -- body { name, phone, folderId }.
+// Manual picker confirmation; see the original confirmMatch.js's comment. ----
+async function handleConfirmMatch(req, res, { drive, folderId }) {
+  if (req.method !== 'POST') { sendJson(res, 405, { success: false, error: 'Method not allowed.' }); return; }
+  const body = await readJsonBody(req);
+  const name = (body.name || '').toString().trim();
+  const phone = (body.phone || '').toString().trim();
+  const pickedFolderId = (body.folderId || '').toString().trim();
+  if (!name) { sendJson(res, 400, { success: false, error: 'Missing "name".' }); return; }
+  if (!pickedFolderId) { sendJson(res, 400, { success: false, error: 'Missing "folderId".' }); return; }
+
+  const effectiveFolderId = folderId || await ensureAppFolder(drive);
+  const contractsRootId = await ensureContractsRootFolder(drive, effectiveFolderId);
+
+  let meta;
+  try {
+    meta = await getFileMetadata(drive, pickedFolderId);
+  } catch (e) {
+    sendJson(res, 404, { success: false, error: 'That folder could not be found.' });
+    return;
+  }
+  const parents = meta && meta.parents ? meta.parents : [];
+  if (!meta || meta.trashed || parents.indexOf(contractsRootId) === -1) {
+    sendJson(res, 400, { success: false, error: 'That folder is not a valid contracts folder.' });
+    return;
+  }
+
+  const matchKey = buildContractMatchKey(name, phone);
+  const { data: sidecarRows } = await readJsonFile(drive, effectiveFolderId, SIDECAR_FILENAME);
+  const rows = (sidecarRows || []).filter((r) => r[0] !== matchKey);
+  rows.push([matchKey, JSON.stringify({ folderId: pickedFolderId, folderName: meta.name })]);
+  await writeJsonFile(drive, effectiveFolderId, SIDECAR_FILENAME, rows, null);
+
+  const files = await listAllFilesInFolder(drive, pickedFolderId);
+  sendJson(res, 200, {
+    success: true, folderId: pickedFolderId, folderName: meta.name,
+    files: files.map(toFileSummary)
+  });
+}
+
+// ---- POST /api/contracts/upload -- body { name, phone, dateStr, filename,
+// mimeType, base64 }. See the original upload.js's comment: resolves/
+// creates the customer's folder (sidecar-first, else fuzzy-search-or-
+// create), refuses a duplicate same-customer+same-date upload. ----
+async function handleUpload(req, res, { drive, folderId }) {
+  if (req.method !== 'POST') { sendJson(res, 405, { success: false, error: 'Method not allowed.' }); return; }
+  const body = await readJsonBody(req);
+  const name = (body.name || '').toString().trim();
+  const phone = (body.phone || '').toString().trim();
+  const dateStr = (body.dateStr || '').toString().trim();
+  const mimeType = (body.mimeType || 'image/jpeg').toString().trim();
+  const base64 = (body.base64 || '').toString();
+
+  if (!name) { sendJson(res, 400, { success: false, error: 'Missing "name".' }); return; }
+  if (!dateStr) { sendJson(res, 400, { success: false, error: 'Missing "dateStr".' }); return; }
+  if (!base64) { sendJson(res, 400, { success: false, error: 'Missing photo data.' }); return; }
+  if (!/^image\//.test(mimeType)) { sendJson(res, 400, { success: false, error: 'Only image files can be uploaded here.' }); return; }
+
+  let buffer;
+  try {
+    buffer = Buffer.from(base64, 'base64');
+  } catch (e) {
+    sendJson(res, 400, { success: false, error: 'Photo data was not valid base64.' });
+    return;
+  }
+  if (!buffer.length) { sendJson(res, 400, { success: false, error: 'Photo data was empty.' }); return; }
+
+  const effectiveFolderId = folderId || await ensureAppFolder(drive);
+  const contractsRootId = await ensureContractsRootFolder(drive, effectiveFolderId);
+  const matchKey = buildContractMatchKey(name, phone);
+
+  const { data: sidecarRows } = await readJsonFile(drive, effectiveFolderId, SIDECAR_FILENAME);
+  const rows = sidecarRows || [];
+  let targetFolderId = null;
+  let targetFolderName = null;
+  const existingEntry = rows.find((r) => r[0] === matchKey);
+  if (existingEntry) {
+    try {
+      const parsed = JSON.parse(existingEntry[1]);
+      if (parsed && parsed.folderId) {
+        const meta = await getFileMetadata(drive, parsed.folderId);
+        if (meta && !meta.trashed) { targetFolderId = parsed.folderId; targetFolderName = meta.name; }
+      }
+    } catch (e) { /* fall through to live resolution below */ }
+  }
+
+  let sidecarNeedsWrite = false;
+  if (!targetFolderId) {
+    targetFolderId = await ensureContractCustomerFolder(drive, contractsRootId, name, phone, dateStr);
+    const meta = await getFileMetadata(drive, targetFolderId);
+    targetFolderName = meta ? meta.name : null;
+    sidecarNeedsWrite = true;
+  }
+
+  const expectedPrefix = 'Photo of Passport - ' + name + ' - ' + dateStr;
+  const existingFiles = await listAllFilesInFolder(drive, targetFolderId);
+  const dup = existingFiles.find((f) => f.name.indexOf(expectedPrefix) === 0);
+  if (dup) {
+    sendJson(res, 200, {
+      success: false, alreadyExists: true,
+      error: 'A photo of passport dated ' + dateStr + ' is already on file for this contract.',
+      file: { id: dup.id, name: dup.name, mimeType: dup.mimeType }
+    });
+    return;
+  }
+
+  const filename = expectedPrefix + extFromMimeType(mimeType);
+  const created = await createImageFile(drive, targetFolderId, filename, mimeType, buffer);
+
+  if (sidecarNeedsWrite) {
+    const newRows = rows.filter((r) => r[0] !== matchKey);
+    newRows.push([matchKey, JSON.stringify({ folderId: targetFolderId, folderName: targetFolderName })]);
+    try { await writeJsonFile(drive, effectiveFolderId, SIDECAR_FILENAME, newRows, null); }
+    catch (e) { /* best-effort remember -- the file itself is already saved either way */ }
+  }
+
+  sendJson(res, 200, { success: true, file: { id: created.id, name: created.name, mimeType: created.mimeType } });
+}
+
+// ---- GET /api/contracts/file/<fileId> -- private-proxy stream, images +
+// PDFs. See the original file/[fileId].js's comment. ----
+async function handleFile(req, res, { drive }, fileId) {
+  if (req.method !== 'GET') { sendJson(res, 405, { success: false, error: 'Method not allowed.' }); return; }
+  if (!fileId) { sendJson(res, 400, { success: false, error: 'Missing file id.' }); return; }
+
+  let meta;
+  try {
+    meta = await getFileMetadata(drive, fileId);
+  } catch (e) {
+    sendJson(res, 404, { success: false, error: 'Document not found.' });
+    return;
+  }
+  if (!meta || meta.trashed || !isServableType(meta.mimeType)) {
+    sendJson(res, 404, { success: false, error: 'Document not found.' });
+    return;
+  }
+
+  const buffer = await getFileMediaBuffer(drive, fileId);
+  res.statusCode = 200;
+  res.setHeader('Content-Type', meta.mimeType);
+  res.setHeader('Cache-Control', 'private, max-age=3600');
+  res.end(buffer);
+}
+
+module.exports = withDrive(async function handler(req, res, ctx) {
+  const url = new URL(req.url, 'https://' + (req.headers.host || 'localhost'));
+  // req.query.path is the catch-all segment array Vercel's Node runtime
+  // gives us (e.g. ['documents'], ['file', 'abc123']); fall back to
+  // parsing the URL path directly for a plain Node test harness, same
+  // belt-and-suspenders pattern every other route in this app already uses.
+  const pathParts = (req.query && req.query.path) ||
+    url.pathname.replace(/^\/api\/contracts\//, '').split('/').filter(Boolean);
+  const route = pathParts[0] || '';
+
+  try {
+    if (route === 'documents') { await handleDocuments(req, res, ctx, url); return; }
+    if (route === 'confirmMatch') { await handleConfirmMatch(req, res, ctx); return; }
+    if (route === 'upload') { await handleUpload(req, res, ctx); return; }
+    if (route === 'file') { await handleFile(req, res, ctx, pathParts[1]); return; }
+    sendJson(res, 404, { success: false, error: 'Not found.' });
+  } catch (err) {
+    sendJson(res, 500, { success: false, error: err.message });
+  }
+});
