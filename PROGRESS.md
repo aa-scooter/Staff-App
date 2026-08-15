@@ -6,9 +6,46 @@ This exists because work on this project gets picked up across multiple
 Claude sessions/accounts with no shared memory between them — this file is
 the handoff.
 
-## ✅ NEW FEATURE, tested, awaiting Anton's push — real AI provider wired
-## up for passport reads, WhatsApp contact reads, and reply-draft
-## generation (2026-08-15)
+## ✅ HOTFIX, tested and delivered — the AI feature below went live and
+## Anton immediately hit a real "model no longer available" error on the
+## very first live call (2026-08-15)
+
+**What happened:** Anton pushed the AI-provider feature (entry directly
+below this one), confirmed the deployment went live, then tried "Fill from
+Passport (AI)" on contract.html with Gemini selected and got back: `Could
+not read the passport photo: This model models/gemini-2.0-flash is no
+longer available.` This is exactly the risk flagged in that entry's own
+comment ("verify the fallback against each provider's current docs...
+since model names/versions move faster than this file will get
+revisited") -- it happened almost immediately. Good news buried in the bad
+news: the error is proof the whole pipeline actually works end-to-end
+(real request reached Google's real API, with a real key, and got a real
+model-level response back) -- the ONLY thing wrong was the hardcoded
+fallback model ID.
+
+**The fix:** looked this up live rather than guessing again -- fetched
+Google's own current model docs (`ai.google.dev/gemini-api/docs/models`)
+directly, which confirms `gemini-2.0-flash` is now marked "Shut down" and
+the current general-purpose recommendation is `gemini-3.7-flash`. Since
+the exact same class of risk applies to the Anthropic side (just not yet
+exercised live -- Anton had Gemini selected, not Claude), checked that too
+against Anthropic's own current docs (`platform.claude.com`) and swapped
+the fallback from the stale `claude-sonnet-4-5` to the current
+`claude-sonnet-5`. Both are now confirmed-current as of today rather than
+guessed. `ANTHROPIC_MODEL`/`GEMINI_MODEL` env vars still override either
+one if a future model swap is needed without a code change.
+
+**Testing:** re-ran the full 60-test suite (unaffected, since it asserts
+on endpoint/headers/payload shape, not the specific model string) --
+60/60. Added a one-off manual check confirming the new model ID actually
+appears in the outgoing request body.
+
+**Files changed:** `api/ai/[...path].js` only (two one-line fallback
+changes + comment cleanup).
+
+## ✅ NEW FEATURE, tested, PUSHED AND CONFIRMED LIVE by Anton — real AI
+## provider wired up for passport reads, WhatsApp contact reads, and
+## reply-draft generation (2026-08-15)
 
 **What happened:** these three AI-assisted flows existed in the UI on
 contract.html and reply-assistant.html the whole time but always hit the
