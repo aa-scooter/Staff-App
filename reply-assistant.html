@@ -214,12 +214,12 @@ const scriptUrl = ''; // DISCONNECTED: this Vercel copy is intentionally not wir
 // action:'addContact' (addContact) -- a single append-row write, no
 // cascading math.
 //
-// NOT ported -- action:'generateReplyDraft' (an AI text-generation call)
-// and action:'readWhatsAppContactWithAI' (an AI vision call on a
-// screenshot). Both are genuinely AI-provider integrations, not data
-// reads/writes -- this Vercel backend has no AI-provider integration at
-// all yet, same class of deferral as parts.html's readOdometerWithAI.
-// Both still hit the old (disconnected) scriptUrl and fail cleanly.
+// FIXED 2026-08-15 -- the reply-draft generator and the WhatsApp
+// screenshot reader now hit a real backend (POST /api/ai/reply-draft and
+// POST /api/ai/whatsapp-contact, see api/ai/[...path].js) instead of the
+// old disconnected scriptUrl. parts.html's readOdometerWithAI is
+// deliberately still NOT ported -- that button is switched off in the UI
+// already (staff found the reads unreliable), out of scope for this pass.
 //
 // FIXED 2026-08-15: "sold" bike detection now comes from the real
 // `bikes_notes` sidecar (Add Bike's Sell/Write-off), same as every other
@@ -1114,7 +1114,6 @@ document.getElementById('generateBtn').addEventListener('click', async () => {
   genStatus.textContent = ''; genStatus.className = 'status';
 
   const payload = {
-    action: 'generateReplyDraft',
     customerName: selectedCustomer ? selectedCustomer.name : '',
     instruction,
     fleetContext: buildFleetContext(),
@@ -1122,9 +1121,9 @@ document.getElementById('generateBtn').addEventListener('click', async () => {
   };
 
   try {
-    const res = await fetch(scriptUrl, {
+    const res = await fetch('/api/ai/reply-draft', {
       method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     }).then(r => r.json());
     if (!res.success) throw new Error(res.error || 'Unknown error');
@@ -1197,10 +1196,10 @@ document.getElementById('contactPhotoInput').addEventListener('change', async (e
       reader.onerror = reject;
       reader.readAsDataURL(file);
     });
-    const res = await fetch(scriptUrl, {
+    const res = await fetch('/api/ai/whatsapp-contact', {
       method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({ action: 'readWhatsAppContactWithAI', imageBase64: base64, imageMimeType: file.type || 'image/jpeg' })
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ imageBase64: base64, imageMimeType: file.type || 'image/jpeg' })
     }).then(r => r.json());
     if (!res.success) throw new Error(res.error || 'Could not read the screenshot');
     document.getElementById('contactNameInput').value = res.fields.chatName || '';

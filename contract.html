@@ -1339,9 +1339,11 @@ async function getBikeRentalStatusFromJson() {
 // ================== end JSON-backed data layer (reads only) ==================
 // ================== WRITE layer: addContract / editContract / cancelContract ==================
 // Ports Code.gs's addContractEntry/editContractEntry/cancelContractEntry --
-// the Contract-sheet row writes only. Everything else on this page
-// (Regenerate/Find contract & checklist documents, passport photo upload/
-// find, AI-assisted passport/WhatsApp reads, file sharing) is still
+// the Contract-sheet row writes only. AI-assisted passport/WhatsApp reads
+// are FIXED as of 2026-08-15 -- see api/ai/[...path].js -- now hitting a
+// real Claude/Gemini backend instead of the old disconnected scriptUrl.
+// Everything else on this page (Regenerate/Find contract & checklist
+// documents, passport photo upload/find, file sharing) is still
 // DELIBERATELY NOT ported -- those are Google Docs/Drive document
 // operations, not plain row writes, and this Vercel backend has no Docs-
 // API integration yet. Specifically NOT ported as part of THIS pass either
@@ -3445,7 +3447,7 @@ editPassportPhotoUploadBtn.addEventListener('click', async () => {
 });
 
 // "Fill from WhatsApp (AI)" on the edit modal -- same idea and same
-// backend action (readWhatsAppContactWithAI) as the Add new contract
+// backend route (POST /api/ai/whatsapp-contact) as the Add new contract
 // screen's copy of this button. Reads whatever screenshot is currently
 // chosen in the file picker above, fills the Number and Chat name fields
 // below for staff to check, and never uploads/saves the screenshot
@@ -3470,11 +3472,10 @@ editWhatsappAiFillBtn.addEventListener('click', async () => {
 
   try {
     const base64 = await readFileAsBase64(file);
-    const res = await fetch(scriptUrl, {
+    const res = await fetch('/api/ai/whatsapp-contact', {
       method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        action: 'readWhatsAppContactWithAI',
         imageBase64: base64,
         imageMimeType: file.type || 'image/jpeg'
       })
@@ -4213,9 +4214,10 @@ function readFileAsBase64(file) {
 const passportPhotoInput = document.getElementById('passportPhoto');
 
 // "Fill from Passport (AI)" -- reads whatever photo is currently chosen in
-// the file picker above and asks the backend (action:'readPassportWithAI')
-// to have Claude read the name, nationality, and passport number off it,
-// then drops those straight into the fields below for staff to check
+// the file picker above and asks the backend (POST /api/ai/passport,
+// FIXED 2026-08-15 -- was hitting the old disconnected scriptUrl before
+// this) to read the name, nationality, and passport number off it, then
+// drops those straight into the fields below for staff to check
 // against the actual passport before saving. This never uploads/saves the
 // photo itself -- it's read fresh from the file picker each click, and the
 // same file still gets bundled into the addContract submission as usual
@@ -4244,11 +4246,10 @@ passportAiFillBtn.addEventListener('click', async () => {
 
   try {
     const base64 = await readFileAsBase64(file);
-    const res = await fetch(scriptUrl, {
+    const res = await fetch('/api/ai/passport', {
       method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        action: 'readPassportWithAI',
         imageBase64: base64,
         imageMimeType: file.type || 'image/jpeg'
       })
@@ -4280,8 +4281,9 @@ passportAiFillBtn.addEventListener('click', async () => {
 
 // "Fill from WhatsApp (AI)" -- reads a screenshot of WhatsApp's own "Edit
 // contact" screen (First name / Last name / Country / Phone) and asks the
-// backend (action:'readWhatsAppContactWithAI') to have Claude read the
-// contact's name and phone number off it, then drops those into the
+// backend (POST /api/ai/whatsapp-contact, FIXED 2026-08-15 -- was hitting
+// the old disconnected scriptUrl before this) to read the contact's name
+// and phone number off it, then drops those into the
 // Number and Chat name fields for staff to check before saving. Unlike
 // the passport photo above, this photo is NEVER bundled into the
 // addContract submission and is never uploaded/saved anywhere -- it's
@@ -4307,11 +4309,10 @@ whatsappAiFillBtn.addEventListener('click', async () => {
 
   try {
     const base64 = await readFileAsBase64(file);
-    const res = await fetch(scriptUrl, {
+    const res = await fetch('/api/ai/whatsapp-contact', {
       method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        action: 'readWhatsAppContactWithAI',
         imageBase64: base64,
         imageMimeType: file.type || 'image/jpeg'
       })

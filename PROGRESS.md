@@ -6,9 +6,129 @@ This exists because work on this project gets picked up across multiple
 Claude sessions/accounts with no shared memory between them — this file is
 the handoff.
 
-## ⚠️ ROOT CAUSE FOUND, awaiting Anton's push — the "photos/* consolidation"
-## deployment (commit af9d4e3) actually FAILED the 12-function cap it was
-## meant to fix (2026-08-15)
+## ✅ NEW FEATURE, tested, awaiting Anton's push — real AI provider wired
+## up for passport reads, WhatsApp contact reads, and reply-draft
+## generation (2026-08-15)
+
+**What happened:** these three AI-assisted flows existed in the UI on
+contract.html and reply-assistant.html the whole time but always hit the
+old disconnected `scriptUrl` and failed cleanly (falling back to manual
+entry) -- see each page's own "NOT ported... this backend has no
+AI-provider integration at all yet" comments from the original JSON-parity
+pass. Anton asked to have this wired up for real. Scope, per Anton: passport
+photo read, WhatsApp "Edit contact" screenshot read, and the reply-draft
+generator. The odometer photo reader on parts.html stays out of scope --
+it's already switched off in the UI (staff found it unreliable before this
+pass even started) and Anton didn't ask for it back.
+
+**New file: `api/ai/[...path].js`.** ONE consolidated catch-all for all
+three routes (`/passport`, `/whatsapp-contact`, `/reply-draft`) --
+deliberately built as a single file from the start this time, learning
+from the exact mistake documented in the entry above (leftover un-deleted
+route files blowing the function cap). Project is now at 9 functions
+(8 + this one), 3 slots of headroom left under the Hobby-plan cap of 12.
+
+Each route reads a shared, staff-toggleable Claude/Gemini preference
+(`getAiProvider`) and calls whichever provider's REST API directly via the
+Node 24.x runtime's native `fetch` -- no new npm dependency. Response
+shapes match the original disconnected calls EXACTLY (same `fields.name`/
+`fields.nationality`/`fields.passport` for passport, same `fields.chatName`/
+`fields.number` for WhatsApp, same `draft` string for the reply generator),
+so contract.html/reply-assistant.html only needed their fetch target and
+request body changed (drop the old `action` field, point at the new URL)
+-- zero changes to how they handle the response.
+
+**AI provider toggle (settings.html) also fixed the same pass** -- it
+existed already (Claude/Gemini pills) but read/wrote through the old
+disconnected Code.gs actions `aiProvider`/`setAiProvider`. Now reads/writes
+through the EXISTING generic `/api/data/[sheet].js` endpoint against a
+small `ai_provider.json` sheet-shaped file (one row: `["provider",
+"claude"|"gemini"]`) -- no new backend route needed for the toggle itself,
+just a client-side swap to the same `fetchSheetWithMeta`/`writeSheetJson`
+pattern every other page's data layer already uses.
+
+**UPDATE, same day -- API keys can now be entered right in the app,
+per Anton ("make something significant... so you can add API keys in
+there"):** settings.html's "AI provider" section now has an "API keys"
+block with a password-style field per provider (Claude/Anthropic, Gemini)
+and a Save button. Talks to a NEW, DEDICATED pair of routes on the same
+`api/ai/[...path].js` catch-all -- `GET`/`POST /api/ai/keys` -- kept
+separate from the generic `/api/data/[sheet].js` endpoint on purpose: that
+generic endpoint echoes back whatever's stored, which would leak a full
+API key to anyone who opened devtools. `/api/ai/keys` is deliberately
+write-mostly -- GET only ever returns a MASKED preview (prefix + last 4
+characters, e.g. `sk-ant-…j8Kq`) once a key is saved, never the full
+value, and there's no way to read a saved key back out through the app at
+all. Keys are stored in a new `ai_keys.json` sidecar in the app's own
+Drive folder -- same trust boundary as every other piece of app data
+(bikes_notes.json, contract_docs.json, etc): anyone who already has Drive
+access to the app folder could in principle open this file directly, same
+as any of those; flagging this plainly rather than overselling the
+security model, since it's a real (if consistent-with-everything-else)
+trade-off Anton should be aware of.
+
+A Drive-saved key now takes PRECEDENCE over the matching Vercel
+environment variable when both are set, and clearing a saved key (the
+"Clear key" link, hidden when a key is only coming from an env var) falls
+back to the env var again -- so the two ways of providing a key documented
+above coexist cleanly rather than one silently overriding the other in a
+surprising way.
+
+**Bug caught by testing, fixed before delivery:** the settings.html toggle
+and `ai_provider.json` use `'claude'`/`'gemini'` (the model brand shown to
+staff), but the new keys UI and `ai_keys.json` use `'anthropic'`/`'gemini'`
+(matching console.anthropic.com vs aistudio.google.com, the page each key
+actually comes from) -- a real naming mismatch between the two vocabularies
+that would have silently ignored every saved Anthropic key and always
+fallen through to the env var instead. Caught by a live repro during
+testing (a saved key wasn't being picked up), root-caused, fixed with a
+small `providerToKeyName()` mapper, and regression-proofed (hardcoded the
+mapper to always return 'anthropic', confirmed exactly the Gemini-path
+test failed, restored, confirmed fully green).
+
+**⚠️ Vercel Environment Variables (`ANTHROPIC_API_KEY`/`GEMINI_API_KEY`,
+Project → Settings → Environment Variables) still work exactly as
+documented above and remain the fallback** -- the in-app "API keys" panel
+is the recommended path now (no Vercel dashboard access needed), but
+either one alone is enough to make the AI features work; nothing needs to
+be done in both places. Missing a key entirely (from both sources) throws
+a clear "No Claude/Gemini API key is set" error, surfacing to staff
+exactly like any other failed read (never silently). Model IDs
+(`ANTHROPIC_MODEL` / `GEMINI_MODEL` env vars, defaulting to
+`claude-sonnet-4-5` / `gemini-2.0-flash` if unset) are still
+environment-configurable rather than hardcoded -- worth double-checking
+those defaults against each provider's current docs before relying on them
+long-term, since model names move faster than this file will get revisited.
+
+**Testing:** 60 tests total against a mocked-fetch harness (39 from the
+first pass, 21 new) covering both providers (request shape sent to each --
+correct endpoint, headers, image vs. text-only payload), the markdown-
+code-fence-stripping JSON parser, the "model returned unparseable text"
+soft-fail path (empty fields, `success:true`, never a thrown error),
+missing-required-field 400s, a missing-API-key 500 with a clear message, a
+malformed `ai_provider.json` row falling back to 'claude' instead of
+throwing, the provider's own API returning a non-2xx error surfacing its
+real message, unknown-route 404, wrong-method 405, saving/clearing a key
+and confirming GET reflects it, confirming a saved key's full value is
+NEVER present anywhere in a GET response, a Drive-saved key taking
+precedence over the env var, clearing a saved key falling back to the env
+var again, an invalid provider name rejected with 400, and two providers'
+saved keys not disturbing each other. 60/60 passing. Regression-proofed
+three times total (provider dispatch, image-required validation, and the
+claude/anthropic naming-mismatch fix) -- all restored to fully green
+after. Syntax-checked clean on all changed/new files.
+
+**Files changed:** `api/ai/[...path].js` (new; extended same-day with the
+`/keys` GET/POST routes + `providerToKeyName` mapper); `contract.html` (3
+call sites -- passport read, WhatsApp read on the add form, WhatsApp read
+on the edit modal); `reply-assistant.html` (2 call sites -- reply-draft
+generator, WhatsApp read on "add customer from screenshot"); `settings.html`
+(AI provider toggle now JSON-backed instead of Code.gs-backed, plus the new
+"API keys" panel).
+
+## ✅ FIXED AND CONFIRMED LIVE — the "photos/* consolidation" deployment
+## (commit af9d4e3) actually FAILED the 12-function cap it was meant to
+## fix (2026-08-15)
 
 **What happened:** checked the Vercel dashboard (via the Vercel MCP
 connector) after Anton noticed something looked off with the deployment

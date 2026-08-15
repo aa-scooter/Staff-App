@@ -61,6 +61,35 @@
   .settings-status.show{ display:block; }
   .settings-status:not(.show){ display:none; }
 
+  /* API keys */
+  .api-key-block{ margin-top:18px; padding-top:16px; border-top:1px solid var(--line); }
+  .api-key-row{ margin-bottom:16px; }
+  .api-key-row:last-of-type{ margin-bottom:0; }
+  .api-key-row label{
+    display:block; font-size:11px; font-weight:600; color:var(--muted);
+    margin-bottom:5px; text-transform:uppercase; letter-spacing:.04em;
+  }
+  .api-key-current{ font-size:12.5px; color:var(--ink); margin-bottom:8px; }
+  .api-key-current .set{ color:var(--ok); font-weight:600; }
+  .api-key-current .unset{ color:var(--muted); }
+  .api-key-current .env{ color:#9AA6A1; font-style:italic; }
+  .api-key-input-row{ display:flex; gap:8px; }
+  .api-key-input-row input{
+    flex:1; min-width:0; padding:9px 10px; border:1px solid var(--line); border-radius:8px;
+    font-size:13.5px; font-family:'Inter',sans-serif; background:#FBFAF7; color:var(--ink);
+  }
+  .api-key-save-btn{
+    all:unset; box-sizing:border-box; flex-shrink:0; padding:9px 16px; border-radius:8px; cursor:pointer;
+    background:var(--petrol); color:#fff; font-family:'Barlow Condensed',sans-serif;
+    font-weight:700; font-size:12.5px; letter-spacing:.03em; text-transform:uppercase; text-align:center;
+  }
+  .api-key-save-btn:disabled{ opacity:.6; cursor:default; }
+  .api-key-clear-btn{
+    all:unset; box-sizing:border-box; display:inline-block; margin-top:6px; font-size:11.5px;
+    color:var(--muted); text-decoration:underline; cursor:pointer;
+  }
+  .api-key-clear-btn:hover{ color:#c0392b; }
+
   .settings-action-btn{
     all:unset; box-sizing:border-box; display:inline-block; padding:11px 18px; border-radius:9px;
     font-size:13px; font-weight:700; font-family:'Barlow Condensed',sans-serif; letter-spacing:.03em;
@@ -207,12 +236,39 @@
 
   <div class="settings-section">
     <h2>AI provider</h2>
-    <div class="desc">Used for passport scan, WhatsApp fill, reply draft, odometer read.</div>
+    <div class="desc">Used for passport scan, WhatsApp fill, and reply draft.</div>
     <div class="settings-toggle">
       <button type="button" class="settings-pill" data-provider="claude">Claude</button>
       <button type="button" class="settings-pill" data-provider="gemini">Gemini</button>
     </div>
     <div class="settings-status" id="providerStatus"></div>
+
+    <div class="api-key-block">
+      <div class="api-key-row">
+        <label for="anthropicKeyInput">Claude (Anthropic) API key</label>
+        <div class="api-key-current" id="anthropicKeyCurrent">Checking…</div>
+        <div class="api-key-input-row">
+          <input type="password" id="anthropicKeyInput" placeholder="sk-ant-…" autocomplete="off" spellcheck="false">
+          <button type="button" class="api-key-save-btn" id="anthropicKeySaveBtn">Save</button>
+        </div>
+        <button type="button" class="api-key-clear-btn" id="anthropicKeyClearBtn" style="display:none;">Clear key</button>
+      </div>
+      <div class="api-key-row">
+        <label for="geminiKeyInput">Gemini (Google AI) API key</label>
+        <div class="api-key-current" id="geminiKeyCurrent">Checking…</div>
+        <div class="api-key-input-row">
+          <input type="password" id="geminiKeyInput" placeholder="AIza…" autocomplete="off" spellcheck="false">
+          <button type="button" class="api-key-save-btn" id="geminiKeySaveBtn">Save</button>
+        </div>
+        <button type="button" class="api-key-clear-btn" id="geminiKeyClearBtn" style="display:none;">Clear key</button>
+      </div>
+      <div class="settings-hint">
+        Keys are stored in the app's own Drive folder and never shown again in full once saved —
+        only the last few characters, so you can confirm which one is set. Get a Claude key at
+        console.anthropic.com, a Gemini key at aistudio.google.com.
+      </div>
+      <div class="settings-status" id="apiKeyStatus"></div>
+    </div>
   </div>
 
   <div class="settings-section">
@@ -313,12 +369,20 @@
   }
 
   // =====================================================================
-  // AI provider toggle -- moved here from nav.js's old settings dropdown,
-  // unchanged in behavior (still reads/writes AI_PROVIDER via Code.gs
-  // actions aiProvider / setAiProvider).
+  // AI provider toggle -- moved here from nav.js's old settings dropdown.
+  // FIXED 2026-08-15: now reads/writes through the EXISTING generic
+  // /api/data/[sheet].js endpoint (same one every other page's data layer
+  // already uses) against a small "ai_provider" sheet-shaped JSON file
+  // (one row: ["provider", "claude"|"gemini"]) instead of the old
+  // disconnected Code.gs actions aiProvider/setAiProvider. This is the
+  // same value api/ai/[...path].js reads server-side (getAiProvider) to
+  // decide which provider actually handles a passport/WhatsApp read or a
+  // reply-draft generation -- see that file for the consuming side.
   // =====================================================================
+  var AI_PROVIDER_SHEET = 'ai_provider';
   var providerLoaded = false;
   var currentProvider = 'claude';
+  var providerModifiedTime = null;
 
   function highlightProviderPills() {
     var pills = document.querySelectorAll('.settings-pill');
@@ -328,16 +392,18 @@
   }
   function loadProvider() {
     if (providerLoaded) { highlightProviderPills(); return; }
-    fetch(BUGS_SCRIPT_URL + '?action=aiProvider')
-      .then(function (res) { return res.json(); })
-      .then(function (data) {
-        if (data && data.success && data.provider) {
-          currentProvider = data.provider;
-          providerLoaded = true;
-        }
+    fetchSheetWithMeta(AI_PROVIDER_SHEET)
+      .then(function (result) {
+        var rows = result.rows || [];
+        var row = null;
+        for (var i = 0; i < rows.length; i++) { if (rows[i] && rows[i][0] === 'provider') { row = rows[i]; break; } }
+        var val = (row && row[1]) ? row[1].toString().toLowerCase().trim() : '';
+        currentProvider = (val === 'gemini') ? 'gemini' : 'claude';
+        providerModifiedTime = result.modifiedTime;
+        providerLoaded = true;
         highlightProviderPills();
       })
-      .catch(function () { highlightProviderPills(); });
+      .catch(function () { highlightProviderPills(); }); // keep the 'claude' default on any load failure
   }
   function setProvider(provider) {
     var prev = currentProvider;
@@ -345,19 +411,9 @@
     highlightProviderPills();
     var statusEl = document.getElementById('providerStatus');
     statusEl.classList.remove('show'); statusEl.textContent = '';
-    fetch(BUGS_SCRIPT_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({ action: 'setAiProvider', provider: provider })
-    })
-      .then(function (res) { return res.json(); })
-      .then(function (data) {
-        if (!data || !data.success) {
-          currentProvider = prev;
-          highlightProviderPills();
-          statusEl.classList.add('show');
-          statusEl.textContent = (data && data.error) || 'Could not switch -- please try again.';
-        }
+    writeSheetJson(AI_PROVIDER_SHEET, [['provider', provider]], providerModifiedTime)
+      .then(function (res) {
+        providerModifiedTime = res.modifiedTime || providerModifiedTime;
       })
       .catch(function (err) {
         currentProvider = prev;
@@ -372,6 +428,99 @@
       pills[i].addEventListener('click', function () { setProvider(this.getAttribute('data-provider')); });
     }
     loadProvider();
+  }
+
+  // =====================================================================
+  // API keys -- lets staff paste an Anthropic/Gemini key straight into the
+  // app instead of needing Vercel dashboard access. Talks to a DEDICATED
+  // endpoint (GET/POST /api/ai/keys), deliberately NOT the generic
+  // /api/data/[sheet].js used everywhere else -- that generic endpoint
+  // echoes back whatever rows are stored, which would leak the full key
+  // to anyone who opened devtools. /api/ai/keys only ever returns a
+  // masked preview (last few characters) once a key is saved -- see
+  // api/ai/[...path].js's handleGetKeys/handleSetKeys for the actual
+  // masking. This is a write-mostly UI: pasting a new key always
+  // replaces the stored one; there's no way to read a saved key back out
+  // through the app, by design.
+  // =====================================================================
+  function renderKeyStatus(elId, info) {
+    var el = document.getElementById(elId);
+    if (!info) { el.innerHTML = '<span class="unset">Could not check.</span>'; return; }
+    if (info.set) {
+      var preview = info.preview ? (' — ' + escapeHtmlS(info.preview)) : '';
+      var envNote = info.fromEnv ? ' <span class="env">(from Vercel env var)</span>' : '';
+      el.innerHTML = '<span class="set">Set</span>' + preview + envNote;
+    } else {
+      el.innerHTML = '<span class="unset">Not set</span>';
+    }
+  }
+  function loadApiKeys() {
+    fetch('/api/ai/keys')
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (!data || !data.success) { renderKeyStatus('anthropicKeyCurrent', null); renderKeyStatus('geminiKeyCurrent', null); return; }
+        renderKeyStatus('anthropicKeyCurrent', data.anthropic);
+        renderKeyStatus('geminiKeyCurrent', data.gemini);
+        document.getElementById('anthropicKeyClearBtn').style.display = (data.anthropic && data.anthropic.set && !data.anthropic.fromEnv) ? 'inline-block' : 'none';
+        document.getElementById('geminiKeyClearBtn').style.display = (data.gemini && data.gemini.set && !data.gemini.fromEnv) ? 'inline-block' : 'none';
+      })
+      .catch(function () {
+        renderKeyStatus('anthropicKeyCurrent', null);
+        renderKeyStatus('geminiKeyCurrent', null);
+      });
+  }
+  function saveApiKey(provider, inputId, btnId) {
+    var input = document.getElementById(inputId);
+    var btn = document.getElementById(btnId);
+    var statusEl = document.getElementById('apiKeyStatus');
+    var value = input.value.trim();
+    statusEl.classList.remove('show'); statusEl.textContent = '';
+    if (!value) { statusEl.classList.add('show'); statusEl.textContent = 'Paste a key first, or use "Clear key" to remove one.'; return; }
+    btn.disabled = true;
+    var originalText = btn.textContent; btn.textContent = 'Saving…';
+    fetch('/api/ai/keys', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: provider, apiKey: value })
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (!data || !data.success) throw new Error((data && data.error) || 'Could not save key.');
+        input.value = '';
+        loadApiKeys();
+      })
+      .catch(function (err) {
+        statusEl.classList.add('show');
+        statusEl.textContent = 'Could not save key: ' + err.message;
+      })
+      .finally(function () {
+        btn.disabled = false; btn.textContent = originalText;
+      });
+  }
+  function clearApiKey(provider) {
+    var statusEl = document.getElementById('apiKeyStatus');
+    statusEl.classList.remove('show'); statusEl.textContent = '';
+    fetch('/api/ai/keys', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: provider, apiKey: '' })
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (!data || !data.success) throw new Error((data && data.error) || 'Could not clear key.');
+        loadApiKeys();
+      })
+      .catch(function (err) {
+        statusEl.classList.add('show');
+        statusEl.textContent = 'Could not clear key: ' + err.message;
+      });
+  }
+  function initApiKeysWidget() {
+    document.getElementById('anthropicKeySaveBtn').addEventListener('click', function () { saveApiKey('anthropic', 'anthropicKeyInput', 'anthropicKeySaveBtn'); });
+    document.getElementById('geminiKeySaveBtn').addEventListener('click', function () { saveApiKey('gemini', 'geminiKeyInput', 'geminiKeySaveBtn'); });
+    document.getElementById('anthropicKeyClearBtn').addEventListener('click', function () { clearApiKey('anthropic'); });
+    document.getElementById('geminiKeyClearBtn').addEventListener('click', function () { clearApiKey('gemini'); });
+    loadApiKeys();
   }
 
   // =====================================================================
@@ -696,6 +845,7 @@
 
   function init() {
     initProviderWidget();
+    initApiKeysWidget();
     initDataResetWidget();
     initSignOutWidget();
     initTxnSearch();
