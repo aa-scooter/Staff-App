@@ -21,10 +21,19 @@ const {
   readJsonFile, writeJsonFile, buildContractMatchKey, findContractFolderMatches,
   listAllFilesInFolder, getFileMetadata, getFileMediaBuffer, createImageFile
 } = require('../../lib/googleDrive');
+const { setSessionCookie } = require('../../lib/session');
 
 const SIDECAR_FILENAME = 'contract_docs.json';
 
-function sendJson(res, status, body) {
+// `session`, if passed, is persisted back onto the response BEFORE writing
+// the JSON body -- same "the moment something changes, re-set the cookie"
+// pattern api/data/[sheet].js uses, needed here because readJsonFile/
+// writeJsonFile below now cache each resolved contract_docs.json file id
+// onto the session in memory (see resolveFileMeta in lib/googleDrive.js,
+// 2026-08-15 perf pass) and that cache is worthless if it never makes it
+// back into the browser's cookie. ----
+function sendJson(res, status, body, session) {
+  if (session && !res.headersSent) setSessionCookie(res, session);
   res.statusCode = status;
   res.setHeader('Content-Type', 'application/json');
   res.end(JSON.stringify(body));
@@ -66,7 +75,7 @@ function isServableType(mimeType) {
 // ---- GET /api/contracts/documents?name=&phone= -- see the original
 // documents.js's comment: sidecar-first lookup, live fuzzy search fallback
 // (auto-remembering a confident match), candidates list otherwise. ----
-async function handleDocuments(req, res, { drive, folderId }, url) {
+async function handleDocuments(req, res, { drive, folderId, session }, url) {
   if (req.method !== 'GET') { sendJson(res, 405, { success: false, error: 'Method not allowed.' }); return; }
   const name = ((req.query && req.query.name) || url.searchParams.get('name') || '').toString().trim();
   const phone = ((req.query && req.query.phone) || url.searchParams.get('phone') || '').toString().trim();
@@ -76,7 +85,7 @@ async function handleDocuments(req, res, { drive, folderId }, url) {
   const contractsRootId = await ensureContractsRootFolder(drive, effectiveFolderId);
   const matchKey = buildContractMatchKey(name, phone);
 
-  const { data: sidecarRows } = await readJsonFile(drive, effectiveFolderId, SIDECAR_FILENAME);
+  const { data: sidecarRows } = await readJsonFile(drive, effectiveFolderId, SIDECAR_FILENAME, session);
   const rows = sidecarRows || [];
   const existing = rows.find((r) => r[0] === matchKey);
 
@@ -92,7 +101,7 @@ async function handleDocuments(req, res, { drive, folderId }, url) {
             success: true, matched: true, confident: true, remembered: true,
             folderId: entry.folderId, folderName: entry.folderName || meta.name,
             files: files.map(toFileSummary)
-          });
+          }, session);
           return;
         }
       } catch (e) { /* stale/deleted folder reference -- fall through to a live search */ }
@@ -103,7 +112,7 @@ async function handleDocuments(req, res, { drive, folderId }, url) {
   if (confident) {
     const newRows = rows.filter((r) => r[0] !== matchKey);
     newRows.push([matchKey, JSON.stringify({ folderId: confident.id, folderName: confident.name })]);
-    try { await writeJsonFile(drive, effectiveFolderId, SIDECAR_FILENAME, newRows, null); }
+    try { await writeJsonFile(drive, effectiveFolderId, SIDECAR_FILENAME, newRows, null, false, session); }
     catch (e) { /* best-effort remember */ }
 
     const files = await listAllFilesInFolder(drive, confident.id);
@@ -111,16 +120,16 @@ async function handleDocuments(req, res, { drive, folderId }, url) {
       success: true, matched: true, confident: true, remembered: false,
       folderId: confident.id, folderName: confident.name,
       files: files.map(toFileSummary)
-    });
+    }, session);
     return;
   }
 
-  sendJson(res, 200, { success: true, matched: false, candidates });
+  sendJson(res, 200, { success: true, matched: false, candidates }, session);
 }
 
 // ---- POST /api/contracts/confirmMatch -- body { name, phone, folderId }.
 // Manual picker confirmation; see the original confirmMatch.js's comment. ----
-async function handleConfirmMatch(req, res, { drive, folderId }) {
+async function handleConfirmMatch(req, res, { drive, folderId, session }) {
   if (req.method !== 'POST') { sendJson(res, 405, { success: false, error: 'Method not allowed.' }); return; }
   const body = await readJsonBody(req);
   const name = (body.name || '').toString().trim();
@@ -146,23 +155,23 @@ async function handleConfirmMatch(req, res, { drive, folderId }) {
   }
 
   const matchKey = buildContractMatchKey(name, phone);
-  const { data: sidecarRows } = await readJsonFile(drive, effectiveFolderId, SIDECAR_FILENAME);
+  const { data: sidecarRows } = await readJsonFile(drive, effectiveFolderId, SIDECAR_FILENAME, session);
   const rows = (sidecarRows || []).filter((r) => r[0] !== matchKey);
   rows.push([matchKey, JSON.stringify({ folderId: pickedFolderId, folderName: meta.name })]);
-  await writeJsonFile(drive, effectiveFolderId, SIDECAR_FILENAME, rows, null);
+  await writeJsonFile(drive, effectiveFolderId, SIDECAR_FILENAME, rows, null, false, session);
 
   const files = await listAllFilesInFolder(drive, pickedFolderId);
   sendJson(res, 200, {
     success: true, folderId: pickedFolderId, folderName: meta.name,
     files: files.map(toFileSummary)
-  });
+  }, session);
 }
 
 // ---- POST /api/contracts/upload -- body { name, phone, dateStr, filename,
 // mimeType, base64 }. See the original upload.js's comment: resolves/
 // creates the customer's folder (sidecar-first, else fuzzy-search-or-
 // create), refuses a duplicate same-customer+same-date upload. ----
-async function handleUpload(req, res, { drive, folderId }) {
+async function handleUpload(req, res, { drive, folderId, session }) {
   if (req.method !== 'POST') { sendJson(res, 405, { success: false, error: 'Method not allowed.' }); return; }
   const body = await readJsonBody(req);
   const name = (body.name || '').toString().trim();
@@ -189,7 +198,7 @@ async function handleUpload(req, res, { drive, folderId }) {
   const contractsRootId = await ensureContractsRootFolder(drive, effectiveFolderId);
   const matchKey = buildContractMatchKey(name, phone);
 
-  const { data: sidecarRows } = await readJsonFile(drive, effectiveFolderId, SIDECAR_FILENAME);
+  const { data: sidecarRows } = await readJsonFile(drive, effectiveFolderId, SIDECAR_FILENAME, session);
   const rows = sidecarRows || [];
   let targetFolderId = null;
   let targetFolderName = null;
@@ -220,7 +229,7 @@ async function handleUpload(req, res, { drive, folderId }) {
       success: false, alreadyExists: true,
       error: 'A photo of passport dated ' + dateStr + ' is already on file for this contract.',
       file: { id: dup.id, name: dup.name, mimeType: dup.mimeType }
-    });
+    }, session);
     return;
   }
 
@@ -230,11 +239,11 @@ async function handleUpload(req, res, { drive, folderId }) {
   if (sidecarNeedsWrite) {
     const newRows = rows.filter((r) => r[0] !== matchKey);
     newRows.push([matchKey, JSON.stringify({ folderId: targetFolderId, folderName: targetFolderName })]);
-    try { await writeJsonFile(drive, effectiveFolderId, SIDECAR_FILENAME, newRows, null); }
+    try { await writeJsonFile(drive, effectiveFolderId, SIDECAR_FILENAME, newRows, null, false, session); }
     catch (e) { /* best-effort remember -- the file itself is already saved either way */ }
   }
 
-  sendJson(res, 200, { success: true, file: { id: created.id, name: created.name, mimeType: created.mimeType } });
+  sendJson(res, 200, { success: true, file: { id: created.id, name: created.name, mimeType: created.mimeType } }, session);
 }
 
 // ---- GET /api/contracts/file/<fileId> -- private-proxy stream, images +

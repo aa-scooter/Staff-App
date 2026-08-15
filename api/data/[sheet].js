@@ -98,6 +98,14 @@ function sendJson(res, status, body) {
 // gets this treatment via callback.js/apiAuth.js; this extends the same
 // idea to the per-year subfolder.
 //
+// UPDATE (2026-08-15, later the same day): the file itself -- not just its
+// folder -- now gets the same treatment too. See resolveFileMeta in
+// lib/googleDrive.js, which readJsonFile/writeJsonFile below now use
+// whenever a session is passed. That was the bigger of the two costs (it
+// ran on every single read AND write of every sheet, not just once per
+// year), which is why "the write functions are still incredibly slow" kept
+// being true even after this folder-id fix landed on its own.
+//
 // Deliberately cached for the session's full lifetime with no
 // invalidation, same tradeoff session.driveFolderId itself already makes
 // (see apiAuth.js) -- a year folder being deleted/moved out from under a
@@ -146,7 +154,8 @@ module.exports = withDrive(async function handler(req, res, { drive, folderId, s
     const filename = year ? `${sheet}_${year}.json` : `${sheet}.json`;
 
     if (req.method === 'GET') {
-      const { data, modifiedTime } = await readJsonFile(drive, targetFolderId, filename);
+      const { data, modifiedTime } = await readJsonFile(drive, targetFolderId, filename, session);
+      if (session && !res.headersSent) setSessionCookie(res, session);
       sendJson(res, 200, { success: true, sheet, year: year || undefined, rows: data, modifiedTime });
       return;
     }
@@ -159,8 +168,9 @@ module.exports = withDrive(async function handler(req, res, { drive, folderId, s
       }
       try {
         const { fileId, modifiedTime } = await writeJsonFile(
-          drive, targetFolderId, filename, body.rows, body.expectedModifiedTime || null, false
+          drive, targetFolderId, filename, body.rows, body.expectedModifiedTime || null, false, session
         );
+        if (session && !res.headersSent) setSessionCookie(res, session);
         sendJson(res, 200, { success: true, sheet, year: year || undefined, fileId, modifiedTime });
       } catch (err) {
         if (err instanceof ConflictError || err.isConflict) {

@@ -6,6 +6,99 @@ This exists because work on this project gets picked up across multiple
 Claude sessions/accounts with no shared memory between them — this file is
 the handoff.
 
+## ✅ PERF FIX, tested and delivered — file-id caching, closing the gap
+## Anton flagged after comparing this app's write speed to property-app's
+## (2026-08-15)
+
+**What happened:** Anton said the "write functions" (save/edit actions
+across bikes, customers, cash, contracts, etc.) still felt incredibly slow,
+and asked for a side-by-side look at how property-app (his other Drive-
+backed app, newly connected this session) handles the same kind of write.
+
+**Root cause, found by direct comparison:** every read AND write of every
+sheet file in this app was paying for a live Drive `files.list` search (by
+filename) EVERY single time, via `findFileInFolderOnce`/
+`findFileInFolderWithRetry` in `lib/googleDrive.js` -- no matter how many
+times that exact file had already been resolved earlier in the same
+session. Worse, `findFileInFolderWithRetry` retries up to 2 more times with
+a 350ms/700ms backoff whenever a file isn't found on the first attempt (by
+design, to cover Drive's search-index lag right after a file is created) --
+so a file being written for the first time in a while could add up to ~1s
+of pure waiting on top of the search itself.
+
+property-app avoids almost all of this: it resolves its one data file's
+Drive id exactly once (cached in a cookie), and every later read/write goes
+straight to that file BY ID -- no search, ever. This app had already
+partially learned that lesson for Drive FOLDER ids (see the 2026-08-14
+entry on `resolveYearFolderId` further down this file) but never extended
+it to the files themselves, which was the bigger of the two costs since it
+ran on every single sheet read/write, not just once per year.
+
+**The fix:** `resolveFileMeta`, a new helper in `lib/googleDrive.js`, used
+by `readJsonFile`/`writeJsonFile` whenever a `session` is passed. It
+prefers a file id already cached on the session (`session.driveFileIds`,
+keyed by `folderId::filename`) over searching -- a direct `files.get(id)`
+lookup is a single indexed call, always consistent, never needs the
+not-found retry. Self-heals if a cached id turns out stale (deleted by
+hand, or trashed): the direct lookup fails, the cache entry is dropped, and
+it falls back to the normal search-by-name path, exactly like property-app's
+own reconnect-on-404 fallback. A write whose cached id vanishes in the
+brief window between the check and the actual `files.update` call clears
+the cache and surfaces the error rather than silently creating a duplicate
+file. Fully backward compatible -- `session` is an optional trailing
+parameter; every caller that doesn't pass one behaves exactly as before
+(always searches).
+
+Wired into the two routes that actually mattered for "writes feel slow":
+`api/data/[sheet].js` (every page's sheet read/write) and
+`api/contracts/[...path].js` (the contract-documents sidecar, hit on every
+contract.html lookup/upload). Both now persist the session cookie the
+moment the cache changes, same "re-set the cookie the instant something
+changes" pattern `resolveYearFolderId` already used. Deliberately left
+`api/admin/reset.js` and `api/ai/[...path].js` unchanged -- reset is a rare
+bulk-seed action that already avoids the worst of this cost via
+`skipExistenceRetry`, and the AI route's own sidecar files (`ai_provider.json`,
+`ai_keys.json`) are settings-page-only, nowhere near the actual hot path.
+Keeping the change scoped to the two routes Anton actually feels the slowness
+in kept the diff small and easy to verify end-to-end.
+
+**Also discussed and deliberately rejected:** consolidating monthly sheets
+into one file per year (Anton's own suggestion, prompted by the same
+property-app comparison). Checked how the pages that read monthly sheets
+actually use them (accounts.html, bike-income.html) -- none of them fan out
+across multiple months on one page load, so consolidation would save no
+round trips beyond what this fix already saves, while introducing a new
+downside: two different months currently can never conflict (separate
+files); merged into one file, editing July would start spuriously
+conflicting with a simultaneous edit to August. Not worth it for zero
+measured benefit.
+
+**Testing:** four separate suites, all green --
+`/tmp/contracttest/test.js` (51/51 -- includes new unit-level tests
+directly against `resolveFileMeta`/`readJsonFile`/`writeJsonFile`: cache
+hit skips the search, self-heal on a stale/trashed cached id, conflict
+detection still works through the cached path, a write whose file vanishes
+mid-request clears the cache and surfaces the error instead of duplicating,
+two different folders with a same-named file never cross-contaminate);
+`/tmp/yearcache/test.js` (39/39 -- end-to-end through the real
+`api/data/[sheet].js` route with a real encrypted session cookie
+round-tripped between simulated requests, confirming the file-id cache and
+the pre-existing year-folder cache work correctly together and a genuine
+save conflict still returns 409); `/tmp/aitest/test.js` (60/60, unaffected)
+and `/tmp/phototest3/test.js` (30/30, unaffected -- neither route touches
+`readJsonFile`/`writeJsonFile`). Also did the regression-proofing pass
+twice (disabled the cache-hit branch in `lib/googleDrive.js`, confirmed
+only the cache-specific assertions failed; disabled session-passing in
+`api/data/[sheet].js`, confirmed the same) before restoring and confirming
+fully green again both times.
+
+**Files changed:** `lib/googleDrive.js` (new `resolveFileMeta` helper;
+`readJsonFile`/`writeJsonFile` take an optional trailing `session` param),
+`api/data/[sheet].js` (passes session through, persists the cookie after
+GET/POST), `api/contracts/[...path].js` (same, plus `sendJson` now takes an
+optional `session` param so every response exit point can persist the
+cache consistently).
+
 ## ✅ CHANGE, tested and delivered — switched default AI model tiers per
 ## Anton's request: Gemini Flash-Lite, Claude Haiku (2026-08-15)
 
