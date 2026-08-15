@@ -84,9 +84,28 @@ module.exports = withDrive(async function handler(req, res, { drive, folderId })
       }
     }
 
+    // ---- Also wipe the transaction log (added 2026-08-15, per Anton).
+    // transactionLog.json isn't part of the bundled /data snapshot (it's
+    // runtime-generated, not seed data), so the loop above never touches
+    // it -- reset separately here. This has to happen on every reset: a
+    // reversible entry's `writes` array records exact before/after cell
+    // values from BEFORE the reset, which no longer match the freshly
+    // reset data at all -- reversing one after a reset would silently
+    // write stale, wrong values back over the reset data. Best-effort: if
+    // this write fails, the rest of the reset has already succeeded and
+    // shouldn't be reported as a failure over a stale log the settings
+    // page can still be manually cleared from.
+    let transactionLogCleared = false;
+    try {
+      await writeJsonFile(drive, effectiveFolderId, 'transactionLog.json', [], null, true);
+      transactionLogCleared = true;
+    } catch (logErr) {
+      // swallow -- see comment above
+    }
+
     res.statusCode = 200;
     res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify({ success: true, filesReset: results.length, files: results }));
+    res.end(JSON.stringify({ success: true, filesReset: results.length, files: results, transactionLogCleared }));
   } catch (err) {
     res.statusCode = 500;
     res.setHeader('Content-Type', 'application/json');

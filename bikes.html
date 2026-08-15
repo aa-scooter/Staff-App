@@ -335,14 +335,12 @@ const scriptUrl = ''; // DISCONNECTED: this Vercel copy is intentionally not wir
 // categoryRows/RATES, and the two "action=deposits" call sites further
 // down, are new.
 //
-// KNOWN GAP: getPartsData() used to detect "sold" bikes via strikethrough
-// FONT FORMATTING on the bike-name column (see Code.gs's getFontLines()
-// call) -- that's cosmetic formatting, not a data value, and the JSON
-// export (export_to_json.py) only captures cell VALUES, not formatting. So
-// __struck is hardcoded false here -- every bike in "Parts and Oil change"
-// shows up, including any that were struck-through/sold on the live sheet.
-// If Anton wants sold bikes hidden again, the real fix is an explicit
-// "sold" column on that sheet rather than trying to recover font state.
+// FIXED 2026-08-15 (was a KNOWN GAP): getPartsData() used to detect "sold"
+// bikes via strikethrough FONT FORMATTING on the bike-name column -- purely
+// cosmetic, no JSON equivalent, so __struck was hardcoded false here. Now
+// backed by a real flag: the `bikes_notes` sidecar Add Bike's Sell/
+// Write-off writes (see that page's block comment), matched fuzzily onto
+// this sheet's names -- see getPartsDataFromJson below.
 const bikesJsonCache = {};
 function fetchSheetJson(sheetName, year) {
   const cacheKey = year ? `${year}/${sheetName}` : sheetName;
@@ -683,13 +681,19 @@ function readRatesPerDayTableFromJson(rows2D) {
   }
 }
 
-// ---- Ports getPartsData() -- see the KNOWN GAP note at the top of this
-// block re: __struck always being false. ----
+// ---- Ports getPartsData(). __struck used to come from strikethrough font
+// formatting (unrecoverable from the JSON export -- see the KNOWN GAP note
+// this replaced, 2026-08-15). It's now a real flag off the `bikes_notes`
+// sidecar Add Bike's Sell/Write-off writes (see that page's block comment
+// on readBikeSoldNoteFromJson) -- matched fuzzily against this sheet's
+// names since Parts_and_Oil_change and the "bikes" sheet don't always
+// spell a bike's name identically. ----
 async function getPartsDataFromJson() {
-  const [partsRows2D, bikeTaxRows2D, ratesRows2D] = await Promise.all([
+  const [partsRows2D, bikeTaxRows2D, ratesRows2D, soldNotesRows2D] = await Promise.all([
     fetchSheetJson('Parts_and_Oil_change'),
     fetchSheetJson('Bike_Tax'),
-    fetchSheetJson('rates_per_day')
+    fetchSheetJson('rates_per_day'),
+    fetchSheetJson('bikes_notes').catch(() => [])
   ]);
 
   const rawHeaders = partsRows2D[0] || [];
@@ -697,10 +701,13 @@ async function getPartsDataFromJson() {
     const key = (h || '').toString().trim();
     return key || ('Column ' + columnLetterJson(i + 1));
   });
+  const soldBikeNames = (soldNotesRows2D || [])
+    .filter(n => { try { const p = JSON.parse(n[1]); return !!(p && (p.soldAmount || p.reason)); } catch (e) { return false; } })
+    .map(n => n[0]);
   const rows = partsRows2D.slice(1).map(row => {
     const obj = {};
     headers.forEach((h, i2) => { obj[h] = partsCellToString(row[i2]); });
-    obj.__struck = false; // see KNOWN GAP note above
+    obj.__struck = soldBikeNames.some(n => bikeNamesMatch(n, obj[headers[0]]));
     return obj;
   }).filter(r => (r[headers[0]] || '').toString().trim() !== '');
 

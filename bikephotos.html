@@ -260,11 +260,12 @@
 // here -- getPartsBikeNamesFromJson below is copied verbatim from
 // contract.html (same per-file convention).
 //
-// KNOWN GAP (same as bikes.html/contract.html/parts.html): "sold" bike
-// detection via strikethrough font formatting has no JSON equivalent --
-// __struck is hardcoded false below, so loadBikeNames() will list every
-// bike (including ones actually marked sold on the real sheet) until
-// Anton adds an explicit "sold" column.
+// FIXED 2026-08-15 (was a KNOWN GAP shared with bikes.html/contract.html/
+// parts.html): "sold" bike detection now comes from the `bikes_notes`
+// sidecar (Add Bike's Sell/Write-off) instead of unrecoverable
+// strikethrough font formatting -- see getPartsBikeNamesFromJson below.
+// loadBikeNames() already excludes struck bikes (sold bikes don't need
+// photos), that part just needed real data to filter on.
 const bikephotosJsonCache = {};
 function fetchSheetJson(sheetName, year) {
   const cacheKey = year ? `${year}/${sheetName}` : sheetName;
@@ -323,18 +324,27 @@ function partsCellToString(val) {
   return String(val);
 }
 // ---- Ports the bike-list part of getPartsData() -- same as contract.html's
-// getPartsBikeNamesFromJson. ----
+// getPartsBikeNamesFromJson. __struck now comes from the `bikes_notes`
+// sidecar (Add Bike's Sell/Write-off) instead of unrecoverable
+// strikethrough font formatting -- see bikes.html's getPartsDataFromJson
+// for the same fix, 2026-08-15. ----
 async function getPartsBikeNamesFromJson() {
-  const partsRows2D = await fetchSheetJson('Parts_and_Oil_change');
+  const [partsRows2D, soldNotesRows2D] = await Promise.all([
+    fetchSheetJson('Parts_and_Oil_change'),
+    fetchSheetJson('bikes_notes').catch(() => [])
+  ]);
   const rawHeaders = partsRows2D[0] || [];
   const headers = rawHeaders.map((h, i) => {
     const key = (h || '').toString().trim();
     return key || ('Column ' + columnLetterJson(i + 1));
   });
+  const soldBikeNames = (soldNotesRows2D || [])
+    .filter(n => { try { const p = JSON.parse(n[1]); return !!(p && (p.soldAmount || p.reason)); } catch (e) { return false; } })
+    .map(n => n[0]);
   const rows = partsRows2D.slice(1).map(row => {
     const obj = {};
     headers.forEach((h, i2) => { obj[h] = partsCellToString(row[i2]); });
-    obj.__struck = false; // KNOWN GAP -- see comment above
+    obj.__struck = soldBikeNames.some(n => bikeNamesMatch(n, obj[headers[0]]));
     return obj;
   }).filter(r => (r[headers[0]] || '').toString().trim() !== '');
   return { success: true, headers, rows };
@@ -821,14 +831,26 @@ function runCoverageCheck() {
 
     const folders = folderRes.folders || [];
 
+    // FIXED 15/08/2026: this used to take only the FIRST folder fuzzy-
+    // matching a bike (folders.find(...)) -- but api/photos/list.js (what
+    // actually loads a bike's photos when selected) now merges EVERY
+    // matching folder, not just one, for the same reason: a bike can have
+    // more than one matching folder (e.g. a legacy hand-copied one plus a
+    // separate one this app auto-created). Summing here keeps this
+    // coverage count in agreement with what selecting the bike actually
+    // shows -- otherwise a bike with photos split across two matching
+    // folders could show the wrong count, or a bike whose FIRST matching
+    // folder happened to be empty could wrongly show as "missing photos"
+    // even though a second matching folder had some.
     const missing = [];
     const covered = [];
     names.forEach(name => {
-      const match = folders.find(f => bikeNamesMatch(f.name, name));
-      if (!match || match.count === 0) {
+      const matches = folders.filter(f => bikeNamesMatch(f.name, name));
+      const count = matches.reduce((sum, f) => sum + (f.count || 0), 0);
+      if (count === 0) {
         missing.push(name);
       } else {
-        covered.push({ name, count: match.count });
+        covered.push({ name, count });
       }
     });
 

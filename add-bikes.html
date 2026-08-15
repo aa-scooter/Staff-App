@@ -222,7 +222,7 @@
 
 <main>
   <div class="card">
-    <h2>Fleet</h2>
+    <h2>Sell, write off, or edit a bike</h2>
     <button type="button" id="listBikesBtn" class="btn-secondary">List all bikes</button>
     <div class="hint">Sell a bike (marks it retired and adds the sale amount to its total — without affecting this month's overall income total), undo a sale by mistake, or edit a bike's details.</div>
 
@@ -869,8 +869,9 @@ async function getBikeIncomeSummaryFromJson() {
     // no risk of a spurious unhandled-rejection warning even though it
     // isn't awaited until a couple of lines later.
     const rowsPromise = fetchSheetJson('bikes');
-    // sold/soldAmount/soldDate/reason -- see BIKES_SOLD_NOTE_COL_B and the
-    // block comment above for where this note comes from. Best-effort: a
+    // sold/soldAmount/soldDate/reason -- see the block comment above
+    // readBikeSoldNoteFromJson for where this note comes from and why it's
+    // keyed by bike name now, not "bikes"-sheet row number. Best-effort: a
     // missing/unreadable notes file just means every bike reads as "not
     // sold" (same as before this was ported), not a failed request.
     // fetchSheetJson resolves to the rows ARRAY directly (see its definition
@@ -884,10 +885,16 @@ async function getBikeIncomeSummaryFromJson() {
     const rows2D = await rowsPromise;
     const headerRow = rows2D[0] || [];
     const soldNoteRows = (await notesPromise) || [];
-    const soldNoteByRow = new Map();
+    // Keyed by normalized name rather than row number now -- see
+    // readBikeSoldNoteFromJson's fuzzy match for the single-lookup version;
+    // this builds the same normalization as a Map once instead of scanning
+    // soldNoteRows per bike (this loop runs over the whole fleet, unlike
+    // sellBike/unsellBike's one-bike lookups).
+    const soldNoteByName = new Map();
     soldNoteRows.forEach(n => {
-      if (n[1] !== BIKES_SOLD_NOTE_COL_B) return;
-      try { soldNoteByRow.set(n[0], JSON.parse(n[2])); } catch (e) { /* ignore unparseable note */ }
+      const key = normalizeBikeNameForTaxLookup(n[0]);
+      if (!key) return;
+      try { soldNoteByName.set(key, JSON.parse(n[1])); } catch (e) { /* ignore unparseable note */ }
     });
 
     const MONTH_NAMES = ['January','February','March','April','May','June','July','August',
@@ -923,7 +930,7 @@ async function getBikeIncomeSummaryFromJson() {
 
       const nameLower = name.toLowerCase();
       const isSentinel = (nameLower === 'extras' || nameLower === 'deposit');
-      const soldNote = soldNoteByRow.get(i + 1) || null;
+      const soldNote = soldNoteByName.get(normalizeBikeNameForTaxLookup(name)) || null;
       const isSold = !!(soldNote && (soldNote.soldAmount || soldNote.reason));
 
       bikes.push({
@@ -1111,27 +1118,39 @@ async function editBikeFromJson(data) {
 // NOT ported: the strikethrough/background "sold" styling Code.gs applies
 // across all four sheets (setRowSoldFormatting). That's purely cosmetic --
 // cell formatting has no equivalent anywhere in this JSON export (same
-// documented limitation as accounts.html's expense-type colors) -- and
-// unlike accounts.html's case, nothing downstream reads it back, so there's
-// no behavioral gap from leaving it out, just a visual one once this data
-// is eventually synced to a live sheet again. ----
-const BIKES_SOLD_NOTE_COL_B = 1; // column A (1-based), matches Code.gs's nameCell = getRange(incomeRow, 1)
+// documented limitation as accounts.html's expense-type colors).
+//
+// RE-KEYED 2026-08-15 (Anton found this the hard way -- bikes.html,
+// available-bikes.html, contract.html, customers.html, bikephotos.html,
+// oilchange.html, parts.html, and bike-name-audit.html all independently
+// need to know "is this bike sold", and every one of them sources its
+// bike list from the "Parts and Oil change" sheet, not "bikes" -- a
+// different sheet with different row numbers. Keying this note by "bikes"
+// row number (as originally ported, mirroring Code.gs's cell-note-by-row
+// convention) meant every OTHER page would've needed to also fetch the
+// "bikes" sheet and match rows just to check one flag. Now keyed by the
+// bike's NAME instead -- `bikes_notes` rows are simply [bikeName, json] --
+// so any page can check sold status straight off its own already-fetched
+// bike list, matched the same fuzzy way bike names are matched everywhere
+// else in this app (bikeNamesMatch/normalizeBikeName, each page's own
+// copy). Nothing had shipped through the old row-keyed format yet (this
+// action only went live last session), so there was nothing to migrate. ----
 const BIKE_WRITE_OFF_REASONS_B = ['Stolen', 'Lost', 'Destroyed'];
 function todayDmyJson() {
   const d = new Date();
   return pad2Json(d.getDate()) + '/' + pad2Json(d.getMonth() + 1) + '/' + d.getFullYear();
 }
-async function readBikeSoldNoteFromJson(incomeRow1) {
+async function readBikeSoldNoteFromJson(bikeName) {
   let noteRows = [];
   try { noteRows = (await fetchSheetWithMeta('bikes_notes')).rows; } catch (e) { noteRows = []; }
-  const entry = (noteRows || []).find(n => n[0] === incomeRow1 && n[1] === BIKES_SOLD_NOTE_COL_B);
+  const entry = (noteRows || []).find(n => bikeNamesAreIdenticalJson(n[0], bikeName));
   if (!entry) return null;
-  try { return JSON.parse(entry[2]); } catch (e) { return null; }
+  try { return JSON.parse(entry[1]); } catch (e) { return null; }
 }
-async function writeBikeSoldNoteFromJson(incomeRow1, parsedOrNull) {
+async function writeBikeSoldNoteFromJson(bikeName, parsedOrNull) {
   const { rows: noteRows, modifiedTime } = await fetchSheetWithMeta('bikes_notes');
-  const filtered = (noteRows || []).filter(n => !(n[0] === incomeRow1 && n[1] === BIKES_SOLD_NOTE_COL_B));
-  if (parsedOrNull) filtered.push([incomeRow1, BIKES_SOLD_NOTE_COL_B, JSON.stringify(parsedOrNull)]);
+  const filtered = (noteRows || []).filter(n => !bikeNamesAreIdenticalJson(n[0], bikeName));
+  if (parsedOrNull) filtered.push([bikeName, JSON.stringify(parsedOrNull)]);
   await writeSheetJson('bikes_notes', filtered, modifiedTime);
 }
 
@@ -1161,9 +1180,7 @@ async function sellBikeFromJson(data) {
   if (incomeRowIdx === -1) {
     throw new Error('Bike "' + bikeName + '" not found on the "bikes" income list -- bike was NOT marked sold.');
   }
-  const incomeRow1 = incomeRowIdx + 1;
-
-  const existing = await readBikeSoldNoteFromJson(incomeRow1);
+  const existing = await readBikeSoldNoteFromJson(bikeName);
   if (existing && (existing.soldAmount || existing.reason)) {
     throw new Error('"' + bikeName + '" already appears to be marked sold (' +
       (existing.reason || Number(existing.soldAmount).toLocaleString('en-US')) +
@@ -1183,7 +1200,10 @@ async function sellBikeFromJson(data) {
     await writeSheetJson('bikes', newRows, modifiedTime);
   }
 
-  await writeBikeSoldNoteFromJson(incomeRow1, { soldAmount: sellAmount, soldDate: todayDmyJson(), reason: reason || null });
+  // Stored under the bike's exact "bikes"-sheet name -- see the block
+  // comment above readBikeSoldNoteFromJson for why every other page can
+  // now check this directly instead of needing the "bikes" sheet at all.
+  await writeBikeSoldNoteFromJson(bikeName, { soldAmount: sellAmount, soldDate: todayDmyJson(), reason: reason || null });
 
   return { success: true };
 }
@@ -1202,9 +1222,7 @@ async function unsellBikeFromJson(data) {
   if (incomeRowIdx === -1) {
     throw new Error('Bike "' + bikeName + '" not found on the "bikes" income list -- nothing was changed.');
   }
-  const incomeRow1 = incomeRowIdx + 1;
-
-  const parsed = await readBikeSoldNoteFromJson(incomeRow1);
+  const parsed = await readBikeSoldNoteFromJson(bikeName);
   const hasValidAmount = !!(parsed && !isNaN(Number(parsed.soldAmount)) && Number(parsed.soldAmount) > 0);
   const hasValidReason = !!(parsed && parsed.reason);
   if (!parsed || (!hasValidAmount && !hasValidReason)) {
@@ -1225,7 +1243,7 @@ async function unsellBikeFromJson(data) {
     await writeSheetJson('bikes', newRows, modifiedTime);
   }
 
-  await writeBikeSoldNoteFromJson(incomeRow1, null);
+  await writeBikeSoldNoteFromJson(bikeName, null);
 
   return { success: true, reversedAmount: soldAmount };
 }

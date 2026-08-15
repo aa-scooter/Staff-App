@@ -6,6 +6,138 @@ This exists because work on this project gets picked up across multiple
 Claude sessions/accounts with no shared memory between them — this file is
 the handoff.
 
+## ✅ FIXED, tested, awaiting Anton's push — bikephotos.html: a bike could
+## show "has photos" in the coverage check but "No photos yet" when
+## actually opened (2026-08-15, found live by Anton right after the
+## drive.readonly fix below went in)
+
+**The bug:** the coverage check (`api/photos/folders.js` + client-side
+`bikeNamesMatch`) already fuzzy-matches a Drive folder name to a bike's
+sheet name — needed because legacy hand-copied folders don't always spell
+a bike identically (e.g. a `(125cc)` size suffix). But `api/photos/list.js`
+— what actually runs when a bike is selected to view its photos — was
+still doing an EXACT Drive name match (`findNamedFolder`). A bike whose
+only Drive folder was a fuzzy-but-not-exact match (e.g. sheet says "Click
+red", folder is "Click red (125cc)") would count as "has photos" in the
+coverage summary but show a completely empty gallery when opened — since
+the exact-match lookup simply couldn't see the folder the fuzzy-matched
+coverage check found.
+
+**The fix:** added `findBikePhotoFolders` to `lib/googleDrive.js` — a
+Node-side port of the same `normalizeBikeName`/`bikeNamesMatch` fuzzy
+logic every page already carries client-side (kept in `lib/` since that's
+genuinely shared backend code, unlike the static pages) — that returns
+EVERY subfolder under "Bike Photos" whose name fuzzily matches a given
+bike, not just a single exact-name folder. `api/photos/list.js` now uses
+this and merges photos from every matching folder (sorted newest-first
+across all of them), so it always agrees with what the coverage check
+already reported. Also fixed the coverage check itself
+(`runCoverageCheck()` in bikephotos.html) to SUM photo counts across every
+matching folder instead of taking only the first one found — matters if a
+bike ends up with more than one matching folder (e.g. a legacy hand-copied
+one plus a separate one the app auto-created on an earlier upload), which
+otherwise could show the wrong count or even wrongly mark a bike as
+"missing photos" if the first matching folder happened to be empty.
+
+**Testing:** `api/photos/list.js` + `findBikePhotoFolders` covered by a
+hand-mocked fake-Drive unit test (10/10, including the exact "Click
+red"/"Click red (125cc)" scenario from Anton's report, a two-matching-
+folder merge case, and a sanity check that plain exact-name matches still
+work unchanged). bikephotos.html's coverage-check sum fix covered by
+Playwright (4/4, including a duplicate-folder scenario proving the count
+is now summed, not just the first match). Both regression-proofed:
+reverted in isolation, confirmed the expected tests failed, restored,
+confirmed green again. Syntax-checked clean.
+
+**Files changed:** `lib/googleDrive.js` (new `findBikePhotoFolders` +
+fuzzy-match helpers), `api/photos/list.js`, `bikephotos.html`.
+
+## ✅ FIXED, tested, awaiting Anton's push — sold bikes never stopped
+## appearing across the app (bikes.html, available-bikes.html, contract.html,
+## customers.html, bikephotos.html, oilchange.html, parts.html,
+## bike-name-audit.html); plus "Reset data" now clears the transaction log,
+## and a manual "Remove" option for reversed log entries (2026-08-15)
+
+**The bug:** the legacy Code.gs system marked a bike "sold" by putting a
+strikethrough font on its row in the "Parts and Oil change" sheet tab —
+purely cosmetic formatting with no JSON equivalent. When each page was
+migrated off Code.gs to the Drive-backed JSON API, `__struck` (the "is this
+row sold" flag every page reads) got stubbed `false` identically across all
+8 pages that use it, flagged at the time as a KNOWN GAP. Result: sold bikes
+kept showing up everywhere — available for new rentals, needing oil
+changes, needing photos, etc.
+
+**The fix — going forward:** Add Bike's existing Sell/Write-off flow
+(shipped in an earlier session) already wrote a real sold-status note to a
+`bikes_notes` sidecar JSON file, but keyed it by the "bikes" sheet's row
+number — useless to the other 8 pages, none of which fetch that sheet. Re-
+keyed `bikes_notes` to store `[bikeName, noteJson]` rows instead
+(add-bikes.html's `readBikeSoldNoteFromJson`/`writeBikeSoldNoteFromJson`),
+so any page can check sold status directly off its own already-fetched
+Parts & Oil bike list, fuzzy-matched by name (bike names aren't always
+spelled identically across sheets, e.g. "Aerox White (155)" vs "Aerox
+white"). No workflow change for Anton — selling/writing off a bike in Add
+Bike works exactly as before.
+
+Every consumer page's `getPartsDataFromJson`/`getPartsBikeNamesFromJson`
+now fetches `bikes_notes` alongside Parts & Oil and sets a real `__struck`
+flag. What each page does with it:
+- **bikes.html, available-bikes.html, contract.html, bikephotos.html** —
+  already had a `__struck`/sold-name filter wired up but starved of real
+  data; now works with no other changes needed.
+- **customers.html, oilchange.html** — had no sold-bike filter at all;
+  added one (new customer intakes and the oil-change due list both now
+  exclude sold bikes).
+- **parts.html** — deliberately the opposite: this page IS the maintenance
+  record, so sold bikes are shown FLAGGED (strikethrough style + a "Sold"
+  pill) rather than hidden, in both the search dropdown and the edit-form
+  header.
+- **bike-name-audit.html** — no filter needed; its struck-vs-not split
+  already existed and was just waiting on real `__struck` data (its
+  "Backend not updated yet" banner now correctly disappears).
+
+**Backfill needed once this is live:** 5 bikes are currently sold/written
+off in real life but have no note yet (per Anton's screenshot of the real
+sheet) — aerox black, aerox blue, gt silver 2, gt black 6, gt Burgandy. For
+each: Add Bike → find the bike → Sell/Write off → check "Written off" →
+any reason text (e.g. "Sold (historical)") → confirm. Flag-only, no dollar
+amount, no effect on totals.
+
+**Also this session, two settings.html/reset requests from Anton:**
+- **"Reset data from latest deploy" now also wipes `transactionLog.json`**
+  (`api/admin/reset.js`) — a reversible entry's logged before/after values
+  would otherwise reference pre-reset data, so reversing one after a reset
+  would silently write stale values back over the fresh reset data.
+  Best-effort: if this specific write fails, the rest of the reset still
+  reports success (the log can still be cleared by hand from Settings).
+- **Manual "Remove" button on already-reversed transaction-log entries**
+  (settings.html) — separate from the existing 24h auto-hide; lets Anton
+  permanently delete a reversed entry from the list instead of it
+  accumulating forever. Only appears on entries where `reversed: true`;
+  confirms before removing; removes just that one entry via the normal
+  read-modify-write flow.
+
+**Testing:** every one of the 8 consumer pages, plus the reset.js change
+and the settings.html Remove button, has full behavioral (Playwright,
+real headless browser against a stateful mock server) test coverage — not
+just syntax checks. Every single change was regression-proofed: reverted
+in an isolated copy, confirmed the test suite failed in exactly the
+expected way, then restored and confirmed green again. Syntax-checked
+clean across all 10 touched files as a final sanity pass.
+
+**Files changed:** `add-bikes.html` (the re-key + "Fleet" section header
+now reads "Sell, write off, or edit a bike" per Anton's request),
+`bikes.html`, `available-bikes.html`, `contract.html`, `customers.html`,
+`bikephotos.html`, `oilchange.html`, `parts.html`, `bike-name-audit.html`,
+`api/admin/reset.js`, `settings.html`.
+
+**Not yet done:** push to Anton's Mac and deploy (see git commands handed
+over alongside this file). Also still open from the entry directly below:
+confirming whether the `lib/googleDrive.js` drive.readonly commit actually
+went through — the last known state was a failed `git commit` blocked by
+the recurring `.git/index.lock` bug, with Anton told to retry after
+`rm -f .git/index.lock`, but no confirmation was seen after that.
+
 ## ⚠️ FIXED (code side), needs a real live Drive re-login test from Anton —
 ## bikephotos.html: manually-copied legacy photos still show 0 covered,
 ## even after Anton copied them straight into the app's own "Bike Photos"

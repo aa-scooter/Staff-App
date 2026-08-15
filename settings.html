@@ -113,6 +113,11 @@
   .txn-badge.reversible{ background:#EAF1EE; color:var(--petrol); }
   .txn-badge.locked{ background:#FFF3E6; color:#B36A2E; }
   .txn-badge.reversed{ background:#E9F7EF; color:var(--ok); }
+  .txn-remove-btn{
+    display:block; margin-top:6px; margin-left:auto; background:none; border:none;
+    color:var(--muted); font-size:11px; text-decoration:underline; cursor:pointer; padding:2px 0;
+  }
+  .txn-remove-btn:hover{ color:#c0392b; }
 
   .empty-hint{ font-size:13px; color:#8A948F; padding:8px 2px; }
   .txn-count-hint{ font-size:11.5px; color:#9AA6A1; margin-top:4px; }
@@ -392,7 +397,16 @@
             setStatus((data && data.error) || 'Reset failed -- please try again.', true);
             return;
           }
-          setStatus('Reset ' + data.filesReset + ' file(s) from the deploy.', false);
+          setStatus(
+            'Reset ' + data.filesReset + ' file(s) from the deploy' +
+            (data.transactionLogCleared ? ', and cleared the transaction log (old entries no longer matched the reset data).' : ' (could not clear the transaction log -- check it by hand).'),
+            false
+          );
+          // The reversible list on this same page is now stale (either
+          // cleared or referencing pre-reset data) -- refresh it right
+          // away rather than leaving old rows showing until a manual
+          // reload.
+          loadTransactionLog(true);
         })
         .catch(function (err) { setStatus('Reset failed: ' + err.message, true); })
         .finally(function () { btn.disabled = false; });
@@ -458,6 +472,14 @@
       ? '<span class="txn-badge reversed">Reversed ' + escapeHtmlS(fmtTs(e.reversedAt)) + '</span>'
       : (e.reversible ? '<span class="txn-badge reversible">Reversible</span>' : '<span class="txn-badge locked">Not reversible</span>');
     var note = (e.writes && e.writes[0] && e.writes[0].note) ? '<div class="meta">' + escapeHtmlS(e.writes[0].note) + '</div>' : '';
+    // Manual "Remove" -- only offered once an entry is reversed (Anton,
+    // 15/08/2026): the automatic 24h hide (see HIDE_REVERSED_AFTER_MS
+    // above) keeps the default view tidy without deleting anything, but
+    // Anton wants an immediate, explicit way to clear one out right away
+    // too, rather than the list just quietly growing forever in the
+    // meantime. Deliberately NOT offered for un-reversed entries -- those
+    // are still real, actionable history.
+    var removeBtn = e.reversed ? '<button type="button" class="txn-remove-btn" data-remove-id="' + escapeHtmlS(e.id) + '">Remove</button>' : '';
     return (
       '<div class="row txn-row' + (canReverse ? ' clickable' : '') + '" data-id="' + escapeHtmlS(e.id) + '">' +
         '<div class="left">' +
@@ -465,7 +487,7 @@
           '<div class="meta">' + escapeHtmlS(fmtTs(e.ts)) + ' — ' + escapeHtmlS(e.page || '') + (e.action ? (' (' + escapeHtmlS(e.action) + ')') : '') + '</div>' +
           note +
         '</div>' +
-        '<div class="txn-right">' + badge + '</div>' +
+        '<div class="txn-right">' + badge + removeBtn + '</div>' +
       '</div>'
     );
   }
@@ -522,12 +544,45 @@
       renderTxnList();
     });
     document.getElementById('txnList').addEventListener('click', function (e) {
+      var removeBtn = e.target.closest ? e.target.closest('[data-remove-id]') : null;
+      if (removeBtn) {
+        removeEntry(removeBtn.getAttribute('data-remove-id'));
+        return;
+      }
       var row = e.target.closest ? e.target.closest('.txn-row.clickable') : null;
       if (!row) return;
       var id = row.getAttribute('data-id');
       var entry = allEntries.find(function (x) { return x.id === id; });
       if (entry) openReverseModal(entry);
     });
+  }
+
+  // ---- Permanently removes one already-reversed entry from the log
+  // (Anton, 15/08/2026 -- an explicit alternative to waiting for the
+  // automatic 24h hide, see HIDE_REVERSED_AFTER_MS). Retries on a write
+  // conflict the same way executeReversal does, in case another entry got
+  // logged or reversed in between. ----
+  async function removeEntry(id) {
+    var entry = allEntries.find(function (x) { return x.id === id; });
+    if (!entry) return;
+    if (!confirm('Remove this from the list for good? This can\'t be undone (the underlying data change already happened -- this only removes the log entry itself).')) return;
+    var statusEl = document.getElementById('txnLoadStatus');
+    try {
+      for (var attempt = 0; attempt < 3; attempt++) {
+        const { rows: curRows, modifiedTime: curModifiedTime } = await fetchSheetWithMeta('transactionLog');
+        var filtered = (curRows || []).filter(function (x) { return x && x.id !== id; });
+        try {
+          await writeSheetJson('transactionLog', filtered, curModifiedTime);
+          break;
+        } catch (e) {
+          if (attempt === 2) throw e;
+        }
+      }
+      await loadTransactionLog(true);
+    } catch (e) {
+      statusEl.classList.add('show');
+      statusEl.textContent = 'Could not remove that entry: ' + e.message;
+    }
   }
 
   function openReverseModal(entry) {

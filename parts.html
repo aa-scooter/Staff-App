@@ -90,6 +90,11 @@
   .ac-item:last-child{ border-bottom:none; }
   .ac-item:hover, .ac-item.hi{ background:#F5EFE6; }
   .ac-item mark{ background:#FFE3D2; color:var(--ink); border-radius:2px; }
+  .ac-item.sold{ text-decoration:line-through; color:#9A5A5A; background:#FDF3F3; }
+  .sold-badge{
+    display:inline-block; margin-left:8px; padding:2px 8px; border-radius:999px;
+    background:#F4CCCC; color:#8A2E2E; font-size:12px; font-weight:600; vertical-align:middle;
+  }
   .load-status{
     font-size:12px; color:#B36A2E; background:#FFF3E6; border:1px solid #F3D9B8;
     border-radius:7px; padding:7px 10px; margin:-4px 0 12px; display:none;
@@ -349,8 +354,12 @@ const scriptUrl = ''; // DISCONNECTED: this Vercel copy is intentionally not wir
 // (disconnected) scriptUrl and fails cleanly, falling back to manual entry
 // (which the page already does gracefully on any OCR failure).
 //
-// KNOWN GAP (same as bikes.html): "sold" bike detection via strikethrough
-// font formatting has no JSON equivalent -- __struck is hardcoded false.
+// FIXED 2026-08-15 (was a KNOWN GAP shared with bikes.html): "sold" bike
+// detection now comes from the `bikes_notes` sidecar (Add Bike's Sell/
+// Write-off) instead of unrecoverable strikethrough font formatting -- see
+// getPartsDataFromJson below. Unlike the rental-facing pages, this page
+// (the maintenance record itself) deliberately shows a sold bike flagged
+// rather than hiding it -- see openList/selectBike below.
 const partsJsonCache = {};
 function fetchSheetJson(sheetName, year) {
   const cacheKey = year ? `${year}/${sheetName}` : sheetName;
@@ -498,21 +507,66 @@ function readRatesPerDayTableFromJson(rows2D) {
     return { rates: null, warning: err.message };
   }
 }
+// Same fuzzy-match rules used everywhere else in this app (bikes.html,
+// bikephotos.html, etc.) -- needed here (added 2026-08-15) to match this
+// sheet's bike names against the `bikes_notes` sold-flag sidecar, which is
+// keyed by the "bikes" sheet's own name spelling.
+function normalizeBikeNameForSoldLookup(s) {
+  return (s || '').toString()
+    .toLowerCase()
+    .replace(/\([^)]*\)/g, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+const SOLD_LOOKUP_DISTINGUISHING_SUFFIXES = new Set([
+  'one','two','three','four','five','six','seven','eight','nine','ten',
+  'i','ii','iii','iv','v','vi','vii','viii','ix','x',
+  '1','2','3','4','5','6','7','8','9','10'
+]);
+function bikeNamesMatch(a, b) {
+  const na = normalizeBikeNameForSoldLookup(a);
+  const nb = normalizeBikeNameForSoldLookup(b);
+  if (!na || !nb) return false;
+  if (na === nb) return true;
+  const ta = na.split(' ');
+  const tb = nb.split(' ');
+  const shorter = ta.length <= tb.length ? ta : tb;
+  const longer = ta.length <= tb.length ? tb : ta;
+  const isPrefix = shorter.every((tok, i) => tok === longer[i]);
+  if (isPrefix) {
+    const extra = longer.slice(shorter.length);
+    if (extra.some(t => SOLD_LOOKUP_DISTINGUISHING_SUFFIXES.has(t))) return false;
+    return true;
+  }
+  return na.includes(nb) || nb.includes(na);
+}
+
+// __struck now comes from the `bikes_notes` sidecar (Add Bike's Sell/
+// Write-off) instead of unrecoverable strikethrough font formatting -- see
+// bikes.html's getPartsDataFromJson for the same fix, 2026-08-15. Unlike
+// the rental-facing pages, this page deliberately does NOT hide sold
+// bikes -- it's the maintenance record itself, so a sold bike should still
+// be findable/editable here, just flagged (see openList/selectBike below).
 async function getPartsDataFromJson() {
-  const [partsRows2D, bikeTaxRows2D, ratesRows2D] = await Promise.all([
+  const [partsRows2D, bikeTaxRows2D, ratesRows2D, soldNotesRows2D] = await Promise.all([
     fetchSheetJson('Parts_and_Oil_change'),
     fetchSheetJson('Bike_Tax'),
-    fetchSheetJson('rates_per_day')
+    fetchSheetJson('rates_per_day'),
+    fetchSheetJson('bikes_notes').catch(() => [])
   ]);
   const rawHeaders = partsRows2D[0] || [];
   const headers = rawHeaders.map((h, i) => {
     const key = (h || '').toString().trim();
     return key || ('Column ' + columnLetterJson(i + 1));
   });
+  const soldBikeNames = (soldNotesRows2D || [])
+    .filter(n => { try { const p = JSON.parse(n[1]); return !!(p && (p.soldAmount || p.reason)); } catch (e) { return false; } })
+    .map(n => n[0]);
   const rows = partsRows2D.slice(1).map(row => {
     const obj = {};
     headers.forEach((h, i2) => { obj[h] = partsCellToString(row[i2]); });
-    obj.__struck = false; // see KNOWN GAP note above
+    obj.__struck = soldBikeNames.some(n => bikeNamesMatch(n, obj[headers[0]]));
     return obj;
   }).filter(r => (r[headers[0]] || '').toString().trim() !== '');
   const categoryRows = getBikeTaxCategoriesFromJson(bikeTaxRows2D);
@@ -686,19 +740,19 @@ function closeList() {
 function openList(query) {
   if (!partsData) return;
   const options = partsData.rows
-    .map(r => r[keyHeader])
-    .filter(v => tokenMatch(v, query))
+    .filter(r => tokenMatch(r[keyHeader], query))
+    .map(r => ({ name: r[keyHeader], sold: !!r.__struck }))
     .slice(0, 10);
   if (options.length === 0) { closeList(); return; }
-  acList.innerHTML = options.map((v, i) =>
-    `<div class="ac-item" data-index="${i}">${highlight(v, query)}</div>`
+  acList.innerHTML = options.map((o, i) =>
+    `<div class="ac-item${o.sold ? ' sold' : ''}" data-index="${i}">${highlight(o.name, query)}${o.sold ? ' <span class="sold-badge">Sold</span>' : ''}</div>`
   ).join('');
   acList.classList.add('show');
   hiIndex = -1;
   Array.from(acList.children).forEach((el, i) => {
     el.addEventListener('mousedown', (e) => {
       e.preventDefault();
-      selectBike(options[i]);
+      selectBike(options[i].name);
     });
   });
   acList._options = options;
@@ -723,7 +777,7 @@ bikeInput.addEventListener('keydown', (e) => {
     items.forEach((el, i) => el.classList.toggle('hi', i === hiIndex));
   } else if (e.key === 'Enter' && hiIndex >= 0) {
     e.preventDefault();
-    selectBike(acList._options[hiIndex]);
+    selectBike(acList._options[hiIndex].name);
   } else if (e.key === 'Escape') {
     closeList();
   }
@@ -910,7 +964,7 @@ function selectBike(bikeName) {
   closeList();
   bikeInput.value = '';
 
-  document.getElementById('selectedBikeName').textContent = bikeName;
+  document.getElementById('selectedBikeName').innerHTML = bikeName + (row.__struck ? ' <span class="sold-badge">Sold</span>' : '');
   document.getElementById('searchCard').classList.add('hidden');
   document.getElementById('editSection').classList.remove('hidden');
 

@@ -124,11 +124,12 @@ const scriptUrl = ''; // DISCONNECTED: this Vercel copy is intentionally not wir
 // page is entirely read-only (a diagnostic report), so there's nothing else
 // to port.
 //
-// KNOWN GAP (same as bikes.html/contract.html/parts.html): "sold" bike
-// detection via strikethrough font formatting has no JSON equivalent --
-// __struck is hardcoded false below, so hasStrikeInfo will be false and
-// the "Backend not updated yet" banner will always show. That's the
-// CORRECT/honest behavior here, not a bug to hide -- this audit page's
+// FIXED 2026-08-15 (was a KNOWN GAP shared with bikes.html/contract.html/
+// parts.html): "sold" bike detection now comes from the `bikes_notes`
+// sidecar (Add Bike's Sell/Write-off) instead of unrecoverable
+// strikethrough font formatting -- see getPartsDataFromJson below.
+// hasStrikeInfo now reflects real data, so the "Backend not updated yet"
+// banner below no longer always shows. This audit page's
 // whole purpose is flagging exactly this kind of gap.
 const auditJsonCache = {};
 function fetchSheetJson(sheetName, year) {
@@ -428,22 +429,29 @@ function readRatesPerDayTableFromJson(rows2D) {
   }
 }
 // ---- action=parts -> getPartsDataFromJson (full shape) -- same port as
-// bikes.html/parts.html/available-bikes.html/oilchange.html/reply-assistant.html. ----
+// bikes.html/parts.html/available-bikes.html/oilchange.html/reply-assistant.html.
+// __struck now comes from the `bikes_notes` sidecar (Add Bike's Sell/
+// Write-off) instead of unrecoverable strikethrough font formatting -- see
+// bikes.html's getPartsDataFromJson for the same fix, 2026-08-15. ----
 async function getPartsDataFromJson() {
-  const [partsRows2D, bikeTaxRows2D, ratesRows2D] = await Promise.all([
+  const [partsRows2D, bikeTaxRows2D, ratesRows2D, soldNotesRows2D] = await Promise.all([
     fetchSheetJson('Parts_and_Oil_change'),
     fetchSheetJson('Bike_Tax'),
-    fetchSheetJson('rates_per_day')
+    fetchSheetJson('rates_per_day'),
+    fetchSheetJson('bikes_notes').catch(() => [])
   ]);
   const rawHeaders = partsRows2D[0] || [];
   const headers = rawHeaders.map((h, i) => {
     const key = (h || '').toString().trim();
     return key || ('Column ' + columnLetterJson(i + 1));
   });
+  const soldBikeNames = (soldNotesRows2D || [])
+    .filter(n => { try { const p = JSON.parse(n[1]); return !!(p && (p.soldAmount || p.reason)); } catch (e) { return false; } })
+    .map(n => n[0]);
   const rows = partsRows2D.slice(1).map(row => {
     const obj = {};
     headers.forEach((h, i2) => { obj[h] = partsCellToString(row[i2]); });
-    obj.__struck = false; // see KNOWN GAP note above
+    obj.__struck = soldBikeNames.some(n => bikeNamesMatch(n, obj[headers[0]]));
     return obj;
   }).filter(r => (r[headers[0]] || '').toString().trim() !== '');
   const categoryRows = getBikeTaxCategoriesFromJson(bikeTaxRows2D);
