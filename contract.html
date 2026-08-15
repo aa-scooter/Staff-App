@@ -415,6 +415,27 @@
       <button type="button" id="editSendDocsBtn">Send Contract + Receipt</button>
     </div>
     <div class="results-empty" id="editNoDocsMsg" style="display:none; padding:0 0 14px; text-align:left;">No contract document was generated/saved for this record.</div>
+
+    <!-- Documents panel -- everything saved in this customer's "AA Scooters
+         Contracts" Drive subfolder (passport photo, and whatever else was
+         manually copied in there), loaded from /api/contracts/documents as
+         soon as the modal opens. Shows a picker instead when the backend
+         can't confidently match a folder for this name/phone (messy manual
+         folder names), per Anton's choice of "show close matches to pick
+         from" over a plain not-found message. View and upload live in the
+         same place -- this panel for viewing, the existing upload field
+         further down in the form for adding a new one -- both refresh this
+         same panel on success. -->
+    <div id="editDocsPanel" style="margin-bottom:14px;">
+      <div style="font-weight:600; margin-bottom:6px;">Documents (passport, contract, etc.)</div>
+      <div class="status" id="editDocsStatus" style="margin-bottom:8px;"></div>
+      <div id="editDocsList" style="display:flex; flex-wrap:wrap; gap:10px; margin-bottom:8px;"></div>
+      <div id="editDocsPicker" style="display:none;">
+        <div class="results-empty" style="padding:0 0 8px; text-align:left;">No confident folder match for this customer -- pick the closest one below (or just upload a photo further down to start a new folder).</div>
+        <div id="editDocsCandidates" style="display:flex; flex-direction:column; gap:6px;"></div>
+      </div>
+    </div>
+
     <form id="editForm">
       <label for="e_name">Name</label>
       <input id="e_name">
@@ -1011,6 +1032,18 @@ function columnLetterJson(col) {
 function formatDmyJson(date) {
   if (!date) return '';
   return pad2Json(date.getDate()) + '/' + pad2Json(date.getMonth() + 1) + '/' + date.getFullYear();
+}
+// dd-MM-yyyy (dashes, not slashes) -- the exact folder/file-naming format
+// the contracts-documents backend (lib/googleDrive.js's
+// ensureContractCustomerFolder / api/contracts/upload.js) expects for
+// `dateStr`, mirroring Code.gs's formatIsoDateToDMY(...).replace(/\//g,'-').
+// Input is always a plain yyyy-mm-dd string straight off a
+// <input type="date"> element's .value (that's the one format the HTML
+// date input guarantees), so no need for the fuller decodeSheetDate parse.
+function isoDateToDashDmy(isoDate) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(isoDate || ''));
+  if (!m) return '';
+  return m[3] + '-' + m[2] + '-' + m[1];
 }
 // Mirrors getContractRows()'s local cellToString(key, val): dates/datetimes
 // -> dd/MM/yyyy, EXCEPT 'returnTime'/'deliveryTime' (bare TIME values,
@@ -1765,9 +1798,6 @@ async function addContractFromJson(data) {
   const newRowNumber = newRows.length; // 1-indexed sheet row number == array length right after the push
 
   const warnings = [];
-  if (data.passportPhotoBase64) {
-    warnings.push('Passport photo was NOT uploaded -- this dev copy has no Drive-API integration yet. Please attach it the old way for now, or re-upload once photo support is ported.');
-  }
 
   await writeSheetJson('Contract', newRows, modifiedTime);
 
@@ -1780,6 +1810,43 @@ async function addContractFromJson(data) {
   }
 
   const responsePayload = { success: true, row: newRowNumber };
+
+  // Passport photo (if bundled with this submission) -- resolves/creates
+  // this customer's contract-document folder exactly the way a returning
+  // customer's edit-modal upload does (see editPassportPhotoUploadBtn's
+  // handler further down), using this same submission's own name/number/
+  // rentingDateFrom so it always lands in the one folder this contract's
+  // other documents belong in. The Contract row itself is already saved
+  // above either way -- a failure here only downgrades this to a warning,
+  // never blocks the contract from being created.
+  if (data.passportPhotoBase64) {
+    try {
+      const dateStr = isoDateToDashDmy(data.rentingDateFrom);
+      const res = await fetch('/api/contracts/upload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: data.name || '',
+          phone: data.number || '',
+          dateStr,
+          mimeType: data.passportPhotoMimeType || 'image/jpeg',
+          base64: data.passportPhotoBase64
+        })
+      });
+      const uploadResult = await res.json();
+      if (uploadResult.success && uploadResult.file) {
+        responsePayload.passportPhotoUrl = '/api/contracts/file/' + encodeURIComponent(uploadResult.file.id);
+      } else if (uploadResult.alreadyExists && uploadResult.file) {
+        responsePayload.passportPhotoUrl = '/api/contracts/file/' + encodeURIComponent(uploadResult.file.id);
+        warnings.push(uploadResult.error || 'A photo of passport was already on file for this contract.');
+      } else {
+        warnings.push('Passport photo could not be uploaded: ' + (uploadResult.error || 'Unknown error'));
+      }
+    } catch (photoErr) {
+      warnings.push('Passport photo could not be uploaded: ' + photoErr.message);
+    }
+  }
+
   if (warnings.length) responsePayload.warning = warnings.join(' ');
   return responsePayload;
 }
@@ -3186,65 +3253,144 @@ async function updateContract() {
 editViewPdfBtn.addEventListener('click', viewContract);
 editUpdateContractBtn.addEventListener('click', updateContract);
 
-// "View Photo of Passport" -- opens the stored link if this record has
-// one. If not (e.g. the photo was uploaded from the Add-new-contract page
-// BEFORE this contract row even existed, so there was nothing to backfill
-// a link onto at the time), falls back to action:'findPassportPhoto' on
-// the backend, which searches this customer's subfolder (by name +
-// phone) for a file dated to this record's rental start date -- same
-// reconstruction approach as viewContract's PDF fallback.
+// ---- Documents panel: everything living in this customer's "AA Scooters
+// Contracts" Drive subfolder -- the passport photo, and whatever else
+// Anton has manually copied in there (contract PDFs, receipts, etc.).
+// Backed by the three new /api/contracts/* routes (see lib/googleDrive.js's
+// contract-folder helpers): GET documents (sidecar-first, else a live
+// fuzzy name+phone search, auto-remembering confident matches), POST
+// confirmMatch (manual pick from the candidates list, also remembered),
+// and POST upload (adds a new photo, reusing the same matched/remembered
+// folder). Loaded fresh every time the edit modal opens (openEditModal
+// calls loadContractDocuments below), and re-loaded after a successful
+// upload or a manual match pick -- so "view" and "upload" always show the
+// same up-to-date list together, per Anton's explicit choice over a
+// separate view-only flow. ----
+const editDocsStatus = document.getElementById('editDocsStatus');
+const editDocsList = document.getElementById('editDocsList');
+const editDocsPicker = document.getElementById('editDocsPicker');
+const editDocsCandidates = document.getElementById('editDocsCandidates');
+
+function escapeDocHtml(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ));
+}
+
+function renderContractDocsList(files) {
+  if (!files || !files.length) {
+    editDocsList.innerHTML = '<div style="color:#666; font-size:14px;">No documents on file yet for this customer.</div>';
+    return;
+  }
+  editDocsList.innerHTML = files.map((f) => {
+    const url = '/api/contracts/file/' + encodeURIComponent(f.id);
+    const isImage = /^image\//.test(f.mimeType || '');
+    const label = escapeDocHtml(f.name || 'Document');
+    if (isImage) {
+      return '<a href="' + url + '" target="_blank" rel="noopener" title="' + label + '" ' +
+        'style="display:block; width:96px; height:96px; border:1px solid #ccc; border-radius:6px; overflow:hidden;">' +
+        '<img src="' + url + '" alt="' + label + '" style="width:100%; height:100%; object-fit:cover; display:block;"></a>';
+    }
+    return '<a href="' + url + '" target="_blank" rel="noopener" ' +
+      'style="display:flex; align-items:center; justify-content:center; text-align:center; padding:6px; width:96px; height:96px; border:1px solid #ccc; border-radius:6px; font-size:12px; word-break:break-word; color:inherit; text-decoration:underline;">' +
+      label + '</a>';
+  }).join('');
+}
+
+function renderContractDocsCandidates(candidates, name, phone) {
+  if (!candidates || !candidates.length) {
+    editDocsCandidates.innerHTML = '<div style="color:#666; font-size:14px;">No similar folders found either.</div>';
+    return;
+  }
+  editDocsCandidates.innerHTML = '';
+  candidates.forEach((c) => {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex; align-items:center; gap:8px;';
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = 'Use: ' + c.name;
+    btn.style.cssText = 'margin-top:0; flex:1; text-align:left;';
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      const original = btn.textContent;
+      btn.textContent = 'Linking…';
+      try {
+        const res = await fetch('/api/contracts/confirmMatch', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, phone, folderId: c.id })
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || 'Unknown error');
+        renderContractDocsList(data.files || []);
+        editDocsPicker.style.display = 'none';
+        editDocsStatus.textContent = '';
+        editDocsStatus.className = 'status';
+      } catch (err) {
+        btn.disabled = false;
+        btn.textContent = original;
+        editDocsStatus.textContent = 'Could not link that folder: ' + err.message;
+        editDocsStatus.className = 'status err';
+      }
+    });
+    row.appendChild(btn);
+    editDocsCandidates.appendChild(row);
+  });
+}
+
+async function loadContractDocuments(name, phone) {
+  editDocsPicker.style.display = 'none';
+  editDocsList.innerHTML = '';
+  editDocsStatus.textContent = 'Loading documents…';
+  editDocsStatus.className = 'status';
+  if (!name) {
+    editDocsStatus.textContent = '';
+    return;
+  }
+  try {
+    const url = '/api/contracts/documents?name=' + encodeURIComponent(name) + '&phone=' + encodeURIComponent(phone || '');
+    const res = await fetch(url);
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error || 'Unknown error');
+    editDocsStatus.textContent = '';
+    if (data.matched) {
+      renderContractDocsList(data.files || []);
+    } else {
+      renderContractDocsList([]);
+      editDocsPicker.style.display = 'block';
+      renderContractDocsCandidates(data.candidates || [], name, phone);
+    }
+  } catch (err) {
+    editDocsStatus.textContent = 'Could not load documents: ' + err.message;
+    editDocsStatus.className = 'status err';
+  }
+}
+
+// "View Photo of Passport" -- the Documents panel above already loads and
+// shows everything on file as soon as the modal opens, so this just
+// re-fetches (in case something changed) and scrolls the panel into view
+// rather than duplicating a separate lookup.
 const editViewPhotoBtn = document.getElementById('editViewPhotoBtn');
 editViewPhotoBtn.addEventListener('click', async () => {
   if (!currentEditRecord) return;
-
-  if (currentEditRecord.passportPhotoUrl) {
-    window.open(currentEditRecord.passportPhotoUrl, '_blank', 'noopener');
-    return;
-  }
-
-  const originalText = editViewPhotoBtn.textContent;
-  editViewPhotoBtn.disabled = true;
-  editViewPhotoBtn.textContent = 'Searching…';
-  editStatusBox.className = 'status';
-  editStatusBox.textContent = '';
-  try {
-    const res = await fetch(scriptUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({
-        action: 'findPassportPhoto',
-        rowNumber: currentEditRecord.rowNumber,
-        name: currentEditRecord.name,
-        number: currentEditRecord.number,
-        rentingDateFrom: toIsoDateForInput(currentEditRecord.rentingDateFrom)
-      })
-    });
-    const data = await res.json();
-    if (!data.success) throw new Error(data.error || 'Unknown error');
-    currentEditRecord.passportPhotoUrl = data.url;
-    window.open(data.url, '_blank', 'noopener');
-  } catch (err) {
-    editStatusBox.textContent = 'Could not find a photo of the passport: ' + err.message;
-    editStatusBox.className = 'status err';
-  } finally {
-    editViewPhotoBtn.disabled = false;
-    editViewPhotoBtn.textContent = originalText;
-  }
+  document.getElementById('editDocsPanel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  await loadContractDocuments(currentEditRecord.name, currentEditRecord.number);
 });
 
-// "Upload photo" on the edit modal -- action:'uploadPassportPhoto', with
-// rowNumber always known (this contract row already exists). The backend
-// now resolves the folder from this exact row's own stored Doc/PDF/photo
-// links rather than re-matching by name+phone, so it always lands in the
-// one folder this contract's Doc/PDF already live in -- never a new
-// folder, even if the phone number was typed with different spacing back
-// when the folder was first created. If this contract already has a
-// photo of passport on file, the backend refuses to save a second one
-// and reports back the existing link instead -- shown here as an
-// "already on file" message with a link to open it, rather than an
-// error. Uses this record's own name/number/rentingDateFrom, NOT
-// whatever's currently typed in the edit fields below, in case those
-// haven't been saved yet. ----
+// "Upload photo" on the edit modal -- POSTs to /api/contracts/upload,
+// which resolves (or creates) this customer's contract-document folder
+// exactly the way a new contract's bundled upload does (see
+// addContractFromJson's photo handling further down): sidecar-remembered
+// or confidently-matched folder first, live fuzzy search next, brand-new
+// folder only if nobody matches at all -- so a returning customer's photo
+// always lands in the SAME folder as their earlier documents. dateStr
+// comes from this record's own rentingDateFrom (not whatever's currently
+// typed in the form below, in case that hasn't been saved yet), formatted
+// dd-MM-yyyy to match the folder-naming convention. If this exact
+// customer+date already has a passport photo on file, the backend refuses
+// the duplicate and hands back the existing file instead -- shown here as
+// an "already on file" message rather than an error. Refreshes the
+// Documents panel on any successful outcome so view+upload always agree. ----
 const editPassportPhotoInput = document.getElementById('e_passportPhoto');
 const editPassportPhotoUploadBtn = document.getElementById('e_passportPhotoUploadBtn');
 const editPassportPhotoStatusBox = document.getElementById('e_passportPhotoStatusBox');
@@ -3264,34 +3410,31 @@ editPassportPhotoUploadBtn.addEventListener('click', async () => {
   editPassportPhotoStatusBox.textContent = '';
   try {
     const base64 = await readFileAsBase64(file);
-    const res = await fetch(scriptUrl, {
+    const dateStr = isoDateToDashDmy(toIsoDateForInput(currentEditRecord.rentingDateFrom));
+    const res = await fetch('/api/contracts/upload', {
       method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        action: 'uploadPassportPhoto',
-        rowNumber: currentEditRecord.rowNumber,
         name: currentEditRecord.name,
-        number: currentEditRecord.number,
-        rentingDateFrom: toIsoDateForInput(currentEditRecord.rentingDateFrom),
-        passportPhotoBase64: base64,
-        passportPhotoMimeType: file.type || 'image/jpeg'
+        phone: currentEditRecord.number,
+        dateStr,
+        mimeType: file.type || 'image/jpeg',
+        base64
       })
     });
     const data = await res.json();
     if (!data.success && data.alreadyExists) {
-      currentEditRecord.passportPhotoUrl = data.url;
-      editPassportPhotoStatusBox.innerHTML = (data.error || 'A photo of passport is already on file for this contract.') +
-        ' <a href="' + data.url + '" target="_blank" rel="noopener" style="color:inherit; text-decoration:underline; font-weight:600;">Open it</a>';
+      editPassportPhotoStatusBox.textContent = data.error || 'A photo of passport is already on file for this contract.';
       editPassportPhotoStatusBox.className = 'status warn';
       editPassportPhotoInput.value = '';
+      await loadContractDocuments(currentEditRecord.name, currentEditRecord.number);
       return;
     }
     if (!data.success) throw new Error(data.error || 'Unknown error');
-    currentEditRecord.passportPhotoUrl = data.url;
-    editPassportPhotoStatusBox.innerHTML = 'Photo uploaded. <a href="' + data.url +
-      '" target="_blank" rel="noopener" style="color:inherit; text-decoration:underline; font-weight:600;">Open it</a>';
+    editPassportPhotoStatusBox.textContent = 'Photo uploaded.';
     editPassportPhotoStatusBox.className = 'status ok';
     editPassportPhotoInput.value = '';
+    await loadContractDocuments(currentEditRecord.name, currentEditRecord.number);
   } catch (err) {
     editPassportPhotoStatusBox.textContent = 'Could not upload the photo: ' + err.message;
     editPassportPhotoStatusBox.className = 'status err';
@@ -3973,6 +4116,7 @@ function openEditModal(r) {
 
   editStatusBox.className = 'status';
   editBackdrop.classList.add('show');
+  loadContractDocuments(r.name, r.number);
 }
 function closeEditModal() {
   editBackdrop.classList.remove('show');

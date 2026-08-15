@@ -6,6 +6,79 @@ This exists because work on this project gets picked up across multiple
 Claude sessions/accounts with no shared memory between them — this file is
 the handoff.
 
+## ✅ NEW FEATURE, tested, awaiting Anton's push — contract.html: view +
+## upload documents (passport photo, and anything else manually copied in)
+## from the "AA Scooters Contracts" Drive folder, right from the edit-
+## contract modal (2026-08-15)
+
+**What it does:** Anton manually copied his old "AA Scooters Contracts"
+Drive folder (one subfolder per customer, e.g. `01-08-2026 - Mr Yassine
+Zagri - +212 655578462`, hand-copied from the legacy Code.gs app) into this
+app's own Drive folder. This feature links that up: opening any contract in
+the edit modal now shows a **Documents** panel listing everything in that
+customer's subfolder (passport photo shown as a thumbnail, PDFs/other files
+as plain links, each opening via a private proxy route), and the existing
+"Upload photo" field in that same modal now actually uploads a new passport
+photo into that same folder instead of doing nothing. New contracts (the
+Add tab) work the same way — a bundled passport photo now actually uploads
+instead of showing "Passport photo was NOT uploaded" placeholder text.
+
+**Folder matching:** mirrors Code.gs's original `findCustomerContractFolder`/
+`getOrCreateCustomerContractFolder` logic, but FUZZY instead of exact-string
+— Anton's hand-copied folder names aren't always punctuated consistently.
+Matches by normalized name + normalized (digits-only) phone, scored:
+confident (100) only when both name AND phone agree; anything less
+(name-only, phone-only, partial token overlap) is NOT auto-used. When
+nothing's confident, the panel shows a picker of the closest candidate
+folders to choose from instead of a bare "not found" message (Anton's
+explicit choice). Once a match is confirmed — auto-confident OR manually
+picked — it's remembered in a new `contract_docs.json` sidecar (global, not
+year-scoped) so the same customer never has to be re-matched or re-picked
+again, and a NEW contract for a returning customer reuses that same folder
+rather than creating a duplicate one (also Anton's explicit instruction).
+Uploading a second passport photo for the same customer+date is refused
+(mirrors Code.gs's `savePassportPhoto` duplicate guard) and reports the
+existing file instead of silently duplicating it.
+
+**Files changed:** `lib/googleDrive.js` (new fuzzy contract-folder-matching
+helpers: `normalizeContractName`, `normalizeContractPhone`,
+`buildContractMatchKey`, `parseContractFolderName`,
+`scoreContractFolderMatch`, `findContractFolderMatches`,
+`ensureContractsRootFolder`, `ensureContractCustomerFolder`,
+`listAllFilesInFolder`); three new API routes — `api/contracts/documents.js`
+(GET, sidecar-first lookup with live fuzzy fallback), `api/contracts/
+confirmMatch.js` (POST, manual picker confirmation), `api/contracts/
+upload.js` (POST, resolves/creates the folder and uploads, with the
+duplicate-date guard); a new private file-proxy route,
+`api/contracts/file/[fileId].js` (images + PDFs); and `contract.html` (new
+Documents panel in the edit modal, rewired "Upload photo" button, rewired
+Add-tab bundled-photo upload, new `isoDateToDashDmy` date formatter for the
+`dd-MM-yyyy` folder/file-naming convention).
+
+**Testing:** backend covered by a hand-built fake-Drive unit test harness
+(22/22 — confident/messy/no-phone/name-only/phone-only matching, the
+sidecar remember-and-reuse path, the ambiguous-near-duplicate-folder case,
+manual-pick-then-remembered flow, folder-reuse for returning customers,
+duplicate-upload refusal, and end-to-end visibility of a freshly uploaded
+file). One core piece (the confidence-scoring threshold) regression-proofed:
+deliberately broken, confirmed the expected test failed, restored, confirmed
+22/22 green again. UI wiring covered by three Playwright scripts against the
+real `contract.html` (stubbing `/api/auth/session` + the new `/api/
+contracts/*` routes): confident-match rendering (thumbnail + PDF link),
+ambiguous-match picker rendering and "Use this one" → confirmMatch →
+re-render, the edit-modal upload button's real file upload (correct name/
+phone/dateStr/base64 in the request, status message, panel refresh), and
+the Add-tab's bundled-photo upload wiring in `addContractFromJson` (upload
+actually called, `passportPhotoUrl` set on success, no leftover warning).
+All 5 new/changed JS files syntax-checked clean (`node --check`).
+
+**Not done / deliberately out of scope:** contract PDF / receipt / checklist
+generation ("View Contract", "Update Contract", "View Receipt", etc.) is
+untouched — still disconnected, per contract.html's existing three-tier
+deferral comment. This feature is only about viewing/uploading documents
+that already exist or get manually copied into the customer's folder, not
+generating new ones.
+
 ## ✅ FIXED, tested, awaiting Anton's push — bikephotos.html: a bike could
 ## show "has photos" in the coverage check but "No photos yet" when
 ## actually opened (2026-08-15, found live by Anton right after the
@@ -96,12 +169,49 @@ flag. What each page does with it:
   already existed and was just waiting on real `__struck` data (its
   "Backend not updated yet" banner now correctly disappears).
 
-**Backfill needed once this is live:** 5 bikes are currently sold/written
-off in real life but have no note yet (per Anton's screenshot of the real
-sheet) — aerox black, aerox blue, gt silver 2, gt black 6, gt Burgandy. For
-each: Add Bike → find the bike → Sell/Write off → check "Written off" →
-any reason text (e.g. "Sold (historical)") → confirm. Flag-only, no dollar
-amount, no effect on totals.
+**Backfill for the 5 already-sold bikes (2026-08-15, done via seed data
+instead of the UI, per Anton's explicit request):** originally documented
+here as a manual per-bike Add Bike → Sell/Write-off job. Anton asked
+instead for the bundled seed JSON itself to carry these 5 as already-sold,
+so a single "Reset data from latest deploy" click (Settings) picks them all
+up at once — he didn't want to click through Sell/Write-off five times by
+hand. New file `data/bikes_notes.json` (this "sheet" is otherwise a
+runtime-only sidecar Add Bike's Sell/Write-off writes to on demand — see
+the block comment above `readBikeSoldNoteFromJson` in add-bikes.html — not
+normally part of the bundled seed snapshot; bundling one now works cleanly
+because `api/admin/reset.js`'s file loop already writes ANY *.json file it
+finds in `/data` to the matching global filename in Drive, `bikes_notes`
+included, with zero reset.js changes needed) with one `[bikeName,
+{soldAmount:0, soldDate:null, reason:"Sold (historical)"}]` row per bike —
+aerox black, aerox blue, gt silver 2, gt black 6, gt Burgandy, using each
+bike's EXACT name string as it appears in `Parts_and_Oil_change.json`
+(pulled directly off that live file, including its exact stray
+whitespace/casing, e.g. `"gt  black 6 "` with a double space and a
+trailing space) so the fuzzy `bikeNamesMatch` every consumer page already
+uses is guaranteed to hit — no reliance on fuzziness papering over a typo.
+Flag-only (`soldAmount: 0`), no effect on any income total; `soldDate: null`
+since the real historical sale date isn't known (shown as no date rather
+than a misleading fabricated one — every consumer page already treats a
+missing `soldDate` as optional/blank).
+
+**Testing:** verified directly against the live `Parts_and_Oil_change.json`
+staged from Anton's Mac (not a synthetic fixture) — ran the real
+`bikeNamesMatch`/`normalizeBikeName` logic over all 45 bikes on that sheet
+against the new `bikes_notes.json`, confirming exactly these 5 (and no
+others — in particular that "gt silver 2" does NOT also catch "gt silver 1"
+or "Gt 2", since `bikeNamesMatch`'s distinguishing-suffix rule keeps
+same-family numbered bikes apart) come back struck. Also traced
+`api/admin/reset.js`'s file-classifying logic by hand to confirm
+`bikes_notes.json` lands in the global (non-year-scoped, flat-in-app-root)
+branch, not the monthly branch (its `_notes`-suffix special case only
+promotes a MONTH name back to monthly, and "bikes" isn't a month) — i.e.
+it'll be written to exactly the same Drive path `/api/data/bikes_notes`
+already reads from, no reset.js code changes needed at all.
+
+**Files changed:** new `data/bikes_notes.json` only — `_manifest.json`
+deliberately left untouched (it's export_to_json.py's own generated data
+dictionary for real Sheet-tab exports; `bikes_notes` isn't one of those, so
+adding a fake entry there would misrepresent what the manifest documents).
 
 **Also this session, two settings.html/reset requests from Anton:**
 - **"Reset data from latest deploy" now also wipes `transactionLog.json`**
