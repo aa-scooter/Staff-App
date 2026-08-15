@@ -20,41 +20,65 @@ project from 11 to 15. The site kept running fine on the last GOOD
 deployment the whole time — a failed deploy doesn't take down what's
 already live.
 
-**The fix:** collapsed the 4 new contract-document routes (`documents.js`,
-`confirmMatch.js`, `upload.js`, `file/[fileId].js`) into ONE catch-all
-function, `api/contracts/[...path].js`, dispatching on the URL's path
-segments + method internally. Zero client-side change needed —
-`contract.html` still calls the exact same 4 URLs
+**The fix (part 1, same day):** collapsed the 4 new contract-document
+routes (`documents.js`, `confirmMatch.js`, `upload.js`, `file/[fileId].js`)
+into ONE catch-all function, `api/contracts/[...path].js`, dispatching on
+the URL's path segments + method internally. Zero client-side change
+needed — `contract.html` still calls the exact same 4 URLs
 (`/api/contracts/documents`, `/confirmMatch`, `/upload`, `/file/<id>`);
 Vercel's catch-all routing (`[...path]`) matches all of them to this one
-function. Brings the project back to exactly 12 functions (the hard cap,
-zero headroom) — see the note below.
+function. Brought the project back to exactly 12 functions (the hard cap,
+zero headroom at that point).
 
-**⚠️ Headroom is now ZERO.** The next new `api/*.js` file added ANYWHERE in
-this project (not just contracts) will hit this same error again. Two ways
-to add API surface from here on without another deploy failure: (a) always
-fold a new small route into an existing catch-all/dispatcher file instead
-of adding a new top-level `.js` file — `api/contracts/[...path].js` is the
-template to copy; or (b) upgrade the Vercel project to a Pro plan, which
-removes the 12-function cap entirely. Whichever a future session picks,
-check the current function count first (`find api -name "*.js" | wc -l` in
-the repo, or ask the Vercel MCP connector's `list_deployments` /
-`get_deployment` on the latest deploy) before assuming a new route is safe
-to add as its own file.
+**The fix (part 2, same day, per Anton — "trim those twelve down any
+further?"):** also collapsed the 5 `api/photos/*` routes (`list.js`,
+`folders.js`, `upload.js`, `delete.js`, `file/[fileId].js` — bikephotos.html's
+whole backend) into a second catch-all, `api/photos/[...path].js`, same
+pattern, same zero client-side change (bikephotos.html still calls
+`/api/photos/list`, `/folders`, `/upload`, `/delete`, `/file/<id>`
+unchanged). `api/auth/*` (login/session/OAuth callback, 4 files)
+deliberately left AS SEPARATE FILES — discussed with Anton first: it's the
+one place a subtle merge bug could actually lock him out or leak a
+session, not worth merging to save 3 function slots when the safer
+`photos/*` group already bought real headroom. Project is now at 8
+functions (`admin/reset.js`, `auth/*` ×4, `contracts/[...path].js`,
+`data/[sheet].js`, `photos/[...path].js`) — 4 slots of headroom instead of
+zero.
 
-**Testing:** the merge is a pure refactor — no route's request/response
-shape changed. Re-ran the existing 22-test fake-Drive suite unchanged
-against the new consolidated file (still 22/22), and added 7 NEW tests for
-the file-serving route (`/file/<id>`), which had never had test coverage
-even back when it was its own separate file — image success (right bytes +
+**If more headroom is ever needed again:** `api/auth/*` is the only
+remaining group that could still be collapsed the same way — approach it
+carefully (it's the security-sensitive one) or just upgrade to Vercel Pro,
+which removes the 12-function cap entirely for ~$20/mo. Whichever a future
+session picks, check the current function count first (`find api -name
+"*.js" | wc -l` in the repo, or ask the Vercel MCP connector's
+`list_deployments` / `get_deployment` on the latest deploy) before
+assuming a new route is safe to add as its own file.
+
+**Testing:** both merges are pure refactors — no route's request/response
+shape changed. Contracts: re-ran the existing 22-test fake-Drive suite
+unchanged against the new consolidated file (still 22/22), plus 7 NEW
+tests for the file-serving route (`/file/<id>`), which had never had test
+coverage even as its own separate file — image success (right bytes +
 Content-Type), PDF success, a non-servable id (a folder, not a file)
-correctly 404ing instead of trying to stream a folder, and an unknown id
-404ing cleanly. 29/29 total. Syntax-checked clean.
+404ing instead of trying to stream a folder, unknown id 404ing cleanly.
+29/29 total. Photos: built a fresh 30-test fake-Drive suite (this route
+group never had one before) covering the two-fuzzy-matching-folders merge
++ newest-first sort (the exact bikephotos.html "Click red"/"Click red
+(125cc)" scenario), the coverage-check per-folder counts, upload
+creating-vs-reusing the exact-name folder, delete's non-image safety
+guard, and the file route's image-only + trashed + unknown-id 404 paths.
+30/30. Both merges regression-proofed the same way as every other change
+this session: a route deliberately broken, confirmed the exact expected
+tests failed (not unrelated ones), restored, confirmed fully green again.
+Syntax-checked clean.
 
-**Files changed:** new `api/contracts/[...path].js`; deleted
-`api/contracts/documents.js`, `api/contracts/confirmMatch.js`,
-`api/contracts/upload.js`, `api/contracts/file/[fileId].js` (logic moved
-into the new file, not lost).
+**Files changed:** new `api/contracts/[...path].js` and
+`api/photos/[...path].js`; deleted `api/contracts/documents.js`,
+`api/contracts/confirmMatch.js`, `api/contracts/upload.js`,
+`api/contracts/file/[fileId].js`, `api/photos/list.js`,
+`api/photos/folders.js`, `api/photos/upload.js`, `api/photos/delete.js`,
+`api/photos/file/[fileId].js` (logic moved into the two new files, not
+lost).
 
 ## ✅ NEW FEATURE, tested, awaiting Anton's push — contract.html: view +
 ## upload documents (passport photo, and anything else manually copied in)
