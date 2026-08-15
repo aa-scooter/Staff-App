@@ -6,6 +6,92 @@ update its row below in the same commit. This exists because work on this
 project gets picked up across multiple Claude sessions/accounts with no
 shared memory between them — this file is the handoff.
 
+## ✅ DONE, tested, awaiting Anton's push — load/save speed pass:
+## session-cached year folder + concurrent independent sheet fetches
+## (2026-08-14/15, prompted by comparing against a separate project's
+## own past "fifteen seconds every time" fix)
+
+**Why this happened:** Anton flagged the app loading/saving slower than
+he'd like, and specifically asked me to compare against how a *different*
+project of his (a Next.js rental-property app) had fixed the exact same
+complaint before reaching for "connect it to a database" — that project's
+own code comments blamed the slowness on repeatedly re-fetching things
+that don't actually change on every page load, not on the storage format
+itself. The same class of waste turned out to exist here, in two
+independent places. This was a discuss-first, code-second exercise —
+options were laid out, Anton approved options 1 and 2 (of four), and only
+those two were built. Options 3 and 4 (a heavier client-side cache layer,
+and pre-warming data on login) were **not** approved and are **not**
+included here.
+
+**Option 1 — cache the year-folder Drive ID on the session
+(`api/data/[sheet].js`):** every read/write of a monthly sheet
+(`/api/data/July?year=2026`, etc.) was calling `ensureYearFolder`, which
+does a live Drive `files.list` search for that year's subfolder — on
+*every single request*, even though a year's folder ID never changes once
+it exists. This is the same "re-resolve something on every request that's
+actually stable for the life of the session" waste the property-app
+comparison called out as its biggest win (there, via a `COOKIE_FILE_ID`
+cookie). Added `resolveYearFolderId()`, which checks
+`session.driveYearFolders[year]` first and only falls back to the live
+Drive search if that year hasn't been resolved yet in this session; the
+result is then cached onto the session and persisted via
+`setSessionCookie`, exactly the same pattern already used for
+`session.driveFolderId` (the app root). No behavior change from the
+caller's point of view — same folder ID comes back either way, just
+without paying for a Drive search on every request once a year's been
+resolved once. Backward compatible with existing real login cookies that
+don't have a `driveYearFolders` field yet (starts populating it from the
+next request on).
+
+**Option 2 — run independent sheet reads concurrently instead of
+sequentially (`accounts.html`, `add-bikes.html`):** both pages had
+functions that fetched two or three *unrelated* sheets one after another
+with `await`, paying each request's full round-trip time back-to-back for
+no reason — the fetches don't depend on each other's results.
+- `accounts.html`'s `getAccountsDataFromJson()`: the month's rows and its
+  notes sidecar (July/August only) now fetch via `Promise.all` instead of
+  sequential awaits; a notes-fetch failure still degrades gracefully to an
+  empty notes array exactly as before.
+- `add-bikes.html`'s `getBikeDetailsFromJson()`: `Bike_Tax`, `bikes`, and
+  `Operation` now all fire at once instead of one-after-another; the
+  existing best-effort fallback behavior for cost/currentKm if `bikes`/
+  `Operation` fail is unchanged.
+- `add-bikes.html`'s `getBikeIncomeSummaryFromJson()`: `bikes` and
+  `bikes_notes` now fire at once; same notes-failure fallback as before.
+
+No page's data-fetching *logic* changed — only the scheduling of
+already-independent requests. All existing error handling, fallbacks, and
+cache behavior (each page's own in-memory `fetchSheetJson` promise cache)
+are untouched.
+
+**Tested — Option 1:** a from-scratch harness
+(`resolveYearFolderId`/session round-trip, not a shortcut) exercising the
+real, unmodified `api/data/[sheet].js` route end-to-end against an
+in-memory Drive simulator, with a genuine AES-256-GCM encrypted session
+cookie round-tripped exactly like a real browser (send whatever
+`Set-Cookie` the previous response set, on the next request) — 20/20
+passed: first read of a year resolves + caches it (exactly one Drive
+search, a `Set-Cookie` goes out); a second read of a different sheet in
+the same year reuses the cache (zero additional searches); a write reuses
+it too; a different year resolves and caches independently without
+disturbing the first year's cached entry; a global (non-year) sheet never
+triggers a year-folder search at all; a session with no
+`driveYearFolders` field at all (simulating a real pre-existing cookie
+from before this change) still works and starts caching correctly from
+that point; and a full write-then-read-back round trip still matches
+exactly.
+
+**Tested — Option 2:** a real headless-browser (Playwright) suite against
+a mock server with an artificial 150ms per-request delay — 16/16 passed:
+`accounts.html`'s August rows + notes fetches start within ~1ms of each
+other (vs. the 150ms delay, proving genuine concurrency) with correct year
+params, notes-failure resilience, and main-sheet-failure still propagating
+as an error; `add-bikes.html`'s three-way `getBikeDetailsFromJson` fetch
+(Bike_Tax/bikes/Operation) all start together with correct field values
+and Operation-failure resilience; `getBikeIncomeSummaryFromJson`'s
+bikes+bikes_notes fetch also starts together.
+
 ## ✅ DONE, tested, awaiting Anton's push — pricing.html: removed the
 ## leftover client-side login wall, added a "Number of Days" alternative
 ## to the return-date picker (2026-08-14)

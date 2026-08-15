@@ -39,6 +39,7 @@
 // client last read it (see ConflictError in lib/googleDrive.js), and write.
 const { withDrive } = require('../../lib/apiAuth');
 const { readJsonFile, writeJsonFile, ensureAppFolder, ensureYearFolder, ConflictError } = require('../../lib/googleDrive');
+const { setSessionCookie } = require('../../lib/session');
 
 // Vercel's Node runtime auto-parses a JSON request body onto req.body for
 // us -- but a plain Node test harness (or some other runtime) might not,
@@ -84,7 +85,44 @@ function sendJson(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
-module.exports = withDrive(async function handler(req, res, { drive, folderId }) {
+// ---- Resolves a year's Drive subfolder id, preferring a copy already
+// cached on the session over asking Drive again (2026-08-14 perf pass --
+// see PROGRESS.md). This route runs on every single read/write of every
+// monthly sheet, and until now every one of those paid for a live Drive
+// search (ensureYearFolder's own files.list call) even though a year's
+// folder id never changes once it exists -- the exact same class of
+// "re-resolve something on every request that's actually stable for the
+// life of the session" cost that a comparison with another Drive-backed
+// app's own past perf fix (property-app's COOKIE_FILE_ID) called out as
+// its single biggest win. session.driveFolderId (the app root) already
+// gets this treatment via callback.js/apiAuth.js; this extends the same
+// idea to the per-year subfolder.
+//
+// Deliberately cached for the session's full lifetime with no
+// invalidation, same tradeoff session.driveFolderId itself already makes
+// (see apiAuth.js) -- a year folder being deleted/moved out from under a
+// live session would need a fresh sign-in to recover from, but that's
+// never happened in practice and isn't expected to; simplicity here
+// matters more than defending against a hypothetical that hasn't occurred.
+async function resolveYearFolderId(drive, appFolderId, year, session, res) {
+  if (session && session.driveYearFolders && session.driveYearFolders[year]) {
+    return session.driveYearFolders[year];
+  }
+  const folderId = await ensureYearFolder(drive, appFolderId, year);
+  if (session) {
+    session.driveYearFolders = session.driveYearFolders || {};
+    session.driveYearFolders[year] = folderId;
+    // Same "re-persist the cookie the moment session state changes" pattern
+    // apiAuth.js already uses for a rotated access token -- safe to call
+    // even if that same request also refreshes a token, since both write
+    // to this one shared `session` object and setSessionCookie always
+    // serializes its current (superset) contents, not a stale snapshot.
+    if (!res.headersSent) setSessionCookie(res, session);
+  }
+  return folderId;
+}
+
+module.exports = withDrive(async function handler(req, res, { drive, folderId, session }) {
   const url = new URL(req.url, 'https://' + (req.headers.host || 'localhost'));
   const { sheet, year } = parseSheetAndYear(req, url);
 
@@ -103,7 +141,7 @@ module.exports = withDrive(async function handler(req, res, { drive, folderId })
     // and what its filename is -- shared by both GET and POST below so the
     // two can never disagree on the storage location.
     const targetFolderId = year
-      ? await ensureYearFolder(drive, effectiveFolderId, year)
+      ? await resolveYearFolderId(drive, effectiveFolderId, year, session, res)
       : effectiveFolderId;
     const filename = year ? `${sheet}_${year}.json` : `${sheet}.json`;
 

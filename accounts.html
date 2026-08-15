@@ -806,14 +806,24 @@ async function getAccountsDataFromJson(monthIndex, year) {
     return { success: false, monthIndex, month: MONTH_NAMES[monthIndex], error: 'No sheet found matching "' + MONTH_NAMES[monthIndex] + '".' };
   }
 
+  // The month sheet and its notes sidecar are two completely independent
+  // Drive reads -- used to be awaited one after another (rows, then notes),
+  // which meant every accounts.html load paid for both round trips back to
+  // back. Firing them together and awaiting both at once (2026-08-14 perf
+  // pass -- see PROGRESS.md) costs whichever one is slower, not the sum of
+  // both. notesPromise catches its own failure inline (resolving to []) so
+  // Promise.all only ever rejects on the rows read failing, exactly
+  // matching the previous behavior of "notes defaults to [] on error,
+  // doesn't fail the whole function."
   let rows, notes = [];
+  const rowsPromise = fetchSheetJson(fileBase, year);
+  const notesPromise = ACCOUNTS_MONTH_HAS_NOTES[monthIndex]
+    ? fetchSheetJson(fileBase + '_notes', year).catch(() => [])
+    : Promise.resolve([]);
   try {
-    rows = await fetchSheetJson(fileBase, year);
+    [rows, notes] = await Promise.all([rowsPromise, notesPromise]);
   } catch (err) {
     return { success: false, monthIndex, month: MONTH_NAMES[monthIndex], error: 'Could not load data for ' + MONTH_NAMES[monthIndex] + ': ' + err.message };
-  }
-  if (ACCOUNTS_MONTH_HAS_NOTES[monthIndex]) {
-    try { notes = await fetchSheetJson(fileBase + '_notes', year); } catch (err) { notes = []; }
   }
   const noteMap = new Map();
   notes.forEach(([r, c, t]) => noteMap.set(r + ',' + c, t));

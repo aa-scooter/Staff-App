@@ -780,7 +780,25 @@ async function getBikeDetailsFromJson(bikeNameParam) {
     const bikeName = (bikeNameParam || '').toString().trim();
     if (!bikeName) throw new Error('Bike name is required.');
 
-    const taxRows2D = await fetchSheetJson('Bike_Tax');
+    // Bike_Tax, bikes, and Operation are three independent sheet reads --
+    // cost/currentKm below only ever need `bikeName` (already known here),
+    // not anything from the Bike_Tax read, so there's no real reason to
+    // wait for Bike_Tax to finish before even starting the other two. Used
+    // to be three sequential awaits; firing all three now and awaiting each
+    // where it's actually needed (2026-08-14 perf pass -- see PROGRESS.md)
+    // costs whichever is slowest, not the sum of all three. The immediate
+    // .catch(() => {}) on bikes/Operation just marks each promise as
+    // "handled" right away so a rejection landing during the `await
+    // taxPromise` below (before their own try/catch further down actually
+    // runs) can't cause a spurious unhandled-rejection warning -- the real
+    // error handling still happens at each real await, unchanged.
+    const taxPromise = fetchSheetJson('Bike_Tax');
+    const bikesPromise = fetchSheetJson('bikes');
+    const opPromise = fetchSheetJson('Operation');
+    bikesPromise.catch(() => {});
+    opPromise.catch(() => {});
+
+    const taxRows2D = await taxPromise;
     const taxRowIdx = findBikeRowIdxByNameJson(taxRows2D, 1, bikeName, [], 1); // column B = index 1 = Bike
     if (taxRowIdx === -1) {
       throw new Error('"' + bikeName + '" was not found on the "Bike Tax" tab.');
@@ -811,7 +829,7 @@ async function getBikeDetailsFromJson(bikeNameParam) {
 
     // ---- cost, from the "bikes" sheet's income list -- best-effort. ----
     try {
-      const bikesRows2D = await fetchSheetJson('bikes');
+      const bikesRows2D = await bikesPromise;
       const bikesHeaderRow = bikesRows2D[0] || [];
       const bikesStopWords = ['total', 'totals', 'extras', 'deposit'];
       const costCol = findHeaderColIdxJson(bikesHeaderRow, 'cost');
@@ -824,7 +842,7 @@ async function getBikeDetailsFromJson(bikeNameParam) {
 
     // ---- currentKm, from Operation -- same best-effort treatment. ----
     try {
-      const opRows2D = await fetchSheetJson('Operation');
+      const opRows2D = await opPromise;
       const opHeaderRow = opRows2D[0] || [];
       const opBikeCol = findOperationBikeColIdxJson(opHeaderRow);
       const kmCol = findHeaderColIdxJson(opHeaderRow, 'current km');
@@ -844,21 +862,28 @@ async function getBikeDetailsFromJson(bikeNameParam) {
 // ---- action:'bikeIncomeSummary' -> getBikeIncomeSummaryFromJson ----
 async function getBikeIncomeSummaryFromJson() {
   try {
-    const rows2D = await fetchSheetJson('bikes');
-    const headerRow = rows2D[0] || [];
-
+    // bikes and its notes sidecar are independent reads -- fire both at
+    // once instead of one after another (2026-08-14 perf pass -- see
+    // PROGRESS.md). notesPromise's own .catch(() => []) is attached inline
+    // at creation, so it's already "handled" the instant it's created --
+    // no risk of a spurious unhandled-rejection warning even though it
+    // isn't awaited until a couple of lines later.
+    const rowsPromise = fetchSheetJson('bikes');
     // sold/soldAmount/soldDate/reason -- see BIKES_SOLD_NOTE_COL_B and the
     // block comment above for where this note comes from. Best-effort: a
     // missing/unreadable notes file just means every bike reads as "not
     // sold" (same as before this was ported), not a failed request.
-    let soldNoteRows = [];
     // fetchSheetJson resolves to the rows ARRAY directly (see its definition
     // above -- it already unwraps `.rows` from the API response), unlike
     // fetchSheetWithMeta which resolves to {rows, modifiedTime}. An earlier
     // version of this line mistakenly did `(await fetchSheetJson(...)).rows`
     // -- undefined on a plain array -- which silently made every bike read
     // back as "not sold" no matter what was actually in the notes sidecar.
-    try { soldNoteRows = (await fetchSheetJson('bikes_notes')) || []; } catch (e) { soldNoteRows = []; }
+    const notesPromise = fetchSheetJson('bikes_notes').catch(() => []);
+
+    const rows2D = await rowsPromise;
+    const headerRow = rows2D[0] || [];
+    const soldNoteRows = (await notesPromise) || [];
     const soldNoteByRow = new Map();
     soldNoteRows.forEach(n => {
       if (n[1] !== BIKES_SOLD_NOTE_COL_B) return;
