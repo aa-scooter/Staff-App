@@ -6,6 +6,43 @@ This exists because work on this project gets picked up across multiple
 Claude sessions/accounts with no shared memory between them — this file is
 the handoff.
 
+## ⚠️ ROOT CAUSE FOUND, awaiting Anton's push — the "photos/* consolidation"
+## deployment (commit af9d4e3) actually FAILED the 12-function cap it was
+## meant to fix (2026-08-15)
+
+**What happened:** checked the Vercel dashboard (via the Vercel MCP
+connector) after Anton noticed something looked off with the deployment
+list. Commit `af9d4e3` ("Consolidate contracts and photos API routes...")
+shows `state: ERROR`, same `errorCode: exceeded_serverless_functions_per_
+deployment` as the very failure it was supposed to fix. Root cause: the 5
+old `api/photos/*.js` files (`list.js`, `folders.js`, `upload.js`,
+`delete.js`, `file/[fileId].js`) were never actually deleted from the
+repo — the new `api/photos/[...path].js` catch-all was added alongside
+them instead of replacing them, so the function count went from 12 to 13
+instead of down to 8. This was a delivery mistake from that session (files
+were written to Anton's Mac via the device bridge, which can only write —
+it can't delete — and the follow-up `git add -A` + commit never actually
+removed the old files since they were still sitting on disk). Confirmed by
+listing `api/` on Anton's Mac directly: both `photos/[...path].js` AND the
+5 old files are present.
+
+**Consequence:** no downtime — a failed deploy doesn't take down what's
+already live, so production has stayed pinned to the last GOOD deployment
+(commit `749985e`, the contracts-only consolidation, exactly at the
+12-function cap) the whole time. But the "further trim to 8 functions"
+work from earlier today never actually went live, and — more urgently —
+today's newest push (commit `40fe095`, the bike-income.html/
+reply-assistant.html sold-bike fix) builds on top of the still-broken
+13-function state, so it's very likely to hit the exact same deploy error
+once its build finishes (build succeeds, deploy step fails — same no-
+downtime outcome, just another stuck deployment).
+
+**The fix:** `git rm` the 5 leftover old `api/photos/*.js` files for real
+this time (see the exact commands given to Anton) — nothing references
+them anymore since `api/photos/[...path].js` already has all 5 routes'
+logic (tested 30/30 earlier today). This brings the function count back to
+8, matching what was already documented above as the intended end state.
+
 ## ✅ FIXED, tested, awaiting Anton's push — bike-income.html and
 ## reply-assistant.html were the two pages missed by the "sold bikes never
 ## stopped appearing" fix below (2026-08-15)
