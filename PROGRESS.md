@@ -1,10 +1,55 @@
 # AA Scooters — JSON-parity rewrite progress tracker
 
-Last updated: 2026-08-14 (full repo-wide re-audit — see below). Keep this
-file current — whenever a page's write layer gets ported/tested/pushed,
-update its row below in the same commit. This exists because work on this
-project gets picked up across multiple Claude sessions/accounts with no
-shared memory between them — this file is the handoff.
+Last updated: 2026-08-15. Keep this file current — whenever a page's write
+layer gets ported/tested/pushed, update its row below in the same commit.
+This exists because work on this project gets picked up across multiple
+Claude sessions/accounts with no shared memory between them — this file is
+the handoff.
+
+## ✅ FIXED, tested, awaiting Anton's push — accounts.html: summary strip
+## (Total expenses/income, profit, cash & deposits) stayed stale after
+## Add Expense/Income until a manual page reload (2026-08-15, found live
+## by Anton right after the load/save speed pass below)
+
+**The bug:** adding or editing an expense/income entry correctly saved to
+Drive and correctly updated the on-page list right away (via
+`upsertLocalExpense`/`upsertLocalIncome`) — but the summary strip at the
+top (Total expenses, Total income, Profit, Cash & Deposits) is read off
+separate fixed cells the server recalculates during the save
+(`recomputeMonthlySummaryCascadeB`), not derived from that list. Nothing
+ever re-fetched or re-rendered that strip after a save — only a full month
+reload (`loadMonth`, which only runs today on a delete or a rare
+row-insert shift) called `renderSummary` at all. So the numbers you saw
+right after saving were whatever was there before, until a full page
+refresh forced a fresh `loadMonth`.
+
+**The fix:** added `refreshSummaryAfterSave(monthIndex)`, called
+(fire-and-forget, best-effort) right after a successful non-shifted
+Add/Edit in `runPendingPayload`. It re-fetches this month's data — the
+write that just happened already invalidated `accountsJsonCache`'s entry
+for this month (see `writeSheetJson`), so this fetch always hits the
+network and gets the figures the server just recalculated, never a stale
+cached copy — and re-renders just the summary strip via `renderSummary`.
+Guarded against a month switch racing this fetch (if the user clicks to a
+different month before it resolves, the stale response is discarded
+instead of overwriting the month they're now looking at). Deliberately
+NOT awaited/surfaced as an error on failure — the save itself already
+succeeded; a summary-refresh hiccup shouldn't read as a failed save.
+
+**Tested** in a real headless browser (Playwright) against a mock server
+seeded with Anton's actual exported August/cash data (so the real
+`recomputeMonthlySummaryCascadeB` cascade genuinely runs and produces
+real recalculated figures, not canned test values) — 8/8 passed: the
+"Total expenses" figure changes immediately after Add Expense with no
+page reload, and matches old total + the new expense's amount exactly;
+this happens without ever falling back to a full `loadMonth()` reload
+(confirmed by instrumenting it directly — zero calls); the new expense
+still shows correctly in the list (existing behavior, unaffected); and a
+month switch that races the in-flight summary refresh correctly keeps
+showing the month the user switched to, not a late, stale overwrite.
+Confirmed this test suite genuinely catches the bug: re-run against the
+pre-fix code, it fails exactly as expected (totals never change, 0 refresh
+calls); against the fix, 8/8 pass.
 
 ## ✅ DONE, tested, awaiting Anton's push — load/save speed pass:
 ## session-cached year folder + concurrent independent sheet fetches

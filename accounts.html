@@ -3439,6 +3439,21 @@ function upsertLocalIncome(entry) {
   renderIncome(currentIncome);
 }
 
+// Re-fetches just this month's summary strip after a successful add/edit
+// and re-renders it -- see the call site in runPendingPayload for why this
+// is needed (the strip isn't derived from currentExpenses/currentIncome, so
+// upsertLocalExpense/upsertLocalIncome alone never touch it). writeSheetJson
+// already invalidated this month's cache entry as part of the save, so this
+// fetch always goes to the network and gets the figures the server just
+// recalculated -- never a stale cached copy. Guarded against a month switch
+// racing this fetch (the user clicked to a different month before this
+// resolved) by checking the visible month still matches before rendering.
+async function refreshSummaryAfterSave(monthIndex) {
+  const res = await getAccountsDataFromJson(monthIndex, accountsCurrentYear());
+  if (Number(monthSelect.value) !== monthIndex) return; // user moved on -- don't clobber their new view
+  if (res.success) renderSummary(res.summary || null);
+}
+
 // Shared by both Save and Delete -- posts whatever's in pendingPayload, and
 // either finishes normally, shows an error, or (if the server couldn't
 // uniquely match a "cash" sheet row) shows the disambiguation picker above
@@ -3494,6 +3509,19 @@ async function runPendingPayload() {
         paidBy: payload.paidBy,
         bikeSplits: payload.incomeBikeSplits
       });
+    }
+
+    // The list itself is updated locally above (no full reload needed), but
+    // the summary strip (Total expenses/income, profit, cash & deposits) is
+    // NOT derived from that local list -- it's read off fixed cells the
+    // server just recalculated (recomputeMonthlySummaryCascadeB) when it
+    // wrote this save. Without this, the strip kept showing pre-save totals
+    // until the next full page load/reload (Anton reported this 2026-08-15).
+    // Best-effort and guarded against a month switch racing this fetch --
+    // a failure or a stale response here should never surface as a save
+    // error, since the save itself already succeeded.
+    if (!isDelete && !res.shifted) {
+      refreshSummaryAfterSave(payload.monthIndex).catch(() => {});
     }
 
     if (res.warning) {
