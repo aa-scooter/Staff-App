@@ -215,11 +215,15 @@ const scriptUrl = ''; // DISCONNECTED: this Vercel copy is intentionally not wir
 // has no write actions at all. getBikeIncomeSummaryFromJson below is
 // copied verbatim from add-bikes.html (same per-file convention).
 //
-// KNOWN GAP: Code.gs flags a sold bike via strikethrough font formatting,
-// and records soldAmount/soldDate/reason as a JSON note on the same cell --
-// neither survives this app's flat JSON export, so every bike here shows
-// as active (not sold) until sellBike/unsellBike themselves are ported
-// (still deferred on add-bikes.html -- see the block comment there).
+// FIXED 2026-08-15: sold/soldAmount/soldDate/reason now come from the real
+// `bikes_notes` sidecar (Add Bike's Sell/Write-off), same as every other
+// page's sold-bike fix that same day -- this page's own copy of
+// getBikeIncomeSummaryFromJson was simply missed from that pass (it wasn't
+// in that fix's file list) even though add-bikes.html's identical copy
+// already had it. The render()/CSS side (the "sold" row class + line-
+// through name + "Sold" tag) was ALREADY fully built and just sitting
+// unfed -- per Anton, a sold bike stays LISTED here (not hidden), just
+// flagged, since its historical income is still real business data.
 const bikeIncomeJsonCache = {};
 function fetchSheetJson(sheetName, year) {
   const cacheKey = year ? `${year}/${sheetName}` : sheetName;
@@ -267,11 +271,23 @@ function looksLikeBikesSheetLabelJson(raw) {
   if (t === 'expenses' || t === 'expense' || t.indexOf('expense %') === 0) return true;
   return false;
 }
+function normalizeBikeNameForTaxLookup(s) {
+  return (s || '').toString().toLowerCase().replace(/[()]/g, ' ').replace(/[^a-z0-9]+/g, ' ').trim().replace(/\s+/g, ' ');
+}
 // ---- action:'bikeIncomeSummary' -> getBikeIncomeSummaryFromJson ----
 async function getBikeIncomeSummaryFromJson() {
   try {
-    const rows2D = await fetchSheetJson('bikes');
+    const rowsPromise = fetchSheetJson('bikes');
+    const notesPromise = fetchSheetJson('bikes_notes').catch(() => []);
+    const rows2D = await rowsPromise;
     const headerRow = rows2D[0] || [];
+    const soldNoteRows = (await notesPromise) || [];
+    const soldNoteByName = new Map();
+    soldNoteRows.forEach(n => {
+      const key = normalizeBikeNameForTaxLookup(n[0]);
+      if (!key) return;
+      try { soldNoteByName.set(key, JSON.parse(n[1])); } catch (e) { /* ignore unparseable note */ }
+    });
 
     const MONTH_NAMES = ['January','February','March','April','May','June','July','August',
       'September','October','November','December'];
@@ -307,13 +323,16 @@ async function getBikeIncomeSummaryFromJson() {
       const nameLower = name.toLowerCase();
       const isSentinel = (nameLower === 'extras' || nameLower === 'deposit');
 
+      const soldNote = soldNoteByName.get(normalizeBikeNameForTaxLookup(name)) || null;
+      const isSold = !!(soldNote && (soldNote.soldAmount || soldNote.reason));
+
       bikes.push({
         name,
         isSentinel,
-        sold: false,        // KNOWN GAP -- see block comment above
-        soldAmount: null,   // KNOWN GAP
-        soldDate: null,     // KNOWN GAP
-        reason: null,        // KNOWN GAP
+        sold: isSold,
+        soldAmount: (isSold && soldNote.soldAmount) ? Number(soldNote.soldAmount) : null,
+        soldDate: (isSold && soldNote.soldDate) ? soldNote.soldDate : null,
+        reason: (isSold && soldNote.reason) ? soldNote.reason : null,
         cost: num(row[costCol]),
         months: monthCols.map(mc => ({ label: mc.label, amount: num(row[mc.col]) })),
         income: num(row[incomeCol]),

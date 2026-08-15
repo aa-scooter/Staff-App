@@ -6,6 +6,62 @@ This exists because work on this project gets picked up across multiple
 Claude sessions/accounts with no shared memory between them — this file is
 the handoff.
 
+## ✅ FIXED, tested, awaiting Anton's push — bike-income.html and
+## reply-assistant.html were the two pages missed by the "sold bikes never
+## stopped appearing" fix below (2026-08-15)
+
+**What happened:** after the big sold-bikes fix (see the entry further down
+this file), Anton spot-checked the live app and found bikephotos.html
+correct but sold bikes still showing wrong elsewhere. Auditing every page
+that reads `Parts_and_Oil_change` or the "bikes" sheet found exactly two
+pages with their own private copy of the sold-bike-loading logic (per this
+project's no-shared-JS convention) that predate the original fix and were
+never touched by it: **bike-income.html** (`getBikeIncomeSummaryFromJson`
+had `sold: false, soldAmount: null, soldDate: null, reason: null`
+hardcoded) and **reply-assistant.html** (`getPartsDataFromJson` had
+`obj.__struck = false` hardcoded). Every other page — bikes.html,
+contract.html, customers.html, oilchange.html, available-bikes.html,
+bike-name-audit.html, parts.html, add-bikes.html (the source-of-truth
+pattern), bikephotos.html — was confirmed already correctly wired.
+
+**The fix — two different behaviors, per Anton's explicit instruction:**
+bike-income.html now fetches `bikes_notes` in parallel with `bikes` (same
+pattern as add-bikes.html: a `soldNoteByName` Map keyed by
+`normalizeBikeNameForTaxLookup`, since `bikes_notes` is keyed by the exact
+"bikes"-sheet name) and feeds real `sold`/`soldAmount`/`soldDate`/`reason`
+into each bike row. Its render()/CSS (strikethrough name, dimmed row,
+"Sold" tag, sold-bikes-sort-first) was already fully built from earlier
+work and just needed real data — per Anton, **"flag it... have a line
+through it... but I still want it listed there."** reply-assistant.html
+now fetches `bikes_notes` too, but matches fuzzily against
+`Parts_and_Oil_change` names via the page's existing `bikeNamesMatch`
+helper (same pattern as oilchange.html/customers.html) and sets real
+`obj.__struck`, which `loadBikes()`/`renderBikeList()` already filtered on
+— per Anton, **"for reply assistance, just hide it"** — so a sold bike now
+disappears entirely from the "available bikes" suggestion list shown to
+staff drafting a customer reply, matching that function's own pre-existing
+"available only -- not sold, not currently rented" comment.
+
+**Testing:** extracted both pages' new logic (the `bikes_notes` → sold-flag
+computation, and the fuzzy-match → hide filter) into a standalone Node test
+script — 17 tests covering: a sold bike with full sale data gets flagged
+with amount/date; a write-off (reason but no amount) still flags sold; an
+empty/defensive note object doesn't false-positive; no `bikes_notes` data
+at all leaves everything unsold (safe default); an unparseable note row is
+ignored rather than crashing; reply-assistant's fuzzy name matching (a
+shorter `bikes_notes` name against a longer `Parts_and_Oil_change` name)
+still catches the match; the DISTINGUISHING_SUFFIXES guard correctly keeps
+"Scoopy 1" and "Scoopy 2" from cross-matching; and the actual
+available-bikes filter genuinely excludes the sold name while keeping
+everything else. 17/17 passing. Both files also syntax-checked clean
+(every inline `<script>` block parses).
+
+**Files changed:** `bike-income.html` (added `normalizeBikeNameForTaxLookup`
+helper; `getBikeIncomeSummaryFromJson` now fetches `bikes_notes` and
+computes real sold fields instead of hardcoding them); `reply-assistant.html`
+(`getPartsDataFromJson` now fetches `bikes_notes` and computes real
+`__struck` instead of hardcoding `false`).
+
 ## ⚠️ IMPORTANT — this Vercel project is on the Hobby plan: hard cap of 12
 ## Serverless Functions per deployment (2026-08-15)
 
