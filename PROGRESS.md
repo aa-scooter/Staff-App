@@ -6,6 +6,67 @@ This exists because work on this project gets picked up across multiple
 Claude sessions/accounts with no shared memory between them — this file is
 the handoff.
 
+## ⚠️ FIXED (code side), needs a real live Drive re-login test from Anton —
+## bikephotos.html: manually-copied legacy photos still show 0 covered,
+## even after Anton copied them straight into the app's own "Bike Photos"
+## Drive folder (2026-08-15)
+
+**Root cause, confirmed (not just theorized this time):** the app requests
+only the `drive.file` OAuth scope, which per Google's own definition means
+the app can only ever see/read files it created itself, or files the user
+explicitly selected through a Google Picker dialog. A file or folder
+Anton drags/uploads into Drive **through Drive's own web UI** — even
+directly inside the "Bike Photos" folder the app itself created — stays
+completely invisible to the app's `drive.files.list` calls forever. This
+was confirmed live: Anton copied several legacy bike-photo folders
+("freego red (125)", "nmax grey 2 (155)", "rax 1/2/3 (155)", etc.)
+straight into `Bike Photos` via drive.google.com, and bikephotos.html
+still reported 45 needing / 0 with photos — not a bike-name-matching bug
+(`normalizeBikeName` already strips the legacy `(id)` suffix correctly,
+confirmed by reading the matching code), the app genuinely cannot see
+those files at all under `drive.file` alone.
+
+**The fix:** added the `drive.readonly` scope alongside the existing
+`drive.file` scope (`lib/googleDrive.js`, `DRIVE_SCOPES`) — writes
+(uploads, sheet saves) still go through `drive.file` as before, but reads
+can now see anything in the signed-in Drive account, including files
+Anton adds by hand outside the app. Accepted as reasonable for this
+specific app: it's a 2-person internal tool (Anton + his wife) and the
+Drive account being read is the same account using the app — there's no
+other-user privacy boundary being crossed the way there would be for a
+public multi-tenant app, which is what Google's stricter "sensitive
+scope" verification review is actually guarding against. Also tightened
+`ensureAppFolder`'s folder lookup to `'root' in parents` (it was a bare
+name search before) — that was safe by accident under `drive.file` alone
+(nothing else was ever visible to match), but now that reads see the
+whole Drive, pinning it to root rules out ever matching some unrelated
+folder Anton happens to also have named "AA Scooters App Data".
+
+**Cannot be fully tested here** — this is a real Google OAuth consent/
+scope change, not something a mock server can simulate. Syntax-checked
+clean; no other code changes needed (every existing `drive.files.list`
+call automatically starts seeing more once the token itself carries the
+broader scope — nothing about how those calls are written needs to
+change).
+
+**Anton, two things needed from you before this actually takes effect:**
+1. **Google Cloud Console, one-time:** open your project → APIs & Services
+   → OAuth consent screen → "Data access" tab → "Add or remove scopes" →
+   check `.../auth/drive.readonly` ("See and download all your Google
+   Drive files") → Save. Without this step Google will reject the new
+   scope even though it's in the code.
+2. **Log out and log back into the app once.** Existing sessions were
+   granted the old, narrower scope — a fresh login re-triggers the
+   consent screen (it already forces `prompt=consent` every time) and
+   picks up the new one. You may see Google's "unverified app" warning
+   screen during this login if you haven't seen it before — that's
+   expected for an internal tool that hasn't gone through Google's
+   public-app review, click "Advanced" → "Go to (app name)" the same as
+   normal.
+
+After both of those, reload bikephotos.html and the photos you already
+copied in should show up with no further action — no re-uploading needed.
+
 ## ✅ FIXED, tested, awaiting Anton's push — contract.html: renting a bike
 ## logged several separate transaction entries instead of one, and the
 ## bike's own Rented status was never logged at all, so reversing a rental
