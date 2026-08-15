@@ -124,7 +124,7 @@ function maskKey(key) {
 async function callAnthropic({ userText, imageBase64, imageMimeType, maxTokens, storedKey }) {
   const apiKey = storedKey || process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error('No Claude API key is set -- add one in Settings > AI provider, or set ANTHROPIC_API_KEY in Vercel > Settings > Environment Variables.');
-  const model = process.env.ANTHROPIC_MODEL || 'claude-sonnet-5';
+  const model = process.env.ANTHROPIC_MODEL || 'claude-haiku-4-5-20251001';
   const content = [];
   if (imageBase64) {
     content.push({ type: 'image', source: { type: 'base64', media_type: imageMimeType || 'image/jpeg', data: imageBase64 } });
@@ -152,7 +152,7 @@ async function callAnthropic({ userText, imageBase64, imageMimeType, maxTokens, 
 async function callGemini({ userText, imageBase64, imageMimeType, maxTokens, storedKey }) {
   const apiKey = storedKey || process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error('No Gemini API key is set -- add one in Settings > AI provider, or set GEMINI_API_KEY in Vercel > Settings > Environment Variables.');
-  const model = process.env.GEMINI_MODEL || 'gemini-3.7-flash';
+  const model = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
   const parts = [{ text: userText }];
   if (imageBase64) {
     parts.push({ inline_data: { mime_type: imageMimeType || 'image/jpeg', data: imageBase64 } });

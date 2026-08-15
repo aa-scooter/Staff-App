@@ -6,6 +6,34 @@ This exists because work on this project gets picked up across multiple
 Claude sessions/accounts with no shared memory between them — this file is
 the handoff.
 
+## ✅ CHANGE, tested and delivered — switched default AI model tiers per
+## Anton's request: Gemini Flash-Lite, Claude Haiku (2026-08-15)
+
+**What happened:** Anton asked (by voice) to change the fallback models --
+Gemini to "flash-lite" and Claude to the Haiku tier. This is a deliberate
+tier choice, not a bug fix like the HOTFIX entry directly below (that one
+replaced a genuinely dead model; this one swaps to smaller/faster/cheaper
+current models by preference).
+
+**The fix:** `api/ai/[...path].js` fallback defaults changed:
+- `ANTHROPIC_MODEL` fallback: `claude-sonnet-5` → `claude-haiku-4-5-20251001`
+  (fastest Claude tier, confirmed current against
+  `platform.claude.com/docs/en/about-claude/models/overview`).
+- `GEMINI_MODEL` fallback: `gemini-3.7-flash` → `gemini-3.5-flash-lite`
+  (confirmed "Stable" and current against
+  `ai.google.dev/gemini-api/docs/models`).
+
+`ANTHROPIC_MODEL`/`GEMINI_MODEL` env vars in Vercel still override either
+one at any time without a code change, same as before.
+
+**Testing:** re-synced the test harness copy of `api/ai/[...path].js` and
+re-ran the full suite -- 60/60 passing (no test asserts on the specific
+model string, so this was expected). Confirmed the two new model strings
+by direct grep of the shipped file.
+
+**Files changed:** `api/ai/[...path].js` only (two one-line fallback
+changes).
+
 ## ✅ HOTFIX, tested and delivered — the AI feature below went live and
 ## Anton immediately hit a real "model no longer available" error on the
 ## very first live call (2026-08-15)
