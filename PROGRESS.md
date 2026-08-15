@@ -6,6 +6,69 @@ This exists because work on this project gets picked up across multiple
 Claude sessions/accounts with no shared memory between them — this file is
 the handoff.
 
+## ✅ FIXED, tested, awaiting Anton's push — contract.html: renting a bike
+## logged several separate transaction entries instead of one, and the
+## bike's own Rented status was never logged at all, so reversing a rental
+## left the bike stuck showing "Rented" forever (2026-08-15, found live by
+## Anton right after the accounts.html summary-refresh fix below)
+
+**The bug, in two parts:** renting a bike (`customerIntakeFromJson`, the
+function `doRent()`'s "Yes, rent it" button calls once a Pending contract
+is confirmed) writes to several sheets — the customer intake row, the
+month's income row, a cash row (if paid in cash), the bikes sheet's
+running monthly total, sometimes a deposit total or security deposit
+entry, and the Contract sheet's own status cell (Pending → Rented). Several
+of these each logged their **own separate** transaction-log entry, so
+reversing one rental meant clicking "Reverse" several times — exactly what
+Anton reported ("we've divided the two things that have to be reversed...
+I don't want that"). Worse, the single most important write — flipping the
+Contract sheet's status cell to "Rented" — was **never logged at all**, so
+there was no way to reverse it by any means: reversing every entry that
+*was* reversible still left the bike showing "Rented" in both bikes.html
+and this page's own Contract search, because nothing had ever recorded
+what that cell used to say.
+
+**The fix:** every helper function `customerIntakeFromJson` calls
+(`appendMonthlyIncomeRowFromJson`, `appendCashSheetRowFromJson`,
+`addRentalAmountToBikesSheetFromJson`, `processDepositForPaymentFromJson`,
+`logSecurityDepositFromJson`, `markMatchingContractAsRentedFromJson`,
+`syncContractRowTotalsFromJson`) now returns its write descriptor
+(`{sheet, row, cols, before, after}`) instead of logging its own entry (or,
+for the Contract-status flip and the bikes-total update, instead of not
+logging anything at all). `customerIntakeFromJson` collects every one of
+these into a single array — including the customer intake row itself,
+using the same "before = blank cells" convention accounts.html already
+uses for a freshly appended row — and logs it as **one** combined,
+one-click-reversible transaction entry. The existing reversal mechanism in
+settings.html (`executeReversal`) needed no changes at all — it already
+walks a `writes` array applying each item independently regardless of
+which sheet it's on, so this was purely about actually giving it the full
+list. Deliberately NOT included: the customer ledger note (`customer_notes`
+sheet) — it's addressed by [row, col] as data rather than a literal sheet
+cell, gets the same "best-effort, not logged" treatment every other notes
+sidecar write in this app already gets, and doesn't affect money or the
+bike's rented status (the two things a rental reversal actually needs to
+restore).
+
+**Tested** in a real headless browser (Playwright) against a mock server
+with true GET/POST persistence (not canned responses) seeded with Anton's
+real August/cash data (so the real summary cascade genuinely runs) plus a
+synthetic Contract row seeded as "Pending" — 25/25 passed: renting a bike
+produces exactly ONE transaction-log entry (not several) covering the
+customer row, income row, cash row, bikes total, and — critically — the
+Contract status flip with the correct before="Pending"/after="Rented";
+before reversal the bike genuinely shows "Rented" and every sheet reflects
+the rental; reversing it through the REAL settings.html Reverse
+Transactions UI (found the row, clicked it, clicked "Reverse" — the exact
+steps Anton took) restores every single write in one click, including the
+Contract status going back to "Pending" — the specific bug reported — while
+correctly leaving unrelated pre-existing data on the same rows untouched
+(the August/cash sheets pack expense and income blocks side by side on the
+same rows). Confirmed this test suite genuinely catches the original bug:
+re-run with just the Contract-status-flip fix reverted, it fails exactly
+where expected (bike stays "Rented" after reversal) and passes clean
+against the real fix.
+
 ## ✅ FIXED, tested, awaiting Anton's push — accounts.html: summary strip
 ## (Total expenses/income, profit, cash & deposits) stayed stale after
 ## Add Expense/Income until a manual page reload (2026-08-15, found live

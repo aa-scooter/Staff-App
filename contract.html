@@ -2010,11 +2010,21 @@ async function appendMonthlyIncomeRowFromJson(data, dayCount) {
   newRows[targetIdx] = row;
   await writeSheetJson(monthName, newRows, modifiedTime, year);
   await recomputeCurrentMonthSummaryCascadeB();
-  await logTransactionB({
-    page: 'contract.html', action: 'appendMonthlyIncomeRowFromJson', reversible: true,
-    summary: 'Income ' + fmtMoneyB(amountValue) + ' — ' + (incomeText || '(no description)') + (data.name ? (' from ' + data.name) : '') + ' (' + monthName + ' ' + year + ')',
-    writes: [{ sheet: monthName, year: year, row: targetIdx + 1, cols: [6, 7, 8, 9, 10], before: ['', '', '', '', ''], after: [row[5], row[6], row[7], row[8], row[9]] }]
-  });
+  // NOTE (15/08/2026): used to log its own separate transaction-log entry
+  // here. Renting a bike touches several sheets (this income row, a cash
+  // row, the bikes running total, sometimes a deposit total, and --
+  // critically -- the bike's own Rented status on the Contract sheet), and
+  // logging each individually meant reversing a single rental took several
+  // separate clicks and, worse, some of those writes (the Rented status
+  // flip) were never logged at all, so there was no way to reverse them
+  // (Anton reported the bike staying "Rented" after reversing everything
+  // that WAS reversible, 15/08/2026). Now just returns its write
+  // descriptor so customerIntakeFromJson can fold every write a rental
+  // makes into ONE combined, one-click-reversible entry.
+  return {
+    incomeText, amountValue, monthName, year,
+    write: { sheet: monthName, year: year, row: targetIdx + 1, cols: [6, 7, 8, 9, 10], before: ['', '', '', '', ''], after: [row[5], row[6], row[7], row[8], row[9]] }
+  };
 }
 async function appendCashSheetRowFromJson(incomeText, rawAmount) {
   const { rows, modifiedTime } = await fetchSheetWithMeta('cash');
@@ -2033,15 +2043,16 @@ async function appendCashSheetRowFromJson(incomeText, rawAmount) {
   newRows[targetIdx] = row;
   await writeSheetJson('cash', newRows, modifiedTime);
   await recomputeCurrentMonthSummaryCascadeB();
-  await logTransactionB({
-    page: 'contract.html', action: 'appendCashSheetRowFromJson', reversible: true,
-    summary: 'Cash income ' + fmtMoneyB(amountValue) + ' — ' + (incomeText || '(no description)'),
-    writes: [{ sheet: 'cash', year: null, row: targetIdx + 1, cols: [1, 2, 3], before: ['', '', ''], after: [row[0], row[1], row[2]] }]
-  });
+  // NOTE (15/08/2026): see appendMonthlyIncomeRowFromJson's comment -- no
+  // longer logs its own entry, just returns the write descriptor.
+  return {
+    amountValue,
+    write: { sheet: 'cash', year: null, row: targetIdx + 1, cols: [1, 2, 3], before: ['', '', ''], after: [row[0], row[1], row[2]] }
+  };
 }
 async function addRentalAmountToBikesSheetFromJson(bikeModel, rawAmount) {
   const amount = Number(rawAmount);
-  if (rawAmount === '' || rawAmount === null || rawAmount === undefined || isNaN(amount) || amount === 0) return;
+  if (rawAmount === '' || rawAmount === null || rawAmount === undefined || isNaN(amount) || amount === 0) return null;
   const bikeNameTrimmed = (bikeModel || '').toString().trim();
   if (!bikeNameTrimmed) throw new Error('No bike name given -- bike monthly total was NOT updated.');
   const { rows, modifiedTime } = await fetchSheetWithMeta('bikes');
@@ -2067,6 +2078,10 @@ async function addRentalAmountToBikesSheetFromJson(bikeModel, rawAmount) {
   targetRow[colIdx] = (isNaN(current) ? 0 : current) + amount;
   newRows[rowIdx] = targetRow;
   await writeSheetJson('bikes', newRows, modifiedTime);
+  // NOTE (15/08/2026): see appendMonthlyIncomeRowFromJson's comment -- this
+  // write was never logged at all before (so never reversible on its own);
+  // now folded into customerIntakeFromJson's combined rental entry.
+  return { write: { sheet: 'bikes', year: null, row: rowIdx + 1, cols: [colIdx + 1], before: [isNaN(current) ? 0 : current], after: [targetRow[colIdx]] } };
 }
 async function processDepositForPaymentFromJson(paidByLower, rawAmount) {
   const now = new Date();
@@ -2090,11 +2105,11 @@ async function processDepositForPaymentFromJson(paidByLower, rawAmount) {
   newRows[rowIdx] = targetRow;
   await writeSheetJson(monthName, newRows, modifiedTime, year);
   await recomputeCurrentMonthSummaryCascadeB();
-  await logTransactionB({
-    page: 'contract.html', action: 'processDepositForPaymentFromJson', reversible: true,
-    summary: (delta >= 0 ? 'Deposit total +' : 'Deposit total ') + fmtMoneyB(delta) + ' — ' + paidByLower + ' (' + monthName + ' ' + year + ')',
-    writes: [{ sheet: monthName, year: year, row: rowIdx + 1, cols: [13], before: [isNaN(current) ? 0 : current], after: [targetRow[12]] }]
-  });
+  // NOTE (15/08/2026): see appendMonthlyIncomeRowFromJson's comment -- no
+  // longer logs its own entry, just returns the write descriptor.
+  return {
+    write: { sheet: monthName, year: year, row: rowIdx + 1, cols: [13], before: [isNaN(current) ? 0 : current], after: [targetRow[12]] }
+  };
 }
 async function logSecurityDepositFromJson(methodLower, rawAmount, customerName) {
   const categoryKey = methodLower === 'scan' ? 'bank' : methodLower;
@@ -2131,11 +2146,12 @@ async function logSecurityDepositFromJson(methodLower, rawAmount, customerName) 
   newRows[targetIdx] = row;
   await writeSheetJson(monthName, newRows, modifiedTime, year);
   await recomputeCurrentMonthSummaryCascadeB();
-  await logTransactionB({
-    page: 'contract.html', action: 'logSecurityDepositFromJson', reversible: true,
-    summary: cat.label + ' deposit ' + fmtMoneyB(row[cat.amountCol - 1]) + (customerName ? (' — ' + customerName) : '') + ' (' + monthName + ' ' + year + ')',
-    writes: [{ sheet: monthName, year: year, row: targetIdx + 1, cols: [cat.dateCol, cat.amountCol, cat.nameCol], before: ['', '', ''], after: [row[cat.dateCol - 1], row[cat.amountCol - 1], row[cat.nameCol - 1]] }]
-  });
+  // NOTE (15/08/2026): see appendMonthlyIncomeRowFromJson's comment -- no
+  // longer logs its own entry, just returns the write descriptor.
+  return {
+    catLabel: cat.label, monthName, year, amountValue: row[cat.amountCol - 1],
+    write: { sheet: monthName, year: year, row: targetIdx + 1, cols: [cat.dateCol, cat.amountCol, cat.nameCol], before: ['', '', ''], after: [row[cat.dateCol - 1], row[cat.amountCol - 1], row[cat.nameCol - 1]] }
+  };
 }
 async function markMatchingContractAsRentedFromJson(name, bikeModel) {
   const { rows, modifiedTime } = await fetchSheetWithMeta('Contract');
@@ -2150,13 +2166,22 @@ async function markMatchingContractAsRentedFromJson(name, bikeModel) {
     if (rowStatus !== 'pending') continue;
     if (rowName !== nameTarget) continue;
     if (bikeTarget && rowBike && !bikeNamesMatchForTaxLookup(rowBike, bikeTarget)) continue;
+    const priorStatusRaw = rows[i][16]; // capture BEFORE overwriting, for the combined reversal entry below
     const newRows = rows.map(r => r.slice());
     const row = newRows[i].slice();
     while (row.length < 17) row.push('');
     row[16] = 'Rented';
     newRows[i] = row;
     await writeSheetJson('Contract', newRows, modifiedTime);
-    return { found: true, row: i + 1 };
+    // NOTE (15/08/2026): THIS is the write that actually marks the bike as
+    // rented -- and until now it was never logged at all, so there was no
+    // way to reverse it. That's exactly why reversing a rental's income/
+    // cash entries left the bike showing "Rented" forever, and the
+    // Contract search on this page still showing it as an active rental
+    // (Anton reported this live, 15/08/2026). Now returns its write
+    // descriptor so customerIntakeFromJson can fold it into the combined,
+    // one-click rental reversal.
+    return { found: true, row: i + 1, write: { sheet: 'Contract', year: null, row: i + 1, cols: [17], before: [priorStatusRaw], after: ['Rented'] } };
   }
   return { found: false };
 }
@@ -2195,11 +2220,26 @@ async function syncContractRowTotalsFromJson(name, bikeModel, returnDateIso, tot
     const newRows = rows.map(r => r.slice());
     const row = newRows[i].slice();
     while (row.length < 17) row.push('');
-    if (returnDateIso) row[8] = isoDateInputToContractValue(returnDateIso);
-    if (totalAmount !== null && totalAmount !== undefined) row[11] = totalAmount;
+    // Track which cells actually changed (each is independently optional)
+    // so the combined reversal entry below only restores what this call
+    // itself touched.
+    const changedCols = [], before = [], after = [];
+    if (returnDateIso) {
+      before.push(row[8]); changedCols.push(9);
+      row[8] = isoDateInputToContractValue(returnDateIso);
+      after.push(row[8]);
+    }
+    if (totalAmount !== null && totalAmount !== undefined) {
+      before.push(row[11]); changedCols.push(12);
+      row[11] = totalAmount;
+      after.push(row[11]);
+    }
     newRows[i] = row;
     await writeSheetJson('Contract', newRows, modifiedTime);
-    return { found: true, row: i + 1 };
+    // NOTE (15/08/2026): see markMatchingContractAsRentedFromJson's comment
+    // -- returns its write descriptor (if it actually changed anything) for
+    // customerIntakeFromJson's combined rental entry.
+    return { found: true, row: i + 1, write: changedCols.length ? { sheet: 'Contract', year: null, row: i + 1, cols: changedCols, before, after } : null };
   }
   return { found: false };
 }
@@ -2232,6 +2272,19 @@ async function customerIntakeFromJson(data) {
   const newRowNumber = newRows.length;
   await writeSheetJson('customer', newRows, custModifiedTime);
 
+  // Collects every write this one rental makes across every sheet it
+  // touches, so ALL of it logs as ONE combined transaction-log entry
+  // reversible in a single click (see the 15/08/2026 comments on the
+  // helper functions below for why this replaced several separate,
+  // partially-uncovered entries). The customer intake row itself is
+  // included using the same "before = blank cells" convention
+  // accounts.html already uses for a freshly appended row -- reversing
+  // blanks the row in place rather than removing it, same as everywhere
+  // else in this app.
+  const combinedWrites = [
+    { sheet: 'customer', year: null, row: newRowNumber, cols: newRow.map((_, i) => i + 1), before: newRow.map(() => ''), after: newRow.slice() }
+  ];
+
   let dayCount = null;
   if (data.rentingDateFrom && data.returnDate) {
     const from = new Date(data.rentingDateFrom + 'T00:00:00');
@@ -2258,29 +2311,38 @@ async function customerIntakeFromJson(data) {
     ledgerTotals = await appendLedgerEntryFromJson(newRowNumber, data.bikeModel, ledgerFromDmy, ledgerToDmy, ledgerDays, ledgerAmount, ledgerDays, ledgerAmount, carriedNote, !!data.isDeal);
   } catch (ledgerErr) { warnings.push('Ledger note: ' + ledgerErr.message); }
 
-  try { await appendMonthlyIncomeRowFromJson(data, dayCount); }
-  catch (incomeErr) { warnings.push('Income sheet: ' + incomeErr.message); }
+  let totalAmountForSummary = 0;
+  try {
+    const incomeResult = await appendMonthlyIncomeRowFromJson(data, dayCount);
+    if (incomeResult && incomeResult.write) combinedWrites.push(incomeResult.write);
+    if (incomeResult && typeof incomeResult.amountValue === 'number') totalAmountForSummary = incomeResult.amountValue;
+  } catch (incomeErr) { warnings.push('Income sheet: ' + incomeErr.message); }
 
   try {
     if ((data.paidBy || '').toString().trim().toLowerCase() === 'cash') {
-      await appendCashSheetRowFromJson(buildRentalIncomeTextB(data, dayCount), data.totalPrice);
+      const cashResult = await appendCashSheetRowFromJson(buildRentalIncomeTextB(data, dayCount), data.totalPrice);
+      if (cashResult && cashResult.write) combinedWrites.push(cashResult.write);
     }
   } catch (cashErr) { warnings.push('Cash sheet: ' + cashErr.message); }
 
-  try { await addRentalAmountToBikesSheetFromJson(data.bikeModel, data.totalPrice); }
-  catch (bikesErr) { warnings.push(bikesErr.message); }
+  try {
+    const bikesResult = await addRentalAmountToBikesSheetFromJson(data.bikeModel, data.totalPrice);
+    if (bikesResult && bikesResult.write) combinedWrites.push(bikesResult.write);
+  } catch (bikesErr) { warnings.push(bikesErr.message); }
 
   try {
     const paidByLower = (data.paidBy || '').toString().trim().toLowerCase();
     if (paidByLower === 'wise' || paidByLower === 'revolut') {
-      await processDepositForPaymentFromJson(paidByLower, data.totalPrice);
+      const depositResult = await processDepositForPaymentFromJson(paidByLower, data.totalPrice);
+      if (depositResult && depositResult.write) combinedWrites.push(depositResult.write);
     }
   } catch (depositErr) { warnings.push(depositErr.message); }
 
   try {
     const depositMethodLower = (data.deposit || '').toString().trim().toLowerCase();
     if (!isExtendSource && (depositMethodLower === 'scan' || depositMethodLower === 'wise' || depositMethodLower === 'revolut')) {
-      await logSecurityDepositFromJson(depositMethodLower, data.depositAmount, name);
+      const secDepResult = await logSecurityDepositFromJson(depositMethodLower, data.depositAmount, name);
+      if (secDepResult && secDepResult.write) combinedWrites.push(secDepResult.write);
     }
   } catch (secDepErr) { warnings.push(secDepErr.message); }
 
@@ -2288,23 +2350,45 @@ async function customerIntakeFromJson(data) {
     warnings.push('This extension was marked as paid from an existing deposit, but drawing that down automatically is not ported yet -- please adjust the deposit log by hand.');
   }
 
-  try { await markMatchingContractAsRentedFromJson(name, data.bikeModel); }
-  catch (contractStatusErr) { warnings.push('Contract status update: ' + contractStatusErr.message); }
+  try {
+    const contractStatusResult = await markMatchingContractAsRentedFromJson(name, data.bikeModel);
+    if (contractStatusResult && contractStatusResult.write) combinedWrites.push(contractStatusResult.write);
+  } catch (contractStatusErr) { warnings.push('Contract status update: ' + contractStatusErr.message); }
 
   try {
     if (ledgerTotals) {
       const newContractTotal = ledgerTotals.totalAmount;
       const existingMatch = await findRentedContractRowForBackfillFromJson(name, data.bikeModel);
       if (existingMatch && newContractTotal < existingMatch.totalPrice) {
-        await syncContractRowTotalsFromJson(name, data.bikeModel, data.returnDate, null);
+        const syncResult = await syncContractRowTotalsFromJson(name, data.bikeModel, data.returnDate, null);
+        if (syncResult && syncResult.write) combinedWrites.push(syncResult.write);
         warnings.push('Contract totals sync: computed running total (฿' + newContractTotal +
           ') is LESS than Contract row ' + existingMatch.row + '\'s current total price (฿' + existingMatch.totalPrice +
           ') -- skipped overwriting the total price to avoid shrinking it. Please check this customer\'s ledger note by hand.');
       } else {
-        await syncContractRowTotalsFromJson(name, data.bikeModel, data.returnDate, newContractTotal);
+        const syncResult = await syncContractRowTotalsFromJson(name, data.bikeModel, data.returnDate, newContractTotal);
+        if (syncResult && syncResult.write) combinedWrites.push(syncResult.write);
       }
     }
   } catch (contractSyncErr) { warnings.push('Contract totals sync: ' + contractSyncErr.message); }
+
+  // ONE combined, one-click-reversible entry covering every write this
+  // rental made (see the 15/08/2026 comments above) -- deliberately NOT
+  // including the ledger note (customer_notes sheet): it's a free-text
+  // annotation addressed by [row, col] as data rather than a literal sheet
+  // cell, the same "best-effort, not logged" treatment every other notes
+  // sidecar write already gets throughout this app, and it doesn't affect
+  // money or the bike's rented status -- the two things reversing a rental
+  // actually needs to restore.
+  if (combinedWrites.length) {
+    await logTransactionB({
+      page: 'contract.html', action: 'customerIntakeFromJson', reversible: true,
+      summary: (isExtendSource ? 'Extended ' : 'Rented ') + (data.bikeModel || 'bike') + ' to ' + name +
+        ' — ' + fmtMoneyB(totalAmountForSummary) +
+        (dayCount !== null ? (' (' + dayCount + (dayCount === 1 ? ' day' : ' days') + ')') : ''),
+      writes: combinedWrites
+    });
+  }
 
   const responsePayload = { success: true, row: newRowNumber };
   if (warnings.length) responsePayload.warning = warnings.join(' ');
