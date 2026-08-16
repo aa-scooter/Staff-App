@@ -1,10 +1,119 @@
 # AA Scooters — JSON-parity rewrite progress tracker
 
-Last updated: 2026-08-15. Keep this file current — whenever a page's write
+Last updated: 2026-08-16. Keep this file current — whenever a page's write
 layer gets ported/tested/pushed, update its row below in the same commit.
 This exists because work on this project gets picked up across multiple
 Claude sessions/accounts with no shared memory between them — this file is
 the handoff.
+
+## ✅ PERF FIX, tested and delivered — accounts.html "add expense" write
+## chain cut from ~16-18 sequential Drive round trips (~20-25s observed in
+## production logs) down to a smaller, still-correct set of calls (2026-08-16)
+
+**What happened:** Anton reported "add expense" on accounts.html taking
+"around thirty seconds" / "ridiculous" for what should be a simple write.
+He asked for the write process to be explained and broken down BEFORE any
+code changed. Investigation (static call-tracing through every function
+`addExpenseRowFromJson` touches, cross-checked against real Vercel
+production runtime logs via the Vercel MCP connector) confirmed the
+suspicion: every meaningful "side effect" of one add/edit/delete action
+(row write, notes-sidecar edits, cash-sheet append, deposit total, bike
+splits, monthly summary cascade, transaction log) is its own fully
+`await`ed, sequential `fetchSheetWithMeta` + `writeSheetJson` round trip
+against a JSON file on Drive -- a literal 1:1 port of Code.gs functions
+that used to be cheap in-process calls against one open spreadsheet
+object, now each an independent network hop. Real logs showed ~16-18
+sequential calls, ~23s, for one real "add expense" click.
+
+Anton approved 3 "safe wins" to ship now (parallelizing genuinely-
+independent writes, and whether every write even needs the summary
+cascade persisted at all, are BOTH explicitly deferred to a separate
+discussion -- not done here):
+
+1. **`logTransactionB` is now fire-and-forget.** It was already wrapped in
+   its own try/catch that never throws/rejects (comment: "Logging must
+   NEVER fail or delay the write it's describing") -- but every one of its
+   10 call sites still `await`ed it anyway, meaning every write paid for a
+   full extra read+write round trip to `transactionLog` for zero safety
+   benefit. Dropped `await` at all 10 call sites (verified via test T11
+   that a slow log write no longer blocks the calling function's return,
+   and that it still lands on its own afterward).
+
+2. **New `applyMonthNotesEditsFromJson` helper** combines any number of
+   edits to the SAME `<monthName>_notes` sidecar file (insert-shift,
+   bike-splits note, expense-type note) into ONE read + N in-memory edits
+   + ONE write, instead of each edit type doing its own independent
+   read-modify-write back-to-back. Used in `addExpenseRowFromJson` (was up
+   to 3 round trips, now 1) and `addIncomeRowFromJson` (was up to 2, now
+   1), and to merge just the two WRITES (not the separate old-state read)
+   in `editExpenseRowFromJson`. Deliberately did NOT fold `editExpenseRowFromJson`'s/
+   `editIncomeRowFromJson`'s own "read the OLD notes state before
+   overwriting" fetch into the same merged call, even though it touches
+   the same file -- that old-state read feeds `oldTypeKey`/`oldBikeSplits`,
+   which the personal/wages running-total and bike-sheet reversal logic
+   depend on being correct even if the merged write fails; keeping it
+   separate and independently-successful preserves that guarantee exactly.
+   Test T6 specifically forces the merged write to fail and confirms
+   `oldTypeKey` was still read correctly regardless.
+
+3. **Cash-sheet write threading.** `appendCashSheetRowFromJson`,
+   `appendCashExpenseRowFromJson`, `updateCashRowFromJson`, and
+   `deleteCashRowFromJson` now return `{rows, modifiedTime}` (previously
+   nothing usable -- no caller captured their return value before this
+   change, so this is purely additive). `recomputeCashSheetTotalsB` and
+   `recomputeMonthlySummaryCascadeB` now take an optional `knownCash` param
+   -- when the caller just wrote "cash" moments ago in the same request
+   with nothing else touching it in between, the recompute step's own
+   redundant re-read is skipped entirely (the write still always happens,
+   since totals genuinely need recomputing). Threaded through all 7 call
+   sites that can know cash state ahead of the cascade call
+   (`addExpenseRowFromJson`, `addIncomeRowFromJson`, `editExpenseRowFromJson`,
+   `editIncomeRowFromJson`, `deleteExpenseRowFromJson`,
+   `deleteIncomeRowFromJson`, `transferToBankFromJson`). Falls back to a
+   normal fresh read whenever cash wasn't touched or the write that would
+   have told it failed -- fully backward compatible, no caller is forced
+   to pass it.
+
+**Net effect (measured via HTTP call-count assertions in the test suite,
+not just eyeballed):** a plain cash business expense with no bike splits
+went from 12 non-log calls to 9. An edit with a type change, bike-split
+change, and cash update went from 13 to 9 (2 of the cash reads there --
+resolving which cash row to touch, and reading it again to update it --
+are pre-existing and out of scope, not something this pass touches).
+
+**Testing:** built a new from-scratch Node test harness for accounts.html's
+business logic (`/tmp/accountstest/` -- didn't exist before; the project's
+existing `api/*.js` test pattern doesn't reach browser-side `<script>`
+code). Loads the real, unmodified `<script>` block from accounts.html into
+a Node `vm` context with a fake DOM + fake `fetch` backed by an in-memory
+simulator of `/api/data/[sheet].js`'s exact read/write/409-conflict
+semantics (tracks every GET/POST per sheet key so tests can assert on call
+counts, which is the entire point of this pass). 12 test cases, 55
+assertions, covering add/edit/delete expense and income, a forced
+insert-shift, a forced merged-write failure, bulkSetExpenseType (untouched,
+sanity-checked), and the fire-and-forget proof. Regression-proofed by
+breaking each of the 3 changes one at a time (re-added the `await`;
+disabled the bikeSplits branch of the merge; forced the cash recompute to
+always re-read) and confirming exactly the expected tests failed each
+time, then restored and confirmed 55/55 green again.
+
+**Discovered but NOT fixed (flagged for Anton, out of scope for this
+pass):** `deleteCashRowFromJson`'s row-shift (pre-existing code, untouched
+by this change) always cascades its 3 columns to the physical end of the
+"cash" array, which can nudge whatever row happens to hold the "total
+cash" label immediately afterward. `recomputeCashSheetTotalsB` computes
+where it EXPECTS that label from a fixed `+4` offset off the (re-scanned)
+"income" row rather than also re-scanning for "total cash" itself, so a
+delete above the totals block can make the next recompute throw `"cash"
+sheet layout has drifted`. Confirmed via test that this reproduces
+identically on a plain forced fresh read with no `knownCash` involved at
+all -- it's unrelated to this perf pass, not a regression from it. Worth a
+look, but is its own separate piece of work.
+
+**Files changed:** `accounts.html` only.
+
+## ✅ CHANGE, tested and delivered — switched default AI model tiers to
+## Gemini Flash-Lite and Claude Haiku (2026-08-15)
 
 ## ✅ HOTFIX, tested and delivered — live "part.body.pipe is not a
 ## function" error on every real photo upload (contract passport photos

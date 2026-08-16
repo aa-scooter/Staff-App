@@ -1090,6 +1090,18 @@ async function writeSheetJson(sheetName, rows, expectedModifiedTime, year) {
 // else's write landed in the log in between) -- this is a pure append, so
 // re-reading and re-appending is always safe, unlike a real business write
 // where a conflict has to be surfaced rather than silently retried.
+//
+// PERF (15/08/2026): every call site below intentionally does NOT `await`
+// this -- it's fire-and-forget. This function already catches every error
+// internally and never throws/rejects in a way a caller could observe, so
+// awaiting it only ever added pure latency (a full extra read+write round
+// trip, ~1-2s, on top of the write it's describing) for zero safety
+// benefit. This was the single biggest contributor to the ~20-second
+// "add expense" write chain Anton flagged as "ridiculously slow" -- see
+// PROGRESS.md. Not awaiting means a page navigation within ~1s of a save
+// could in principle cut the log write off mid-flight; accepted as a fair
+// trade since the log is a best-effort audit trail, not the transaction
+// itself (which has already fully succeeded by the time this fires).
 async function logTransactionB(entry) {
   try {
     entry.id = 'txn_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
@@ -1408,7 +1420,7 @@ async function processDepositForPaymentFromJson(paidByLower, rawAmount, monthNam
   targetRow[12] = (isNaN(current) ? 0 : current) + delta;
   newRows[rowIdx] = targetRow;
   await writeSheetJson(monthName, newRows, modifiedTime, year);
-  await logTransactionB({
+  logTransactionB({
     page: 'accounts.html', action: 'processDepositForPaymentFromJson', reversible: true,
     summary: (delta >= 0 ? 'Deposit total +' : 'Deposit total ') + fmtMoneyB(delta) + ' — ' + paidByLower + ' (' + monthName + ' ' + year + ')',
     writes: [{ sheet: monthName, year: year, row: rowIdx + 1, cols: [13], before: [isNaN(current) ? 0 : current], after: [targetRow[12]] }]
@@ -1457,7 +1469,7 @@ async function consumeDepositFromJson(cat, depositRow, deductAmount, monthName, 
   }
   newRows[rowIdx] = newRow;
   await writeSheetJson(monthName, newRows, modifiedTime, year);
-  await logTransactionB({
+  logTransactionB({
     page: 'accounts.html', action: 'consumeDepositFromJson', reversible: true,
     summary: 'Spent ' + fmtMoneyB(deductAmount) + ' of ' + cat.label + ' deposit' + (nameVal ? (' — ' + nameVal) : '') + ' (' + monthName + ' ' + year + ')',
     writes: [{ sheet: monthName, year: year, row: rowIdx + 1, cols: [cat.dateCol, cat.amountCol, cat.nameCol], before: [dateVal, amtVal, nameVal], after: [newRow[cat.dateCol - 1], newRow[cat.amountCol - 1], newRow[cat.nameCol - 1]] }]
@@ -1494,13 +1506,19 @@ async function appendCashSheetRowFromJson(incomeText, rawAmount) {
   row[1] = incomeText;
   row[2] = amountValue;
   newRows[targetIdx] = row;
-  await writeSheetJson('cash', newRows, modifiedTime);
-  await logTransactionB({
+  const writeRes = await writeSheetJson('cash', newRows, modifiedTime);
+  logTransactionB({
     page: 'accounts.html', action: 'appendCashSheetRowFromJson', reversible: true,
     summary: 'Cash income ' + fmtMoneyB(amountValue) + ' — ' + (incomeText || '(no description)'),
     writes: [{ sheet: 'cash', year: null, row: targetIdx + 1, cols: [1, 2, 3], before: ['', '', ''], after: [row[0], row[1], row[2]] }]
   });
-  return targetIdx + 1;
+  // PERF (15/08/2026): rows/modifiedTime let a caller that's about to
+  // recompute cash totals anyway skip re-reading "cash" from scratch --
+  // see recomputeCashSheetTotalsB's comment. `row` (the 1-based sheet row
+  // number) is kept as the top-level return shape callers already relied
+  // on before this change (none currently capture the return value at
+  // all, so this is purely additive).
+  return { row: targetIdx + 1, rows: newRows, modifiedTime: writeRes.modifiedTime };
 }
 async function appendCashExpenseRowFromJson(expenseText, rawAmount) {
   const { rows, modifiedTime } = await fetchSheetWithMeta('cash');
@@ -1515,13 +1533,14 @@ async function appendCashExpenseRowFromJson(expenseText, rawAmount) {
   row[5] = expenseText;
   row[6] = amountValue;
   newRows[targetIdx] = row;
-  await writeSheetJson('cash', newRows, modifiedTime);
-  await logTransactionB({
+  const writeRes = await writeSheetJson('cash', newRows, modifiedTime);
+  logTransactionB({
     page: 'accounts.html', action: 'appendCashExpenseRowFromJson', reversible: true,
     summary: 'Cash expense ' + fmtMoneyB(amountValue) + ' — ' + (expenseText || '(no description)'),
     writes: [{ sheet: 'cash', year: null, row: targetIdx + 1, cols: [5, 6, 7], before: ['', '', ''], after: [row[4], row[5], row[6]] }]
   });
-  return targetIdx + 1;
+  // PERF (15/08/2026): see the matching comment in appendCashSheetRowFromJson.
+  return { row: targetIdx + 1, rows: newRows, modifiedTime: writeRes.modifiedTime };
 }
 function accountsTodayIso() {
   const now = new Date();
@@ -1579,7 +1598,9 @@ async function updateCashRowFromJson(cashRow, side, expectedOldText, expectedOld
   row[labelColIdx] = newText;
   row[amountColIdx] = (newAmount === '' || newAmount === undefined || newAmount === null || isNaN(Number(newAmount))) ? '' : Number(newAmount);
   newRows[cashRow - 1] = row;
-  await writeSheetJson('cash', newRows, modifiedTime);
+  const writeRes = await writeSheetJson('cash', newRows, modifiedTime);
+  // PERF (15/08/2026): see the matching comment in appendCashSheetRowFromJson.
+  return { rows: newRows, modifiedTime: writeRes.modifiedTime };
 }
 async function deleteCashRowFromJson(cashRow, side, expectedText, expectedAmount) {
   const { rows, modifiedTime } = await fetchSheetWithMeta('cash');
@@ -1607,7 +1628,9 @@ async function deleteCashRowFromJson(cashRow, side, expectedText, expectedAmount
     row[dateColIdx] = ''; row[labelColIdx] = ''; row[amountColIdx] = '';
     newRows[lastIdx] = row;
   }
-  await writeSheetJson('cash', newRows, modifiedTime);
+  const writeRes = await writeSheetJson('cash', newRows, modifiedTime);
+  // PERF (15/08/2026): see the matching comment in appendCashSheetRowFromJson.
+  return { rows: newRows, modifiedTime: writeRes.modifiedTime };
 }
 
 // ---- Accounts free-row finder (JSON port of getAccountsFreeRow) -- finds
@@ -1788,6 +1811,74 @@ async function setExpenseTypeNoteFromJson(monthName, year, row, typeKeyRaw) {
   await writeSheetJson(notesSheet, filtered, modifiedTime, year);
 }
 
+// PERF (15/08/2026): combines any number of edits to the SAME
+// <monthName>_notes sidecar file into ONE read + N in-memory edits + ONE
+// write, instead of each edit type (shiftNotesForInsertedRowFromJson /
+// setBikeSplitsNoteFromJson / setExpenseTypeNoteFromJson above) doing its
+// own independent read-modify-write against the same file back-to-back.
+// addExpenseRowFromJson/addIncomeRowFromJson used to do up to 3 of these
+// in a row (6 HTTP calls) for what is, in the end, one small JSON file --
+// this cuts that to 2 calls (1 read + 1 write) total.
+//
+// Safe because every edit here touches either a disjoint (row, col) key
+// or, for the shift, a disjoint SLICE of rows (everything >= a given row
+// number) -- applying them in-memory in the same order the separate calls
+// used to run in (shift first, since a freshly-inserted row's own new
+// notes must NOT themselves get caught by that shift) produces an
+// identical final result to running them as separate round trips. As a
+// side effect this also makes the combined edit atomic (all land or none
+// do) instead of independently fallible -- strictly safer than the old
+// partial-success possibility, not a behavior change worth worrying about.
+//
+// opts (all optional):
+//   shiftInsertedRow: { insertedRowNum } -- ports shiftNotesForInsertedRowFromJson.
+//     Applied FIRST, before any of this call's own new notes are written.
+//   bikeSplits: { row, colIdx1, splits } -- ports setBikeSplitsNoteFromJson.
+//   typeNote: { row, typeKeyRaw } -- ports setExpenseTypeNoteFromJson.
+//
+// Returns { oldNoteRows } -- the notes as they stood immediately after any
+// insert-shift but BEFORE this call's own bikeSplits/typeNote edits. NOT
+// intended as a substitute for a caller's own dedicated "read the OLD
+// state before I overwrite it" fetch (see editExpenseRowFromJson/
+// editIncomeRowFromJson, which read old notes state separately, on
+// purpose) -- if this combined write itself fails, the caller only gets
+// the fallback empty array below, which would silently discard a
+// successfully-read old state. That tradeoff is fine for callers (like
+// addExpense/addIncome) that don't need the pre-edit state for anything,
+// but would NOT be fine for edit's old-vs-new comparisons, which is why
+// those keep their own separate, unmerged read.
+async function applyMonthNotesEditsFromJson(monthName, year, opts) {
+  const notesSheet = monthName + '_notes';
+  const { rows: noteRows, modifiedTime } = await fetchSheetWithMeta(notesSheet, year);
+  let working = noteRows || [];
+
+  if (opts && opts.shiftInsertedRow) {
+    const insertedRowNum = opts.shiftInsertedRow.insertedRowNum;
+    working = working.map(n => (n[0] >= insertedRowNum) ? [n[0] + 1, n[1], n[2]] : n);
+  }
+
+  const oldNoteRows = working;
+
+  if (opts && opts.bikeSplits) {
+    const { row, colIdx1, splits } = opts.bikeSplits;
+    const clean = (splits || [])
+      .map(s => ({ bike: (s.bike || '').toString().trim(), amount: (s.amount !== '' && s.amount !== null && s.amount !== undefined && !isNaN(Number(s.amount))) ? Number(s.amount) : '' }))
+      .filter(s => s.bike && s.amount !== '');
+    working = working.filter(n => !(n[0] === row && n[1] === colIdx1));
+    if (clean.length) working = working.concat([[row, colIdx1, JSON.stringify(clean)]]);
+  }
+
+  if (opts && opts.typeNote) {
+    const { row, typeKeyRaw } = opts.typeNote;
+    const typeKey = normalizeExpenseTypeKeyB(typeKeyRaw);
+    working = working.filter(n => !(n[0] === row && n[1] === EXPENSE_TYPE_NOTE_COL_B));
+    if (typeKey !== 'business') working = working.concat([[row, EXPENSE_TYPE_NOTE_COL_B, typeKey]]);
+  }
+
+  await writeSheetJson(notesSheet, working, modifiedTime, year);
+  return { oldNoteRows };
+}
+
 function accountsMonthNameFor(monthIndexRaw) {
   const monthIndex = Math.max(0, Math.min(11, Math.round(Number(monthIndexRaw))));
   const monthName = ACCOUNTS_MONTH_FILES[monthIndex];
@@ -1877,9 +1968,24 @@ function sumColumnRangeB(rows, col, fromRow, toRow) {
 // (C370/G372/G374 in the real workbook -- self-heals off the "income"
 // label since this is a single, non-monthly, ever-growing ledger). Returns
 // the newly-computed "total cash" figure so the monthly cascade below can
-// use it for M3 without a second fetch. ----
-async function recomputeCashSheetTotalsB() {
-  const { rows, modifiedTime } = await fetchSheetWithMeta('cash');
+// use it for M3 without a second fetch.
+//
+// PERF (15/08/2026): optionally accepts `knownCash` -- {rows, modifiedTime}
+// already known to be the CURRENT state of "cash", e.g. because the
+// caller's own appendCash*/update/deleteCashRowFromJson call just wrote it
+// moments ago in this same request, with nothing else touching "cash" in
+// between. When passed, this skips the read entirely instead of doing a
+// second independent read+write against a file that was, until this
+// point, ALWAYS re-read from scratch right after something else had just
+// written it -- one of the two full extra "cash" round trips behind the
+// "add expense" slowness Anton flagged (append + recompute each doing
+// their own read+write back-to-back). Omit (or pass null/undefined) to
+// always read fresh, exactly the old behavior -- fully backward
+// compatible. If the caller doesn't know cash was touched (or the write
+// that would have told it failed), it naturally omits this and a normal
+// fresh read happens, same as before this change existed. ----
+async function recomputeCashSheetTotalsB(knownCash) {
+  const { rows, modifiedTime } = (knownCash && knownCash.rows) ? knownCash : await fetchSheetWithMeta('cash');
   if (!rows || !rows.length) throw new Error('no tab named "cash" was found -- cash totals were NOT recomputed.');
   const norm = s => (s || '').toString().trim().toLowerCase();
   // Starts at row 2 (idx 1) deliberately -- row 1 is the header row, and
@@ -1909,9 +2015,12 @@ async function recomputeCashSheetTotalsB() {
 // ---- Recomputes every derived cell on a monthly sheet's Expenses/Income/
 // Profit/Cash & Deposits summary block, plus the deposit-log column
 // totals at the top of the same sheet. See the big comment above this
-// block for the exact formulas and which cells are deliberately excluded. ----
-async function recomputeMonthlySummaryCascadeB(monthName, year) {
-  const cashTotal = await recomputeCashSheetTotalsB();
+// block for the exact formulas and which cells are deliberately excluded.
+//
+// PERF (15/08/2026): optional trailing `knownCash` is passed straight
+// through to recomputeCashSheetTotalsB -- see that function's comment. ----
+async function recomputeMonthlySummaryCascadeB(monthName, year, knownCash) {
+  const cashTotal = await recomputeCashSheetTotalsB(knownCash);
   const { rows, modifiedTime } = await fetchSheetWithMeta(monthName, year);
   if (!rows || !rows.length) throw new Error('No sheet found for "' + monthName + '" -- summary totals were NOT recomputed.');
   const newRows = rows.map(r => r.slice());
@@ -2014,23 +2123,38 @@ async function addExpenseRowFromJson(data) {
   await writeSheetJson(monthName, newRows, modifiedTime, year);
 
   const warnings = [];
-  // MUST run before any new note is written at `row` below -- shifts
-  // EXISTING notes out of the way first, so a fresh note isn't itself
-  // caught by the same >= row shift. See shiftNotesForInsertedRowFromJson.
-  if (free.inserted) {
-    try { await shiftNotesForInsertedRowFromJson(monthName, year, row); }
-    catch (e) { warnings.push('Notes sidecar row-shift: ' + e.message); }
-  }
-
+  // PERF (15/08/2026): the insert-shift, bike-splits note, and expense-type
+  // note used to each be their own independent read-modify-write against
+  // the SAME <monthName>_notes file (up to 3 round trips back-to-back for
+  // one add). See applyMonthNotesEditsFromJson's own comment for why
+  // combining them into one read+write is safe. Failure is only surfaced
+  // as a warning when a shift was involved (free.inserted) -- matching the
+  // old shift-specific warning, now covering the whole combined write
+  // since a shift that silently fails to happen is a real data-integrity
+  // risk; without an insert, failure stays silent/best-effort, matching
+  // the old bike-splits/type-note behavior exactly.
   const expenseBikeSplits = Array.isArray(data.expenseBikeSplits) ? data.expenseBikeSplits : [];
-  try { await setBikeSplitsNoteFromJson(monthName, year, row, 2, expenseBikeSplits); } catch (e) { /* best-effort, matches live setExpenseBikeSplits which never throws */ }
-  try { await setExpenseTypeNoteFromJson(monthName, year, row, data.expenseType); } catch (e) { /* best-effort -- matches live applyExpenseTypeColor which never throws */ }
+  try {
+    await applyMonthNotesEditsFromJson(monthName, year, {
+      shiftInsertedRow: free.inserted ? { insertedRowNum: row } : null,
+      bikeSplits: { row, colIdx1: 2, splits: expenseBikeSplits },
+      typeNote: { row, typeKeyRaw: data.expenseType }
+    });
+  } catch (e) {
+    if (free.inserted) warnings.push('Notes sidecar: ' + e.message);
+  }
 
   const paymentLower = (data.payment || '').toString().trim().toLowerCase();
   const expenseTypeKey = normalizeExpenseTypeKeyB(data.expenseType);
 
+  // PERF (15/08/2026): captures the cash-sheet append's own write result
+  // (rows + fresh modifiedTime) so recomputeMonthlySummaryCascadeB below
+  // can skip re-reading "cash" from scratch -- see recomputeCashSheetTotalsB's
+  // comment. Stays null (falls back to a fresh read) if payment wasn't
+  // cash, or if the append itself failed.
+  let knownCash = null;
   try {
-    if (paymentLower === 'cash') await appendCashExpenseRowFromJson(data.expense || '', data.amount);
+    if (paymentLower === 'cash') knownCash = await appendCashExpenseRowFromJson(data.expense || '', data.amount);
   } catch (cashErr) { warnings.push('Cash sheet: ' + cashErr.message); }
 
   try {
@@ -2058,10 +2182,10 @@ async function addExpenseRowFromJson(data) {
   }
   if (bikeWarnings.length) warnings.push('Bikes sheet (expense): ' + bikeWarnings.join(' '));
 
-  try { await recomputeMonthlySummaryCascadeB(monthName, year); }
+  try { await recomputeMonthlySummaryCascadeB(monthName, year, knownCash); }
   catch (cascadeErr) { warnings.push('Summary totals: ' + cascadeErr.message); }
 
-  await logTransactionB({
+  logTransactionB({
     page: 'accounts.html', action: 'addExpenseRowFromJson', reversible: true,
     summary: 'Expense ' + fmtMoneyB(amountVal) + ' — ' + (data.expense || '(no description)') + ' (' + monthName + ' ' + year + ')',
     writes: [{ sheet: monthName, year: year, row: row, cols: [1, 2, 3, 4], before: ['', '', '', ''], after: [r[0], r[1], r[2], r[3]] }]
@@ -2095,21 +2219,27 @@ async function addIncomeRowFromJson(data) {
   await writeSheetJson(monthName, newRows, modifiedTime, year);
 
   const warnings = [];
-  // See shiftNotesForInsertedRowFromJson's comment in addExpenseRowFromJson
-  // -- same insert-shift fix, needed here too since findAccountsFreeRowIdxJson
-  // is shared between the expense and income add paths.
-  if (free.inserted) {
-    try { await shiftNotesForInsertedRowFromJson(monthName, year, row); }
-    catch (e) { warnings.push('Notes sidecar row-shift: ' + e.message); }
-  }
-
+  // PERF (15/08/2026): see applyMonthNotesEditsFromJson's comment / the
+  // matching change in addExpenseRowFromJson -- same insert-shift +
+  // bike-splits-note merge, needed here too since findAccountsFreeRowIdxJson
+  // is shared between the expense and income add paths. No type-note
+  // concept on the income side, so that opt is simply omitted.
   const incomeBikeSplits = resolveIncomeBikeSplitsB(data.incomeBikeSplits, data.amount);
-  try { await setBikeSplitsNoteFromJson(monthName, year, row, 7, incomeBikeSplits); } catch (e) { /* best-effort */ }
+  try {
+    await applyMonthNotesEditsFromJson(monthName, year, {
+      shiftInsertedRow: free.inserted ? { insertedRowNum: row } : null,
+      bikeSplits: { row, colIdx1: 7, splits: incomeBikeSplits }
+    });
+  } catch (e) {
+    if (free.inserted) warnings.push('Notes sidecar: ' + e.message);
+  }
 
   const paidByLower = (data.paidBy || '').toString().trim().toLowerCase();
 
+  // PERF (15/08/2026): see the matching comment in addExpenseRowFromJson.
+  let knownCash = null;
   try {
-    if (paidByLower === 'cash') await appendCashSheetRowFromJson((data.income || '').toString().trim(), data.amount);
+    if (paidByLower === 'cash') knownCash = await appendCashSheetRowFromJson((data.income || '').toString().trim(), data.amount);
   } catch (cashErr) { warnings.push('Cash sheet: ' + cashErr.message); }
 
   try {
@@ -2133,10 +2263,10 @@ async function addIncomeRowFromJson(data) {
   }
   if (bikeWarnings.length) warnings.push('Bikes sheet (income): ' + bikeWarnings.join(' '));
 
-  try { await recomputeMonthlySummaryCascadeB(monthName, year); }
+  try { await recomputeMonthlySummaryCascadeB(monthName, year, knownCash); }
   catch (cascadeErr) { warnings.push('Summary totals: ' + cascadeErr.message); }
 
-  await logTransactionB({
+  logTransactionB({
     page: 'accounts.html', action: 'addIncomeRowFromJson', reversible: true,
     summary: 'Income ' + fmtMoneyB(amountVal) + ' — ' + (data.income || '(no description)') + (data.name ? (' from ' + data.name) : '') + ' (' + monthName + ' ' + year + ')',
     writes: [{ sheet: monthName, year: year, row: row, cols: [6, 7, 8, 9, 10], before: ['', '', '', '', ''], after: [r[5], r[6], r[7], r[8], r[9]] }]
@@ -2206,8 +2336,21 @@ async function editExpenseRowFromJson(data) {
   newRows[row - 1] = r;
   await writeSheetJson(monthName, newRows, modifiedTime, year);
 
-  try { await setBikeSplitsNoteFromJson(monthName, year, row, 2, newBikeSplits); } catch (e) { /* best-effort */ }
-  try { await setExpenseTypeNoteFromJson(monthName, year, row, data.expenseType); } catch (e) { /* best-effort */ }
+  // PERF (15/08/2026): merges these two independent read-modify-writes
+  // against the same <monthName>_notes file into one -- see
+  // applyMonthNotesEditsFromJson's comment. Deliberately does NOT also
+  // fold in this function's OWN earlier "read old notes state" fetch
+  // above (oldNoteRows) -- that read feeds oldTypeKey/oldBikeSplits, which
+  // downstream financial logic (personal/wages total, bike-sheet reversal)
+  // depends on being correct even if THIS write fails; keeping it a
+  // separate, always-independently-successful read preserves that
+  // guarantee exactly as before.
+  try {
+    await applyMonthNotesEditsFromJson(monthName, year, {
+      bikeSplits: { row, colIdx1: 2, splits: newBikeSplits },
+      typeNote: { row, typeKeyRaw: data.expenseType }
+    });
+  } catch (e) { /* best-effort */ }
 
   const warnings = [];
 
@@ -2240,22 +2383,28 @@ async function editExpenseRowFromJson(data) {
     }
   }
 
+  // PERF (15/08/2026): captures whichever cash-sheet write actually ran
+  // (at most one of these three branches touches "cash") so
+  // recomputeMonthlySummaryCascadeB below can skip re-reading it -- see
+  // recomputeCashSheetTotalsB's comment. Stays null if no branch touched
+  // cash, or if the one that did failed.
+  let knownCash = null;
   try {
     if (wasCash && isCash) {
       if (resolvedOldCashRow) {
-        await updateCashRowFromJson(resolvedOldCashRow, 'expense', oldExpense, oldAmount, newExpenseText, newAmount);
+        knownCash = await updateCashRowFromJson(resolvedOldCashRow, 'expense', oldExpense, oldAmount, newExpenseText, newAmount);
       } else {
-        await appendCashExpenseRowFromJson(newExpenseText, newAmount);
+        knownCash = await appendCashExpenseRowFromJson(newExpenseText, newAmount);
         warnings.push('Could not find a matching "cash" sheet row for this entry -- a NEW cash row was added for the updated amount instead. Please check the "cash" sheet for a possible duplicate.');
       }
     } else if (wasCash && !isCash) {
       if (resolvedOldCashRow) {
-        await deleteCashRowFromJson(resolvedOldCashRow, 'expense', oldExpense, oldAmount);
+        knownCash = await deleteCashRowFromJson(resolvedOldCashRow, 'expense', oldExpense, oldAmount);
       } else {
         warnings.push('Could not find a matching "cash" sheet row for this entry -- if it logged one, please remove it manually.');
       }
     } else if (!wasCash && isCash) {
-      await appendCashExpenseRowFromJson(newExpenseText, newAmount);
+      knownCash = await appendCashExpenseRowFromJson(newExpenseText, newAmount);
     }
   } catch (cashErr) { warnings.push('Cash sheet: ' + cashErr.message); }
 
@@ -2270,10 +2419,10 @@ async function editExpenseRowFromJson(data) {
     }
   } catch (e) { warnings.push('Deposit total (applying new): ' + e.message); }
 
-  try { await recomputeMonthlySummaryCascadeB(monthName, year); }
+  try { await recomputeMonthlySummaryCascadeB(monthName, year, knownCash); }
   catch (cascadeErr) { warnings.push('Summary totals: ' + cascadeErr.message); }
 
-  await logTransactionB({
+  logTransactionB({
     page: 'accounts.html', action: 'editExpenseRowFromJson', reversible: true,
     summary: 'Edited expense ' + fmtMoneyB(oldAmount) + ' → ' + fmtMoneyB(newAmount) + ' — ' + (newExpenseText || oldExpense || '(no description)') + ' (' + monthName + ' ' + year + ')',
     writes: [{ sheet: monthName, year: year, row: row, cols: [1, 2, 3, 4], before: [existing[0], existing[1], existing[2], existing[3]], after: [r[0], r[1], r[2], r[3]] }]
@@ -2371,22 +2520,24 @@ async function editIncomeRowFromJson(data) {
     if (addWarnings.length) warnings.push('Bikes sheet (adding new income split): ' + addWarnings.join(' '));
   }
 
+  // PERF (15/08/2026): see the matching comment in editExpenseRowFromJson.
+  let knownCash = null;
   try {
     if (wasCash && isCash) {
       if (resolvedOldCashRow) {
-        await updateCashRowFromJson(resolvedOldCashRow, 'income', oldIncome, oldAmount, newIncomeText, newAmount);
+        knownCash = await updateCashRowFromJson(resolvedOldCashRow, 'income', oldIncome, oldAmount, newIncomeText, newAmount);
       } else {
-        await appendCashSheetRowFromJson(newIncomeText, newAmount);
+        knownCash = await appendCashSheetRowFromJson(newIncomeText, newAmount);
         warnings.push('Could not find a matching "cash" sheet row for this entry -- a NEW cash row was added for the updated amount instead. Please check the "cash" sheet for a possible duplicate.');
       }
     } else if (wasCash && !isCash) {
       if (resolvedOldCashRow) {
-        await deleteCashRowFromJson(resolvedOldCashRow, 'income', oldIncome, oldAmount);
+        knownCash = await deleteCashRowFromJson(resolvedOldCashRow, 'income', oldIncome, oldAmount);
       } else {
         warnings.push('Could not find a matching "cash" sheet row for this entry -- if it logged one, please remove it manually.');
       }
     } else if (!wasCash && isCash) {
-      await appendCashSheetRowFromJson(newIncomeText, newAmount);
+      knownCash = await appendCashSheetRowFromJson(newIncomeText, newAmount);
     }
   } catch (cashErr) { warnings.push('Cash sheet: ' + cashErr.message); }
 
@@ -2401,10 +2552,10 @@ async function editIncomeRowFromJson(data) {
     }
   } catch (e) { warnings.push('Deposit total (applying new): ' + e.message); }
 
-  try { await recomputeMonthlySummaryCascadeB(monthName, year); }
+  try { await recomputeMonthlySummaryCascadeB(monthName, year, knownCash); }
   catch (cascadeErr) { warnings.push('Summary totals: ' + cascadeErr.message); }
 
-  await logTransactionB({
+  logTransactionB({
     page: 'accounts.html', action: 'editIncomeRowFromJson', reversible: true,
     summary: 'Edited income ' + fmtMoneyB(oldAmount) + ' → ' + fmtMoneyB(newAmount) + ' — ' + (newIncomeText || oldIncome || '(no description)') + (data.name ? (' from ' + data.name) : '') + ' (' + monthName + ' ' + year + ')',
     writes: [{ sheet: monthName, year: year, row: row, cols: [6, 7, 8, 9, 10], before: [existing[5], existing[6], existing[7], existing[8], existing[9]], after: [r[5], r[6], r[7], r[8], r[9]] }]
@@ -2453,9 +2604,13 @@ async function deleteExpenseRowFromJson(data) {
   }
 
   const warnings = [];
+  // PERF (15/08/2026): see the matching comment in editExpenseRowFromJson.
+  // Nothing between here and the recompute call below touches "cash"
+  // again, so this stays valid all the way down.
+  let knownCash = null;
   try {
     if (paymentLower === 'cash') {
-      if (resolvedCashRow) await deleteCashRowFromJson(resolvedCashRow, 'expense', expense, amount);
+      if (resolvedCashRow) knownCash = await deleteCashRowFromJson(resolvedCashRow, 'expense', expense, amount);
       else warnings.push('Could not find a matching "cash" sheet row for this entry -- if it logged one, please remove it manually.');
     }
   } catch (e) { warnings.push('Cash sheet: ' + e.message); }
@@ -2513,10 +2668,10 @@ async function deleteExpenseRowFromJson(data) {
     await writeSheetJson(notesSheet, shifted, nmt, year);
   } catch (e) { /* best-effort */ }
 
-  try { await recomputeMonthlySummaryCascadeB(monthName, year); }
+  try { await recomputeMonthlySummaryCascadeB(monthName, year, knownCash); }
   catch (cascadeErr) { warnings.push('Summary totals: ' + cascadeErr.message); }
 
-  await logTransactionB({
+  logTransactionB({
     page: 'accounts.html', action: 'deleteExpenseRowFromJson', reversible: false,
     summary: 'Deleted expense ' + fmtMoneyB(amount) + ' — ' + (expense || '(no description)') + ' (' + monthName + ' ' + year + ')',
     writes: [{ sheet: monthName, year: year, row: row, cols: [1, 2, 3, 4], before: [existing[0], existing[1], existing[2], existing[3]], after: ['', '', '', ''], note: 'Row was removed with a shift-up of everything below it -- not auto-reversible yet. Before-values kept here for manual reference.' }]
@@ -2563,9 +2718,11 @@ async function deleteIncomeRowFromJson(data) {
   }
 
   const warnings = [];
+  // PERF (15/08/2026): see the matching comment in deleteExpenseRowFromJson.
+  let knownCash = null;
   try {
     if (paidByLower === 'cash') {
-      if (resolvedCashRow) await deleteCashRowFromJson(resolvedCashRow, 'income', income, amount);
+      if (resolvedCashRow) knownCash = await deleteCashRowFromJson(resolvedCashRow, 'income', income, amount);
       else warnings.push('Could not find a matching "cash" sheet row for this entry -- if it logged one, please remove it manually.');
     }
   } catch (e) { warnings.push('Cash sheet: ' + e.message); }
@@ -2612,10 +2769,10 @@ async function deleteIncomeRowFromJson(data) {
     await writeSheetJson(notesSheet, shifted, nmt, year);
   } catch (e) { /* best-effort */ }
 
-  try { await recomputeMonthlySummaryCascadeB(monthName, year); }
+  try { await recomputeMonthlySummaryCascadeB(monthName, year, knownCash); }
   catch (cascadeErr) { warnings.push('Summary totals: ' + cascadeErr.message); }
 
-  await logTransactionB({
+  logTransactionB({
     page: 'accounts.html', action: 'deleteIncomeRowFromJson', reversible: false,
     summary: 'Deleted income ' + fmtMoneyB(amount) + ' — ' + (income || '(no description)') + ' (' + monthName + ' ' + year + ')',
     writes: [{ sheet: monthName, year: year, row: row, cols: [6, 7, 8, 9, 10, 11], before: [existing[5], existing[6], existing[7], existing[8], existing[9], existing[10]], after: ['', '', '', '', '', ''], note: 'Row was removed with a shift-up of everything below it -- not auto-reversible yet. Before-values kept here for manual reference.' }]
@@ -2709,8 +2866,10 @@ async function transferToBankFromJson(data) {
   const year = accountsCurrentYear();
 
   const warnings = [];
+  // PERF (15/08/2026): see the matching comment in editExpenseRowFromJson.
+  let knownCash = null;
   if (source === 'cash') {
-    try { await appendCashExpenseRowFromJson('Deposit to Bank', amount); }
+    try { knownCash = await appendCashExpenseRowFromJson('Deposit to Bank', amount); }
     catch (e) { warnings.push('Cash sheet: ' + e.message); }
   } else {
     try { await processDepositForPaymentFromJson(source, -amount, monthName, year); }
@@ -2722,7 +2881,7 @@ async function transferToBankFromJson(data) {
   // depend on, so the balance readback just below would otherwise still
   // show a frozen figure even though the underlying transfer succeeded.
   if (monthName) {
-    try { await recomputeMonthlySummaryCascadeB(monthName, year); }
+    try { await recomputeMonthlySummaryCascadeB(monthName, year, knownCash); }
     catch (cascadeErr) { warnings.push('Summary totals: ' + cascadeErr.message); }
   }
 
