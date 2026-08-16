@@ -597,22 +597,52 @@ async function getRatesDataFromJson() {
 // upgrades to live numbers once (if) this resolves -- so staff on a bad
 // connection, or fully offline via the installed PWA, still get a working
 // calculator, just possibly with a stale price on some day/category combos.
+// ---- Read-side stale-while-revalidate cache (ported from accounts.html's
+// loadMonth() cache, 2026-08-16 rollout -- see PROGRESS.md "NEXT UP" entry).
+// This page already had its OWN version of "instant + background refresh"
+// baked in from the start (RATES_FALLBACK, since it's an installable
+// offline-capable PWA) -- this just upgrades that starting point from a
+// hardcoded fallback table to the last real LIVE rates this device
+// actually saw, which is very likely closer to today's real prices than
+// the hardcoded fallback is. No write actions on this page (read-only
+// calculator) -- no invalidation call site needed. ----
+const PRICING_RATES_CACHE_KEY = 'aaPricingRatesCache';
+function readPricingRatesCache() {
+  try {
+    const raw = localStorage.getItem(PRICING_RATES_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || !isValidRatesTable(parsed.rates)) return null;
+    return parsed;
+  } catch (e) { return null; }
+}
+function writePricingRatesCache(rates) {
+  try { localStorage.setItem(PRICING_RATES_CACHE_KEY, JSON.stringify({ rates, cachedAt: Date.now() })); } catch (e) {}
+}
+
 function loadLiveRates() {
   const statusEl = document.getElementById('ratesStatus');
+  const cached = readPricingRatesCache();
+  if (cached) {
+    RATES = cached.rates; // last real live rates this device saw -- better starting point than RATES_FALLBACK
+  }
   getRatesDataFromJson()
     .then(res => {
       if (res && res.success && isValidRatesTable(res.rates)) {
         RATES = res.rates;
         statusEl.style.display = 'none';
+        writePricingRatesCache(res.rates);
       } else {
         statusEl.textContent = 'Could not refresh pricing from the sheet' +
           (res && res.error ? ' (' + res.error + ')' : '') +
-          ' — showing last-known rates, which may be out of date.';
+          (cached ? ' — showing rates last saved on this device.' : ' — showing last-known rates, which may be out of date.');
         statusEl.style.display = 'block';
       }
     })
     .catch(() => {
-      statusEl.textContent = 'Offline — showing last-known rates, which may be out of date.';
+      statusEl.textContent = cached
+        ? 'Offline — showing rates last saved on this device.'
+        : 'Offline — showing last-known rates, which may be out of date.';
       statusEl.style.display = 'block';
     });
 }

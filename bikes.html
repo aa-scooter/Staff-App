@@ -2937,16 +2937,61 @@ let bikeNames = [];    // list of bike name strings, alphabetically sorted
 let customerRows = null;
 let categoryRows = []; // bike -> category text, from the Bike Tax tab (for auto-pricing extensions)
 
-function setLoadStatus(msg) {
+function setLoadStatus(msg, isError) {
   const el = document.getElementById('loadStatus');
   if (!msg) { el.classList.remove('show'); return; }
   el.textContent = msg;
   el.classList.add('show');
 }
 
-function loadData() {
-  setLoadStatus('Loading bikes…');
+// ---- Read-side stale-while-revalidate cache (ported from accounts.html's
+// loadMonth() cache, 2026-08-16 rollout -- see PROGRESS.md "NEXT UP" entry
+// for the full pattern writeup). bikes.html has no "month" scope like
+// accounts.html does -- loadData() loads one flat snapshot (bike names/
+// categories/rates/customer rows) every time, so the cache key is just a
+// single fixed constant, not parameterized. Same safety story as
+// accounts.html: this is a purely-display cache: every real write below
+// (Return/Extend/Swap/Deposit/etc.) still reads fresh from Drive and
+// conflict-checks at write time, so a save is never based on what this
+// cache happens to be showing -- worst case is a few-seconds-stale render
+// before the background refresh (or the write's own post-write loadData()
+// call) catches up. ----
+const BIKES_CACHE_KEY = 'aaBikesDataCache';
+function readBikesCache() {
+  try {
+    const raw = localStorage.getItem(BIKES_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || !Array.isArray(parsed.bikeNames)) return null;
+    return parsed;
+  } catch (e) { return null; }
+}
+function writeBikesCache(snapshot) {
+  try {
+    localStorage.setItem(BIKES_CACHE_KEY, JSON.stringify({
+      bikeNames: snapshot.bikeNames,
+      categoryRows: snapshot.categoryRows,
+      RATES: snapshot.RATES,
+      ratesStale: snapshot.ratesStale,
+      customerRows: snapshot.customerRows,
+      cachedAt: Date.now()
+    }));
+  } catch (e) { /* localStorage full/unavailable -- best-effort only */ }
+}
+function clearBikesCache() {
+  try { localStorage.removeItem(BIKES_CACHE_KEY); } catch (e) {}
+}
+function timeAgoLabel(ms) {
+  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  if (s < 5) return 'just now';
+  if (s < 60) return s + 's ago';
+  const m = Math.round(s / 60);
+  if (m < 60) return m + 'm ago';
+  const h = Math.round(m / 60);
+  return h + 'h ago';
+}
 
+function loadData() {
   // QuickView reads bikeNames/customerRows straight out of memory rather
   // than fetching anything itself -- if it's clicked before this first
   // populates them (or while a later reload is still in flight after a
@@ -2956,6 +3001,23 @@ function loadData() {
   // once bikeNames/customerRows have actually been populated below.
   const quickViewBtn = document.getElementById('quickViewBtn');
   if (quickViewBtn) quickViewBtn.disabled = true;
+
+  const cached = readBikesCache();
+  if (cached) {
+    // Show last-known-good instantly instead of a blank "Loading…" state --
+    // the real fetch below still runs and replaces this the moment it
+    // resolves, same as it always has.
+    bikeNames = cached.bikeNames;
+    categoryRows = cached.categoryRows || [];
+    RATES = cached.RATES || RATES_FALLBACK;
+    ratesStale = !!cached.ratesStale;
+    customerRows = cached.customerRows || [];
+    if (quickViewBtn) quickViewBtn.disabled = false;
+    render();
+    setLoadStatus('Showing saved data from ' + timeAgoLabel(cached.cachedAt) + ' — refreshing…', false);
+  } else {
+    setLoadStatus('Loading bikes…');
+  }
 
   return Promise.all([
     getPartsDataFromJson(),
@@ -3001,9 +3063,14 @@ function loadData() {
       // empty array rather than undefined) -- safe for QuickView to read.
       if (quickViewBtn) quickViewBtn.disabled = false;
       render();
+      writeBikesCache({ bikeNames, categoryRows, RATES, ratesStale, customerRows });
     })
     .catch(err => {
-      setLoadStatus('Could not load bikes: ' + err.message);
+      if (cached) {
+        setLoadStatus('Could not refresh (' + err.message + ') — showing saved data from ' + timeAgoLabel(cached.cachedAt) + '.', true);
+      } else {
+        setLoadStatus('Could not load bikes: ' + err.message);
+      }
     });
 }
 
@@ -4864,7 +4931,7 @@ function confirmReturn(rowNumber, isoDate, depositMatch, deductionAmount, reason
       } else {
         // Shouldn't normally happen, but fall back to a full reload rather
         // than leave the list looking out of date if it ever does.
-        return loadData();
+        clearBikesCache(); return loadData();
       }
 
       // The bike return itself is already saved by this point -- the
@@ -4971,7 +5038,7 @@ function confirmEditTime(rowNumber, isoDate, hhmm, deliveryLink) {
       } else {
         // Shouldn't normally happen, but fall back to a full reload rather
         // than leave the list looking out of date if it ever does.
-        return loadData();
+        clearBikesCache(); return loadData();
       }
     })
     .catch(err => {
@@ -5116,7 +5183,7 @@ function confirmExtend(rowNumber, daysToExtend, amountPaid, extendMonth, paidBy,
         extendAmountManuallyEditedRows.delete(rowNumber);
         openExtendRowNumber = null;
         savingExtendRowNumber = null;
-        return loadData();
+        clearBikesCache(); return loadData();
       })
       .catch(err => {
         clearTimeout(closeStageTimer);
@@ -5159,7 +5226,7 @@ function confirmExtend(rowNumber, daysToExtend, amountPaid, extendMonth, paidBy,
       extendAmountManuallyEditedRows.delete(rowNumber);
       openExtendRowNumber = null;
       savingExtendRowNumber = null;
-      return loadData();
+      clearBikesCache(); return loadData();
     })
     .catch(err => {
       clearTimeout(stageTimer);
@@ -6039,7 +6106,7 @@ function submitSwap() {
       // just reload everything rather than try to patch the list in place.
       if (result.warning) alert('Swapped, but: ' + result.warning);
       closeSwapModal();
-      return loadData();
+      clearBikesCache(); return loadData();
     })
     .catch(err => {
       setAllButtonsDisabled(false);

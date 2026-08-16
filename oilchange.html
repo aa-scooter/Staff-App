@@ -613,8 +613,43 @@ function setRentalStatus(msg) {
   el.classList.add('show');
 }
 
+// ---- Read-side stale-while-revalidate cache (ported from accounts.html's
+// loadMonth() cache, 2026-08-16 rollout -- see PROGRESS.md "NEXT UP" entry).
+// This page has no write actions at all -- no invalidation call site needed. ----
+const OILCHANGE_CACHE_KEY = 'aaOilchangeDataCache';
+function readOilchangeCache() {
+  try {
+    const raw = localStorage.getItem(OILCHANGE_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || !parsed.partsData || !Array.isArray(parsed.partsData.rows)) return null;
+    return parsed;
+  } catch (e) { return null; }
+}
+function writeOilchangeCache(snapshot) {
+  try { localStorage.setItem(OILCHANGE_CACHE_KEY, JSON.stringify({ ...snapshot, cachedAt: Date.now() })); } catch (e) {}
+}
+function timeAgoLabel(ms) {
+  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  if (s < 5) return 'just now';
+  if (s < 60) return s + 's ago';
+  const m = Math.round(s / 60);
+  if (m < 60) return m + 'm ago';
+  const h = Math.round(m / 60);
+  return h + 'h ago';
+}
+
 function loadParts() {
-  setLoadStatus('Loading bikes…');
+  const cached = readOilchangeCache();
+  if (cached) {
+    partsData = cached.partsData;
+    searchBikeNames = cached.searchBikeNames;
+    rentedBikes = cached.rentedBikes || {};
+    render();
+    setLoadStatus('Showing saved data from ' + timeAgoLabel(cached.cachedAt) + ' — refreshing…');
+  } else {
+    setLoadStatus('Loading bikes…');
+  }
   return Promise.all([
     getPartsDataFromJson(),
     // "Is this bike currently rented" now comes from ONE shared server call
@@ -642,9 +677,14 @@ function loadParts() {
       }
       setLoadStatus(null);
       render();
+      writeOilchangeCache({ partsData, searchBikeNames, rentedBikes });
     })
     .catch(err => {
-      setLoadStatus('Could not load bikes: ' + err.message);
+      if (cached) {
+        setLoadStatus('Could not refresh (' + err.message + ') — showing saved data from ' + timeAgoLabel(cached.cachedAt) + '.');
+      } else {
+        setLoadStatus('Could not load bikes: ' + err.message);
+      }
     });
 }
 

@@ -2129,6 +2129,7 @@ form.addEventListener('submit', async (e) => {
         statusBox.textContent = 'Added — "' + payload.name + '" saved to the sheet.' + checksNote;
         statusBox.className = 'status ok';
       }
+      clearCustomersRowsCache();
       sessionCount++;
       document.getElementById('sessionCount').textContent = sessionCount;
       form.reset();
@@ -2254,20 +2255,67 @@ function setLoadStatus(msg) {
   el.classList.add('show');
 }
 
+// ---- Read-side stale-while-revalidate caches (ported from accounts.html's
+// loadMonth() cache, 2026-08-16 rollout -- see PROGRESS.md "NEXT UP" entry).
+// Same two-loader shape as contract.html (Search-tab records + page-gating
+// bike list). Purely a display cache -- every real write still reads fresh
+// and conflict-checks at write time. ----
+const CUSTOMERS_ROWS_CACHE_KEY = 'aaCustomersRowsCache';
+function readCustomersRowsCache() {
+  try {
+    const raw = localStorage.getItem(CUSTOMERS_ROWS_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || !Array.isArray(parsed.rows)) return null;
+    return parsed;
+  } catch (e) { return null; }
+}
+function writeCustomersRowsCache(rows) {
+  try {
+    localStorage.setItem(CUSTOMERS_ROWS_CACHE_KEY, JSON.stringify({ rows, cachedAt: Date.now() }));
+  } catch (e) { /* localStorage full/unavailable -- best-effort only */ }
+}
+function clearCustomersRowsCache() {
+  try { localStorage.removeItem(CUSTOMERS_ROWS_CACHE_KEY); } catch (e) {}
+}
+function timeAgoLabel(ms) {
+  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  if (s < 5) return 'just now';
+  if (s < 60) return s + 's ago';
+  const m = Math.round(s / 60);
+  if (m < 60) return m + 'm ago';
+  const h = Math.round(m / 60);
+  return h + 'h ago';
+}
+
 function loadRows() {
   if (rowsPromise) return rowsPromise;
-  setLoadStatus('Loading records…');
+
+  const cached = readCustomersRowsCache();
+  if (cached && sheetRows === null) {
+    sheetRows = cached.rows;
+    setLoadStatus('Showing saved data from ' + timeAgoLabel(cached.cachedAt) + ' — refreshing…');
+    renderResults();
+  } else if (sheetRows === null) {
+    setLoadStatus('Loading records…');
+  }
+
   rowsPromise = getCustomerRowsFromJson()
     .then(data => {
       if (!data.success) throw new Error(data.error || 'Could not load data');
       sheetRows = data.rows;
       setLoadStatus(null);
+      writeCustomersRowsCache(sheetRows);
       return sheetRows;
     })
     .catch(err => {
-      setLoadStatus('Could not load records: ' + err.message + ' — tap Search again to retry.');
+      if (cached) {
+        setLoadStatus('Could not refresh (' + err.message + ') — showing saved data from ' + timeAgoLabel(cached.cachedAt) + '.');
+      } else {
+        setLoadStatus('Could not load records: ' + err.message + ' — tap Search again to retry.');
+      }
       rowsPromise = null; // allow retry
-      return [];
+      return sheetRows || [];
     });
   return rowsPromise;
 }
@@ -2309,9 +2357,38 @@ document.getElementById('pageGateRetry').addEventListener('click', () => {
   loadBikeNames();
 });
 
+const CUSTOMERS_BIKES_CACHE_KEY = 'aaCustomersBikeNamesCache';
+function readCustomersBikesCache() {
+  try {
+    const raw = localStorage.getItem(CUSTOMERS_BIKES_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || !Array.isArray(parsed.bikeNames)) return null;
+    return parsed;
+  } catch (e) { return null; }
+}
+function writeCustomersBikesCache(names, taxRows) {
+  try {
+    localStorage.setItem(CUSTOMERS_BIKES_CACHE_KEY, JSON.stringify({
+      bikeNames: names, bikeTaxRows: taxRows, cachedAt: Date.now()
+    }));
+  } catch (e) { /* localStorage full/unavailable -- best-effort only */ }
+}
+
 function loadBikeNames() {
   if (bikeNamesPromise) return bikeNamesPromise;
-  setBikeModelLoadStatus('Loading bikes…');
+
+  const cachedBikes = readCustomersBikesCache();
+  if (cachedBikes) {
+    bikeNames = cachedBikes.bikeNames;
+    bikeTaxRows = cachedBikes.bikeTaxRows || [];
+    setBikeModelLoadStatus('Showing saved bike list from ' + timeAgoLabel(cachedBikes.cachedAt) + ' — refreshing…');
+    renderResults();
+    document.body.classList.add('bikes-ready');
+  } else {
+    setBikeModelLoadStatus('Loading bikes…');
+  }
+
   bikeNamesPromise = getPartsDataFromJson()
     .then(data => {
       if (!data.success) throw new Error(data.error || 'Could not load bike list');
@@ -2326,10 +2403,15 @@ function loadBikeNames() {
       renderResults();
       // Bikes are in -- open the page up.
       document.body.classList.add('bikes-ready');
+      writeCustomersBikesCache(bikeNames, bikeTaxRows);
       return bikeNames;
     })
     .catch(err => {
-      setBikeModelLoadStatus('Could not load bike list: ' + err.message);
+      if (cachedBikes) {
+        setBikeModelLoadStatus('Could not refresh bike list (' + err.message + ') — showing saved data from ' + timeAgoLabel(cachedBikes.cachedAt) + '.');
+      } else {
+        setBikeModelLoadStatus('Could not load bike list: ' + err.message);
+      }
       // Keep the page gated and show the error + retry on the card
       // (unless a previous attempt already succeeded and opened the page).
       if (!document.body.classList.contains('bikes-ready')) {
@@ -2337,7 +2419,7 @@ function loadBikeNames() {
         pageGateMsg.textContent = 'Could not load the bikes list: ' + err.message;
       }
       bikeNamesPromise = null;
-      return [];
+      return bikeNames;
     });
   return bikeNamesPromise;
 }

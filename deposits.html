@@ -1485,20 +1485,76 @@ function money(n) {
   return sign + '฿' + Math.abs(num).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+// ---- Read-side stale-while-revalidate cache (ported from accounts.html's
+// loadMonth() cache, 2026-08-16 rollout -- see PROGRESS.md "NEXT UP" entry).
+// Deposits is a single flat "current month" snapshot, same shape as
+// bikes.html -- one fixed cache key, no per-scope keying needed. Purely a
+// display cache: every real write (Add/Edit/Delete/Deduct) still reads
+// fresh and conflict-checks at write time. ----
+const DEPOSITS_CACHE_KEY = 'aaDepositsDataCache';
+function readDepositsCache() {
+  try {
+    const raw = localStorage.getItem(DEPOSITS_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || !Array.isArray(parsed.deposits)) return null;
+    return parsed;
+  } catch (e) { return null; }
+}
+function writeDepositsCache(deposits, summary, month) {
+  try {
+    localStorage.setItem(DEPOSITS_CACHE_KEY, JSON.stringify({ deposits, summary, month, cachedAt: Date.now() }));
+  } catch (e) { /* localStorage full/unavailable -- best-effort only */ }
+}
+function clearDepositsCache() {
+  try { localStorage.removeItem(DEPOSITS_CACHE_KEY); } catch (e) {}
+}
+function timeAgoLabel(ms) {
+  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  if (s < 5) return 'just now';
+  if (s < 60) return s + 's ago';
+  const m = Math.round(s / 60);
+  if (m < 60) return m + 'm ago';
+  const h = Math.round(m / 60);
+  return h + 'h ago';
+}
+
 async function loadDeposits() {
-  setLoadStatus('Loading deposits…');
-  document.getElementById('depositsByCategory').innerHTML = '';
+  const cached = readDepositsCache();
+  if (cached) {
+    // Show last-known-good instantly instead of a blank "Loading…" state --
+    // the real fetch below still runs and replaces this the moment it
+    // resolves, same as it always has.
+    if (cached.month) {
+      document.getElementById('pageSub').textContent =
+        'Security deposits logged into the Bank (Scan), Wise, or Revolut tables on the ' + cached.month + ' sheet — grouped by category, oldest first.';
+      document.getElementById('totalLabel').textContent = 'Total Deposits — ' + cached.month;
+    }
+    render(cached.deposits || [], cached.summary || {});
+    setLoadStatus('Showing saved data from ' + timeAgoLabel(cached.cachedAt) + ' — refreshing…', false);
+  } else {
+    setLoadStatus('Loading deposits…');
+    document.getElementById('depositsByCategory').innerHTML = '';
+  }
 
   let res;
   try {
     res = await getDepositsDataFromJson();
   } catch (err) {
-    setLoadStatus('Failed to load deposits: ' + err.message, true);
+    if (cached) {
+      setLoadStatus('Could not refresh (' + err.message + ') — showing saved data from ' + timeAgoLabel(cached.cachedAt) + '.', true);
+    } else {
+      setLoadStatus('Failed to load deposits: ' + err.message, true);
+    }
     return;
   }
 
   if (!res || !res.success) {
-    setLoadStatus((res && res.error) || 'Failed to load deposits — please try again.', true);
+    if (cached) {
+      setLoadStatus('Could not refresh (' + ((res && res.error) || 'unknown error') + ') — showing saved data from ' + timeAgoLabel(cached.cachedAt) + '.', true);
+    } else {
+      setLoadStatus((res && res.error) || 'Failed to load deposits — please try again.', true);
+    }
     return;
   }
 
@@ -1522,6 +1578,7 @@ async function loadDeposits() {
   }
 
   render(res.deposits || [], res.summary || {});
+  writeDepositsCache(res.deposits || [], res.summary || {}, res.month || null);
 }
 
 // Kept around (keyed by "category|row") so a row click can look up its
@@ -1852,7 +1909,7 @@ async function saveDeductFromDeposit() {
     }
     closeDepositModal();
     if (res.warning) alert('Deducted, but: ' + res.warning);
-    loadDeposits();
+    clearDepositsCache(); loadDeposits();
   } catch (err) {
     stopModalProgress();
     setModalError('Deduction failed: ' + err.message);
@@ -1908,7 +1965,7 @@ modalSaveBtn.addEventListener('click', async () => {
     }
     closeDepositModal();
     if (res.warning) alert('Saved, but: ' + res.warning);
-    loadDeposits();
+    clearDepositsCache(); loadDeposits();
   } catch (err) {
     stopModalProgress();
     setModalError('Save failed: ' + err.message);
@@ -1942,7 +1999,7 @@ modalDeleteBtn.addEventListener('click', async () => {
     }
     closeDepositModal();
     if (res.warning) alert('Removed, but: ' + res.warning);
-    loadDeposits();
+    clearDepositsCache(); loadDeposits();
   } catch (err) {
     stopModalProgress();
     setModalError('Remove failed: ' + err.message);

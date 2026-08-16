@@ -414,8 +414,41 @@ function render() {
   tfoot.style.display = '';
 }
 
+// ---- Read-side stale-while-revalidate cache (ported from accounts.html's
+// loadMonth() cache, 2026-08-16 rollout -- see PROGRESS.md "NEXT UP" entry).
+// Pure read-only report page, no writes -- no invalidation call site needed. ----
+const BIKE_INCOME_CACHE_KEY = 'aaBikeIncomeDataCache';
+function readBikeIncomeCache() {
+  try {
+    const raw = localStorage.getItem(BIKE_INCOME_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || !Array.isArray(parsed.bikes)) return null;
+    return parsed;
+  } catch (e) { return null; }
+}
+function writeBikeIncomeCache(bikes) {
+  try { localStorage.setItem(BIKE_INCOME_CACHE_KEY, JSON.stringify({ bikes, cachedAt: Date.now() })); } catch (e) {}
+}
+function timeAgoLabel(ms) {
+  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  if (s < 5) return 'just now';
+  if (s < 60) return s + 's ago';
+  const m = Math.round(s / 60);
+  if (m < 60) return m + 'm ago';
+  const h = Math.round(m / 60);
+  return h + 'h ago';
+}
+
 async function loadBikes() {
-  setLoadStatus('Loading bikes…');
+  const cached = readBikeIncomeCache();
+  if (cached) {
+    allBikes = cached.bikes;
+    render();
+    setLoadStatus('Showing saved data from ' + timeAgoLabel(cached.cachedAt) + ' — refreshing…');
+  } else {
+    setLoadStatus('Loading bikes…');
+  }
   try {
     const res = await getBikeIncomeSummaryFromJson();
     if (!res.success) throw new Error(res.error || 'Could not load bike income data.');
@@ -434,10 +467,15 @@ async function loadBikes() {
     });
     setLoadStatus(null);
     render();
+    writeBikeIncomeCache(allBikes);
   } catch (err) {
-    setLoadStatus('Failed to load: ' + err.message);
-    document.getElementById('tbody').innerHTML =
-      '<tr><td colspan="18" class="empty-hint">Could not load bikes.</td></tr>';
+    if (cached) {
+      setLoadStatus('Could not refresh (' + err.message + ') — showing saved data from ' + timeAgoLabel(cached.cachedAt) + '.');
+    } else {
+      setLoadStatus('Failed to load: ' + err.message);
+      document.getElementById('tbody').innerHTML =
+        '<tr><td colspan="18" class="empty-hint">Could not load bikes.</td></tr>';
+    }
   }
 }
 

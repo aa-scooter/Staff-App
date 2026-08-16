@@ -6,6 +6,236 @@ This exists because work on this project gets picked up across multiple
 Claude sessions/accounts with no shared memory between them — this file is
 the handoff.
 
+## 🔧 Read-side stale-while-revalidate cache rolled out to 12 more pages,
+## CODED AND TEST-GREEN, NOT YET DEPLOYED (2026-08-16, same day as accounts.html's)
+
+**What this is:** step 1 of the "NEXT UP" plan directly below (still the
+spec for HOW this was done — read that entry for the full pattern
+writeup). Same accounts.html `loadMonth()` pattern (`readXCache`/
+`writeXCache`/`clearXCache`/`timeAgoLabel`, instant render from
+localStorage + background refresh + swap-in, cache preserved with a
+"could not refresh" note on a failed background fetch, any successful
+write on that page clears the relevant entry) ported mechanically to
+every page with a real "load a chunk of data on open" moment.
+
+**Pages done, one cache each unless noted:** `bikes.html` (loadData —
+parts/customer snapshot, keyed `aaBikesDataCache`; 5 write-triggered
+reloads now clear it first), `contract.html` (TWO caches — the
+page-gating bike list `aaContractBikeNamesCache`, which used to block the
+ENTIRE page behind a red "Loading bikes…" card on every single visit, and
+the Search tab's `aaContractRowsCache`; both add/edit-contract success
+paths clear the rows cache), `customers.html` (same two-cache shape as
+contract.html — `aaCustomersBikeNamesCache` + `aaCustomersRowsCache`;
+customerIntake success clears the rows cache), `deposits.html`
+(`aaDepositsDataCache`; all three Add/Edit/Delete-deposit success paths
+clear it), `add-bikes.html` (`aaAddBikesFleetListCache` for the lazily-
+loaded "List all bikes" panel; Sell/Unsell/Edit-details all clear it),
+`available-bikes.html` (`aaAvailableBikesDataCache` — no writes on this
+page, pure quoting tool, so no invalidation call site), `bike-income.html`
+(`aaBikeIncomeDataCache` — read-only report, no writes), `parts.html`
+(`aaPartsDataCache` — a successful save already patches the in-memory row
+directly via `Object.assign(currentRow, fields)`, so the cache is only
+CLEARED on save, not refreshed from the save response, to keep the next
+full page load honest), `oilchange.html` (`aaOilchangeDataCache` — no
+writes, page comment literally says "This page has no write actions at
+all"), `pricing.html` (`aaPricingRatesCache` — this page already had its
+own from-scratch version of "instant + background refresh" via
+`RATES_FALLBACK`, since it's an installable offline PWA; this just
+upgrades the starting point from a hardcoded fallback table to the last
+REAL live rates this device saw, which should track actual pricing much
+more closely than the hardcoded fallback), `reply-assistant.html` (TWO
+caches — `aaReplyAssistantCustomersCache` (cleared on a successful
+addContact) and `aaReplyAssistantBikesCache` (no write touches bikes on
+this page)), `bikephotos.html` (`aaBikephotosBikeNamesCache` for the
+search autocomplete list only — the per-bike photo gallery hits a
+different API, `/api/photos/list`, not the getXFromJson layer this
+pattern is built on, and is naturally scoped to one bike at a time rather
+than "load everything on open", so it was left untouched).
+
+**Explicitly skipped, with reasons (matches this entry's own "skip if it
+doesn't pay for itself" instruction below):**
+- `calendar.html` — has real data loads (reminders, delivery/pickup
+  links) but hits `fetch(scriptUrl...)` directly, a different/older data
+  path than every other page's `getXFromJson()` → `fetchSheetJson()`
+  layer this cache pattern is built on top of. Porting the cache here
+  would mean designing against different plumbing, not a mechanical copy
+  — flagging as a real follow-up decision rather than silently
+  including or silently skipping.
+- `settings.html` — admin/config page (AI keys, reset, logout), no
+  sheet-backed list to cache.
+- `bike-name-audit.html` — has real Parts/Customer data loads, but only
+  behind an explicit "Run Audit" button, not on page open. The entire
+  point of a click there is "run this fresh right now" — an instant
+  stale render would work against that, not for it.
+
+**Testing:** no real browser available in this sandbox (Playwright's
+Chromium needs root-level system deps this environment doesn't grant --
+confirmed via `sudo npx playwright install-deps` failing outright, not
+just slow). Built a jsdom-based harness instead (loads the REAL modified
+HTML file with `runScripts:'dangerously'`, stubs only the network-
+touching `getXFromJson` functions, drives real `localStorage`, and reads
+page-lexical `let`/`const` state — which doesn't attach to `window` the
+way `var`/function declarations do — by injecting a same-realm `<script>`
+tag rather than reading `window.x` directly; see `helpers.js`'s
+`execInPage`/`readPageVar`). Same assertions per page as accounts.html's
+own suite: cache-hit renders instantly before the real fetch resolves,
+successful background refresh swaps in fresh data and rewrites the cache,
+a FAILED background refresh leaves the cache up with a "could not
+refresh" note instead of going blank, first-ever visit (no cache) behaves
+exactly as before, and (where applicable) a successful write clears the
+cache. 12 pages, 2-10 assertions each, all green. Sandbox scratch at
+`/tmp/rc` on the sandbox VM, gone between sessions — rebuild if picked up
+again. Every touched file also passed a plain `node -c`-equivalent syntax
+check (`new Function(scriptBody)`) before the jsdom pass.
+
+**Not yet done:** deliver via the workspace folder, get Anton's go-ahead,
+push, then a real click-around per page (especially contract.html/
+customers.html's page-gate, which used to hard-block on every visit) to
+confirm the instant-render + swap-in look right in practice.
+
+**Files changed:** `bikes.html`, `contract.html`, `customers.html`,
+`deposits.html`, `add-bikes.html`, `available-bikes.html`,
+`bike-income.html`, `parts.html`, `oilchange.html`, `pricing.html`,
+`reply-assistant.html`, `bikephotos.html`.
+
+---
+
+## 🚀 NEXT UP (queued 2026-08-16) — STEP 1 (read cache) NOW DONE, see entry
+## just above. STEP 2 (write-side optimistic/idempotent save) still not
+## started: roll out accounts.html's two patterns to the rest of the app
+
+**Anton's ask, verbatim intent:** accounts.html now has (a) a
+stale-while-revalidate read cache and (b) instant/optimistic writes with
+idempotency protection (both entries directly below this one — read those
+two in full before starting, they're the actual spec, this entry is just
+the punch list + rules for applying them elsewhere). He wants the SAME
+treatment rolled out across the rest of the app, starting a fresh session/
+login to do it (running low on usage on the session that built accounts.html),
+working through it unattended while he's away -- **don't stop to ask him
+questions, use judgment and keep moving, checkpoint safely as you go.**
+
+**Read this first, set expectations correctly:** the read-side cache is
+genuinely a same-shape, low-risk port -- do that across every data-loading
+page in one sitting, it's the same ~80 lines of pattern each time. The
+write-side change is NOT a small port -- it's the same scale of work
+accounts.html's write layer took (a full dedicated session: a new
+`lib/<page>Writes.js` server-side module ported action-by-action from that
+page's existing client-side write logic, a new `api/<page>/write.js`
+single-dispatch endpoint, the optimistic-UI layer, the idempotency-key
+guard, AND a fake-Drive Node test suite + a Playwright frontend suite built
+from scratch to prove it). **Confirmed by grep before queuing this:**
+`api/data/[sheet].js` is still the ONLY generic write route -- every page
+below still does the OLD "GET the whole array, mutate it in the browser,
+POST the whole array back" pattern, same as accounts.html did before
+2026-08-16. Rough per-page write-surface size (distinct add/edit/delete/
+save-shaped functions in each page's own script, counted 2026-08-16 --
+recount before trusting, pages may have moved on): contract.html 16,
+bikes.html 13, deposits.html 10, add-bikes.html 8, customers.html 5.
+bikes.html and contract.html are each comparably large to (or larger than)
+what accounts.html's write layer was. Do NOT attempt all of these
+simultaneously in one sweep -- do the read-cache pass everywhere first
+(fast, low-risk, real value immediately), then take the write-side
+migration ONE PAGE AT A TIME, each one fully designed, coded, tested, and
+delivered (with its own PROGRESS.md entry, same depth as the two entries
+below) before starting the next. If usage runs out mid-page, an
+IN-PROGRESS page should still be left in whatever the last fully-tested,
+fully-delivered state was -- never deliver a half-ported write layer.
+
+**Suggested order** (biggest expected win / write-heaviest first, but
+verify current file sizes and actually read each page before committing
+to this -- it's a starting guess, not gospel):
+1. Read-side cache -- ALL of: bikes.html, contract.html, customers.html,
+   deposits.html, add-bikes.html, available-bikes.html, bike-income.html,
+   parts.html, oilchange.html. Check calendar.html/pricing.html/
+   settings.html/reply-assistant.html/bikephotos.html/bike-name-audit.html
+   too, but skip any that turn out to be read-only/config/no real sheet
+   load on open -- the pattern only pays for itself where there's an
+   actual "load a chunk of data" step to make feel instant.
+2. Write-side optimistic + idempotency, one at a time: bikes.html →
+   contract.html → deposits.html → add-bikes.html → customers.html → the
+   rest, reassessing priority after each one based on what's actually
+   slow/error-prone in practice (grep production logs via the Vercel MCP
+   connector if available, same as the original accounts.html perf pass
+   did, rather than guessing).
+
+**How to port the read-side cache (mechanical, same shape every time) --
+see accounts.html's `loadMonth()` and everything from `MONTH_CACHE_PREFIX`
+down to `timeAgoLabel()` for the reference implementation:**
+- A localStorage cache keyed uniquely per page+whatever-scope-it-loads
+  (accounts.html keys by month+year; another page might key by nothing at
+  all if it loads one flat list, or by its own natural scope).
+- The page's main load function renders the cached copy (if any) INSTANTLY
+  before the real fetch, with a small non-blocking "Showing saved data
+  from Xm ago — refreshing…" note, then still fires the real fetch exactly
+  as before and swaps in the result + refreshes the cache when it lands.
+- No cache yet (first-ever visit) = today's normal loading behavior,
+  unchanged.
+- A failed background refresh with a cache already showing leaves the
+  cache up and says so, rather than blanking to an error screen.
+- Any successful write on that page clears the relevant cache entry/
+  entries immediately (see accountsWriteDispatch's and
+  bulkSetExpenseTypeFromJson's `clearMonthCache` calls -- same reasoning:
+  don't try to track exactly what a write touched, just drop what that
+  write could plausibly have affected).
+- Test with a Playwright harness in the same shape as
+  `/tmp/optsave/test.js`'s Tests 12/12b/13/14 (sandbox scratch, gone
+  between sessions -- rebuild it, don't go looking for the old one).
+
+**How to port the write-side optimistic + idempotency pattern -- see
+`lib/accountsWrites.js` (the `createAccountsWrites(sheetIO)` factory
+pattern, ported action-by-action from that page's own existing write
+functions -- SAME business rules, not a redesign), `api/accounts/write.js`
+(the single-dispatch endpoint pattern), and accounts.html's whole
+"Optimistic save UX" section (`genClientTxnId`, `optItems`/`optInFlight`/
+`queueMonthSave`, `runPendingPayload`/`submitOptimistically`, the banner/
+review-panel UI, `persistFailedSaves`/`restoreFailedSaves`) for the
+reference implementation:**
+- Port each of that page's write actions into a new `lib/<page>Writes.js`
+  server module, byte-for-byte same business logic, called from a new
+  `api/<page>/write.js` single-POST-dispatch route (mirror
+  `api/accounts/write.js` almost verbatim -- it's not accounts-specific
+  plumbing).
+- Layer the optimistic UI + `clientTxnId` idempotency guard on top exactly
+  as accounts.html has it, adapted to that page's own row/entity shape.
+- Test BOTH sides: a fake-Drive Node harness (`createSheetIO`-shaped fake,
+  see `/tmp/optsave/test-idempotency.js` for the pattern -- same
+  "duplicate clientTxnId → one row, different ids → two rows, no id →
+  unchanged old behavior" battery) AND a Playwright frontend harness (see
+  `/tmp/optsave/test.js`'s Tests 2/7/11 for the add-fails-then-retries,
+  no-double-submit, and clientTxnId-reuse patterns specifically).
+
+**One real design decision this raises, not a mechanical copy -- decide
+explicitly, don't silently guess:** `nav.js`'s failure badge currently
+only reads `aaAccountsFailedSaves` and always links to accounts.html. Once
+other pages can ALSO have their own failed-and-unretried saves, that badge
+needs to either (a) become page-aware (a per-page localStorage key
+convention, e.g. `aaFailedSaves_<page>`, with the badge summing counts
+across all of them and linking to... whichever page has failures, or a
+small dropdown if more than one does), or (b) get a documented reason it's
+staying accounts-only. Don't leave it silently only covering accounts.html
+once other pages have real failures it can't see -- that's a worse trap
+than not having the badge at all, since it'll look like everything's fine.
+
+**Standing rules that do NOT relax just because this is unattended:**
+- Never `git commit`/`git push` yourself. Build, test, deliver via the
+  device bridge (`SendUserFile` + `device_commit_files`), update this
+  file, then hand Anton exact copy-paste git commands (including
+  `rm -f .git/index.lock` first) and STOP. Same for every page, not just
+  the first one.
+- Test as rigorously as the two entries below did (both a backend and a
+  frontend suite, real bugs caught before delivery, not just "looks
+  right") -- this is live data for a real business, not a toy.
+- Update this file with a full entry per page completed, same depth as
+  the entries below -- the next session (or Anton reading this while
+  deciding what to test) needs to be able to tell exactly what changed
+  and why without reading the diff.
+- "Without asking questions" means make the same kind of judgment calls
+  the accounts.html work already made (and documented) when something's
+  ambiguous -- not skipping the design thinking, just not blocking on
+  Anton to make it for you. Flag genuinely open judgment calls in this
+  file (like the nav.js badge one above) rather than silently picking
+  one and hiding that a decision was made.
+
 ## 🔧 accounts.html: read-side stale-while-revalidate cache, CODED AND
 ## TEST-GREEN, NOT YET DEPLOYED (2026-08-16)
 

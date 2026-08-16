@@ -677,21 +677,60 @@ function setLoadStatus(msg) {
   el.classList.add('show');
 }
 
+// ---- Read-side stale-while-revalidate cache (ported from accounts.html's
+// loadMonth() cache, 2026-08-16 rollout -- see PROGRESS.md "NEXT UP" entry).
+// A successful save here already patches the in-memory partsData row
+// directly (Object.assign(currentRow, fields) in saveFields, below) rather
+// than re-fetching -- so this cache is cleared (not refreshed) on a
+// successful save, same reasoning as everywhere else this pattern's been
+// ported: don't try to track exactly what a write touched, just drop what
+// it could plausibly have affected, and let the NEXT load do a real fetch. ----
+const PARTS_CACHE_KEY = 'aaPartsDataCache';
+function readPartsCache() {
+  try {
+    const raw = localStorage.getItem(PARTS_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || !parsed.data || !Array.isArray(parsed.data.rows)) return null;
+    return parsed;
+  } catch (e) { return null; }
+}
+function writePartsCache(data) {
+  try { localStorage.setItem(PARTS_CACHE_KEY, JSON.stringify({ data, cachedAt: Date.now() })); } catch (e) {}
+}
+function clearPartsCache() {
+  try { localStorage.removeItem(PARTS_CACHE_KEY); } catch (e) {}
+}
+
 function loadParts() {
   if (rowsPromise) return rowsPromise;
-  setLoadStatus('Loading bikes…');
+
+  const cached = readPartsCache();
+  if (cached && partsData === null) {
+    partsData = cached.data;
+    keyHeader = cached.data.headers[0];
+    setLoadStatus('Showing saved data from ' + Math.max(0, Math.round((Date.now() - cached.cachedAt) / 60000)) + 'm ago — refreshing…');
+  } else if (partsData === null) {
+    setLoadStatus('Loading bikes…');
+  }
+
   rowsPromise = getPartsDataFromJson()
     .then(data => {
       if (!data.success) throw new Error(data.error || 'Could not load data');
       partsData = data;
       keyHeader = data.headers[0];
       setLoadStatus(null);
+      writePartsCache(data);
       return partsData;
     })
     .catch(err => {
-      setLoadStatus('Could not load bikes: ' + err.message + ' — tap the field again to retry.');
+      if (cached) {
+        setLoadStatus('Could not refresh (' + err.message + ') — showing saved data.');
+      } else {
+        setLoadStatus('Could not load bikes: ' + err.message + ' — tap the field again to retry.');
+      }
       rowsPromise = null;
-      return null;
+      return partsData;
     });
   return rowsPromise;
 }
@@ -1429,6 +1468,9 @@ async function saveFields(fields, btn, statusBox, idleLabel) {
       }
       // Update local cache so re-selecting shows the fresh values without a refetch
       Object.assign(currentRow, fields);
+      clearPartsCache(); // this tab's in-memory copy is patched above and stays correct; drop the
+                          // localStorage snapshot so the NEXT full page load re-fetches instead of
+                          // serving pre-write data.
     } else {
       throw new Error(data.error || 'Unknown error');
     }

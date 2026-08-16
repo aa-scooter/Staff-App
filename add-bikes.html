@@ -1814,6 +1814,7 @@ editBikeSaveBtn.addEventListener('click', async () => {
       const savedName = bike;
       closeEditBikeModal();
       fleetListLoaded = false; // stale now -- force a fresh fetch
+      clearFleetListCache();
       setFleetStatus(
         data.warning ? ('"' + savedName + '" updated, but: ' + data.warning) : ('"' + savedName + '" updated.'),
         data.warning ? 'warn' : 'ok'
@@ -1977,8 +1978,49 @@ function renderFleetList() {
   fleetList.innerHTML = html;
 }
 
+// ---- Read-side stale-while-revalidate cache (ported from accounts.html's
+// loadMonth() cache, 2026-08-16 rollout -- see PROGRESS.md "NEXT UP" entry).
+// The fleet list is lazily loaded (only on first "List all bikes" click,
+// not on page open), but it still shows a blank "Loading bikes…" every
+// single time that happens -- worth the same treatment. Purely a display
+// cache: every real write (Sell/Unsell/Edit) still reads fresh at write
+// time. ----
+const FLEET_LIST_CACHE_KEY = 'aaAddBikesFleetListCache';
+function readFleetListCache() {
+  try {
+    const raw = localStorage.getItem(FLEET_LIST_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || !Array.isArray(parsed.bikes)) return null;
+    return parsed;
+  } catch (e) { return null; }
+}
+function writeFleetListCache(bikes) {
+  try { localStorage.setItem(FLEET_LIST_CACHE_KEY, JSON.stringify({ bikes, cachedAt: Date.now() })); } catch (e) {}
+}
+function clearFleetListCache() {
+  try { localStorage.removeItem(FLEET_LIST_CACHE_KEY); } catch (e) {}
+}
+function timeAgoLabel(ms) {
+  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  if (s < 5) return 'just now';
+  if (s < 60) return s + 's ago';
+  const m = Math.round(s / 60);
+  if (m < 60) return m + 'm ago';
+  const h = Math.round(m / 60);
+  return h + 'h ago';
+}
+
 async function loadFleetList() {
-  setFleetStatus('Loading bikes…', 'warn');
+  const cached = readFleetListCache();
+  if (cached) {
+    allFleetBikes = cached.bikes;
+    fleetListLoaded = true;
+    renderFleetList();
+    setFleetStatus('Showing saved data from ' + timeAgoLabel(cached.cachedAt) + ' — refreshing…', 'warn');
+  } else {
+    setFleetStatus('Loading bikes…', 'warn');
+  }
   try {
     const res = await getBikeIncomeSummaryFromJson();
     if (!res.success) throw new Error(res.error || 'Could not load the bike list.');
@@ -1991,9 +2033,14 @@ async function loadFleetList() {
     setFleetStatus(null);
     fleetListLoaded = true;
     renderFleetList();
+    writeFleetListCache(allFleetBikes);
   } catch (err) {
-    setFleetStatus('Could not load bikes: ' + err.message, 'err');
-    fleetList.innerHTML = '';
+    if (cached) {
+      setFleetStatus('Could not refresh (' + err.message + ') — showing saved data from ' + timeAgoLabel(cached.cachedAt) + '.', 'err');
+    } else {
+      setFleetStatus('Could not load bikes: ' + err.message, 'err');
+      fleetList.innerHTML = '';
+    }
   }
 }
 
@@ -2059,6 +2106,7 @@ async function confirmSellBike(bikeName, amount, reason) {
     }
     openFleetBike = null;
     sellWriteOffMode = false;
+    clearFleetListCache();
     await loadFleetList();
   } catch (err) {
     setFleetStatus('Could not reach the spreadsheet: ' + err.message, 'err');
@@ -2086,6 +2134,7 @@ async function confirmUnsellBike(bikeName) {
       setFleetStatus('"' + bikeName + '" is no longer marked sold.', 'ok');
     }
     openFleetBike = null;
+    clearFleetListCache();
     await loadFleetList();
   } catch (err) {
     setFleetStatus('Could not reach the spreadsheet: ' + err.message, 'err');

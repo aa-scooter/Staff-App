@@ -532,8 +532,44 @@ function highlight(value, query) {
   return out;
 }
 
+// ---- Read-side stale-while-revalidate cache (ported from accounts.html's
+// loadMonth() cache, 2026-08-16 rollout -- see PROGRESS.md "NEXT UP"
+// entry). Only the bike-name search list is cached here -- the per-bike
+// photo gallery (loadGallery, below) hits a different API
+// (/api/photos/list, not the getXFromJson layer) and is naturally scoped
+// to whichever one bike is open, so it doesn't have the same "blank
+// screen on every page visit" problem this pattern targets; left as-is. ----
+const BIKEPHOTOS_NAMES_CACHE_KEY = 'aaBikephotosBikeNamesCache';
+function readBikephotosNamesCache() {
+  try {
+    const raw = localStorage.getItem(BIKEPHOTOS_NAMES_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || !Array.isArray(parsed.bikeNames)) return null;
+    return parsed;
+  } catch (e) { return null; }
+}
+function writeBikephotosNamesCache(names) {
+  try { localStorage.setItem(BIKEPHOTOS_NAMES_CACHE_KEY, JSON.stringify({ bikeNames: names, cachedAt: Date.now() })); } catch (e) {}
+}
+function timeAgoLabel(ms) {
+  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  if (s < 5) return 'just now';
+  if (s < 60) return s + 's ago';
+  const m = Math.round(s / 60);
+  if (m < 60) return m + 'm ago';
+  const h = Math.round(m / 60);
+  return h + 'h ago';
+}
+
 function loadBikeNames() {
-  setLoadStatus('loadStatus', 'Loading bikes…');
+  const cached = readBikephotosNamesCache();
+  if (cached) {
+    bikeNames = cached.bikeNames;
+    setLoadStatus('loadStatus', 'Showing saved data from ' + timeAgoLabel(cached.cachedAt) + ' — refreshing…');
+  } else {
+    setLoadStatus('loadStatus', 'Loading bikes…');
+  }
   return getPartsBikeNamesFromJson()
     .then(data => {
       if (!data.success) throw new Error(data.error || 'Could not load bikes');
@@ -547,9 +583,14 @@ function loadBikeNames() {
         .filter(Boolean)
         .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
       setLoadStatus('loadStatus', null);
+      writeBikephotosNamesCache(bikeNames);
     })
     .catch(err => {
-      setLoadStatus('loadStatus', 'Could not load bikes: ' + err.message);
+      if (cached) {
+        setLoadStatus('loadStatus', 'Could not refresh (' + err.message + ') — showing saved data from ' + timeAgoLabel(cached.cachedAt) + '.');
+      } else {
+        setLoadStatus('loadStatus', 'Could not load bikes: ' + err.message);
+      }
     });
 }
 

@@ -845,10 +845,69 @@ let rentedBikes = {};        // bike name -> renter info, from bikeRentalStatus
 let selectedCustomer = null; // { name, number }
 let selectedBikes = new Set();
 
+// ---- Read-side stale-while-revalidate caches (ported from accounts.html's
+// loadMonth() cache, 2026-08-16 rollout -- see PROGRESS.md "NEXT UP"
+// entry). Two loaders here, same as contract.html/customers.html --
+// customers (cleared on a successful addContact, mirroring loadCustomers()
+// already being re-called there) and bikes (no write action touches bikes
+// on this page, so no invalidation needed for that one). ----
+const REPLY_CUSTOMERS_CACHE_KEY = 'aaReplyAssistantCustomersCache';
+function readReplyCustomersCache() {
+  try {
+    const raw = localStorage.getItem(REPLY_CUSTOMERS_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || !Array.isArray(parsed.customers)) return null;
+    return parsed;
+  } catch (e) { return null; }
+}
+function writeReplyCustomersCache(list) {
+  try { localStorage.setItem(REPLY_CUSTOMERS_CACHE_KEY, JSON.stringify({ customers: list, cachedAt: Date.now() })); } catch (e) {}
+}
+function clearReplyCustomersCache() {
+  try { localStorage.removeItem(REPLY_CUSTOMERS_CACHE_KEY); } catch (e) {}
+}
+const REPLY_BIKES_CACHE_KEY = 'aaReplyAssistantBikesCache';
+function readReplyBikesCache() {
+  try {
+    const raw = localStorage.getItem(REPLY_BIKES_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || !Array.isArray(parsed.bikeNames)) return null;
+    return parsed;
+  } catch (e) { return null; }
+}
+function writeReplyBikesCache(snapshot) {
+  try {
+    localStorage.setItem(REPLY_BIKES_CACHE_KEY, JSON.stringify({
+      bikeNames: snapshot.bikeNames, struckBikes: Array.from(snapshot.struckBikes),
+      categoryRows: snapshot.categoryRows, RATES: snapshot.RATES, ratesStale: snapshot.ratesStale,
+      rentedBikes: snapshot.rentedBikes, cachedAt: Date.now()
+    }));
+  } catch (e) {}
+}
+function timeAgoLabel(ms) {
+  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  if (s < 5) return 'just now';
+  if (s < 60) return s + 's ago';
+  const m = Math.round(s / 60);
+  if (m < 60) return m + 'm ago';
+  const h = Math.round(m / 60);
+  return h + 'h ago';
+}
+
 // ---------- load customers (Contract renters, dedup + currently-renting first) ----------
 function loadCustomers(){
   const el = document.getElementById('custLoadStatus');
-  el.textContent = 'Loading customers…'; el.classList.add('show');
+  const cachedCustomers = readReplyCustomersCache();
+  if (cachedCustomers) {
+    customers = cachedCustomers.customers;
+    renderCustomerList();
+    el.textContent = 'Showing saved data from ' + timeAgoLabel(cachedCustomers.cachedAt) + ' — refreshing…';
+    el.classList.add('show');
+  } else {
+    el.textContent = 'Loading customers…'; el.classList.add('show');
+  }
   return Promise.all([
     getContractRowsFromJson().catch(err => ({ success:false, error: err.message })),
     getContactsListFromJson().catch(() => ({ success:false, contacts: [] }))
@@ -894,9 +953,15 @@ function loadCustomers(){
 
     el.classList.remove('show');
     renderCustomerList();
+    writeReplyCustomersCache(customers);
   }).catch(err => {
-    el.textContent = 'Could not load customers: ' + err.message;
-    el.classList.add('show');
+    if (cachedCustomers) {
+      el.textContent = 'Could not refresh (' + err.message + ') — showing saved data from ' + timeAgoLabel(cachedCustomers.cachedAt) + '.';
+      el.classList.add('show');
+    } else {
+      el.textContent = 'Could not load customers: ' + err.message;
+      el.classList.add('show');
+    }
   });
 }
 
@@ -942,7 +1007,20 @@ document.getElementById('custSearch').addEventListener('input', renderCustomerLi
 // ---------- load bikes (available only -- not sold, not currently rented) ----------
 function loadBikes(){
   const el = document.getElementById('bikeLoadStatus');
-  el.textContent = 'Loading bikes…'; el.classList.add('show');
+  const cachedBikes = readReplyBikesCache();
+  if (cachedBikes) {
+    bikeNames = cachedBikes.bikeNames;
+    struckBikes = new Set(cachedBikes.struckBikes || []);
+    categoryRows = cachedBikes.categoryRows || [];
+    RATES = cachedBikes.RATES || RATES_FALLBACK;
+    ratesStale = !!cachedBikes.ratesStale;
+    rentedBikes = cachedBikes.rentedBikes || {};
+    renderBikeList();
+    el.textContent = 'Showing saved data from ' + timeAgoLabel(cachedBikes.cachedAt) + ' — refreshing…';
+    el.classList.add('show');
+  } else {
+    el.textContent = 'Loading bikes…'; el.classList.add('show');
+  }
   return Promise.all([
     getPartsDataFromJson(),
     getBikeRentalStatusFromJson().catch(err => ({ success:false, error: err.message }))
@@ -977,9 +1055,15 @@ function loadBikes(){
 
     el.classList.remove('show');
     renderBikeList();
+    writeReplyBikesCache({ bikeNames, struckBikes, categoryRows, RATES, ratesStale, rentedBikes });
   }).catch(err => {
-    el.textContent = 'Could not load bikes: ' + err.message;
-    el.classList.add('show');
+    if (cachedBikes) {
+      el.textContent = 'Could not refresh (' + err.message + ') — showing saved data from ' + timeAgoLabel(cachedBikes.cachedAt) + '.';
+      el.classList.add('show');
+    } else {
+      el.textContent = 'Could not load bikes: ' + err.message;
+      el.classList.add('show');
+    }
   });
 }
 
@@ -1227,6 +1311,7 @@ document.getElementById('saveContactBtn').addEventListener('click', async () => 
     if (!res.success) throw new Error(res.error || 'Could not save');
     statusEl.textContent = 'Saved.';
     statusEl.className = 'status ok';
+    clearReplyCustomersCache();
     await loadCustomers();
     setTimeout(() => addContactBackdrop.classList.remove('show'), 700);
   } catch (err) {

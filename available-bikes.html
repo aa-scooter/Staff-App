@@ -766,8 +766,61 @@ function setLoadStatus(msg) {
   el.classList.add('show');
 }
 
+// ---- Read-side stale-while-revalidate cache (ported from accounts.html's
+// loadMonth() cache, 2026-08-16 rollout -- see PROGRESS.md "NEXT UP" entry).
+// This page has no writes of its own (pure quoting/browsing tool) so there
+// is no invalidation call site needed -- the cache is only ever refreshed
+// by the background fetch itself, same as a never-visited page falling
+// back to normal loading. ----
+const AVAILABLE_BIKES_CACHE_KEY = 'aaAvailableBikesDataCache';
+function readAvailableBikesCache() {
+  try {
+    const raw = localStorage.getItem(AVAILABLE_BIKES_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || !Array.isArray(parsed.bikeNames)) return null;
+    return parsed;
+  } catch (e) { return null; }
+}
+function writeAvailableBikesCache(snapshot) {
+  try {
+    localStorage.setItem(AVAILABLE_BIKES_CACHE_KEY, JSON.stringify({
+      bikeNames: snapshot.bikeNames,
+      soldBikeNames: Array.from(snapshot.soldBikeNameSet),
+      bikeCategory: snapshot.bikeCategory,
+      bikeDetails: snapshot.bikeDetails,
+      RATES: snapshot.RATES,
+      ratesStale: snapshot.ratesStale,
+      rentedBikes: snapshot.rentedBikes,
+      cachedAt: Date.now()
+    }));
+  } catch (e) { /* localStorage full/unavailable -- best-effort only */ }
+}
+function timeAgoLabel(ms) {
+  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  if (s < 5) return 'just now';
+  if (s < 60) return s + 's ago';
+  const m = Math.round(s / 60);
+  if (m < 60) return m + 'm ago';
+  const h = Math.round(m / 60);
+  return h + 'h ago';
+}
+
 function loadData() {
-  setLoadStatus('Loading bikes…');
+  const cached = readAvailableBikesCache();
+  if (cached) {
+    bikeNames = cached.bikeNames;
+    soldBikeNameSet = new Set(cached.soldBikeNames || []);
+    bikeCategory = cached.bikeCategory || {};
+    bikeDetails = cached.bikeDetails || {};
+    RATES = cached.RATES || RATES_FALLBACK;
+    ratesStale = !!cached.ratesStale;
+    rentedBikes = cached.rentedBikes || {};
+    renderList();
+    setLoadStatus('Showing saved data from ' + timeAgoLabel(cached.cachedAt) + ' — refreshing…');
+  } else {
+    setLoadStatus('Loading bikes…');
+  }
   return Promise.all([
     getPartsDataFromJson(),
     // "Is this bike currently rented" now comes from ONE shared server call
@@ -839,9 +892,14 @@ function loadData() {
       }
       setLoadStatus(rentalWarnings.length ? rentalWarnings.join(' ') : null);
       renderList();
+      writeAvailableBikesCache({ bikeNames, soldBikeNameSet, bikeCategory, bikeDetails, RATES, ratesStale, rentedBikes });
     })
     .catch(err => {
-      setLoadStatus('Could not load bikes: ' + err.message);
+      if (cached) {
+        setLoadStatus('Could not refresh (' + err.message + ') — showing saved data from ' + timeAgoLabel(cached.cachedAt) + '.');
+      } else {
+        setLoadStatus('Could not load bikes: ' + err.message);
+      }
     });
 }
 

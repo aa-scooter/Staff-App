@@ -4182,6 +4182,7 @@ editForm.addEventListener('submit', async (e) => {
     editStatusBox.className = data.warning ? 'status warn' : 'status ok';
     sheetRows = null;
     rowsPromise = null;
+    clearContractRowsCache();
     await loadRows();
     renderResults();
     setTimeout(closeEditModal, 700);
@@ -4469,6 +4470,7 @@ form.addEventListener('submit', async (e) => {
       setDefaultsToNow();
       sheetRows = null;
       rowsPromise = null;
+      clearContractRowsCache();
     } else {
       throw new Error(data.error || 'Unknown error');
     }
@@ -4503,20 +4505,73 @@ function setLoadStatus(msg) {
   el.classList.add('show');
 }
 
+// ---- Read-side stale-while-revalidate caches (ported from accounts.html's
+// loadMonth() cache, 2026-08-16 rollout -- see PROGRESS.md "NEXT UP" entry).
+// Two separate loaders here each get their own cache: the Search tab's
+// record list (this one), and the page-gating bike list further below
+// (CONTRACT_BIKES_CACHE_KEY). Same safety story as everywhere else this has
+// been ported: purely a display cache, every real write still reads fresh
+// and conflict-checks at write time, so a save is never based on what this
+// happens to be showing. ----
+const CONTRACT_ROWS_CACHE_KEY = 'aaContractRowsCache';
+function readContractRowsCache() {
+  try {
+    const raw = localStorage.getItem(CONTRACT_ROWS_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || !Array.isArray(parsed.rows)) return null;
+    return parsed;
+  } catch (e) { return null; }
+}
+function writeContractRowsCache(rows) {
+  try {
+    localStorage.setItem(CONTRACT_ROWS_CACHE_KEY, JSON.stringify({ rows, cachedAt: Date.now() }));
+  } catch (e) { /* localStorage full/unavailable -- best-effort only */ }
+}
+function clearContractRowsCache() {
+  try { localStorage.removeItem(CONTRACT_ROWS_CACHE_KEY); } catch (e) {}
+}
+function timeAgoLabel(ms) {
+  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  if (s < 5) return 'just now';
+  if (s < 60) return s + 's ago';
+  const m = Math.round(s / 60);
+  if (m < 60) return m + 'm ago';
+  const h = Math.round(m / 60);
+  return h + 'h ago';
+}
+
 function loadRows() {
   if (rowsPromise) return rowsPromise;
-  setLoadStatus('Loading records…');
+
+  const cached = readContractRowsCache();
+  if (cached && sheetRows === null) {
+    // Show last-known-good instantly instead of leaving the Search tab
+    // blocked on "Loading records…" -- the real fetch below still runs and
+    // replaces this the moment it resolves.
+    sheetRows = cached.rows;
+    setLoadStatus('Showing saved data from ' + timeAgoLabel(cached.cachedAt) + ' — refreshing…');
+    renderResults();
+  } else if (sheetRows === null) {
+    setLoadStatus('Loading records…');
+  }
+
   rowsPromise = getContractRowsFromJson()
     .then(data => {
       if (!data.success) throw new Error(data.error || 'Could not load data');
       sheetRows = data.rows;
       setLoadStatus(null);
+      writeContractRowsCache(sheetRows);
       return sheetRows;
     })
     .catch(err => {
-      setLoadStatus('Could not load records: ' + err.message + ' — tap Search again to retry.');
+      if (cached) {
+        setLoadStatus('Could not refresh (' + err.message + ') — showing saved data from ' + timeAgoLabel(cached.cachedAt) + '.');
+      } else {
+        setLoadStatus('Could not load records: ' + err.message + ' — tap Search again to retry.');
+      }
       rowsPromise = null; // allow retry
-      return [];
+      return sheetRows || [];
     });
   return rowsPromise;
 }
@@ -4551,9 +4606,43 @@ document.getElementById('pageGateRetry').addEventListener('click', () => {
   loadBikeNames();
 });
 
+const CONTRACT_BIKES_CACHE_KEY = 'aaContractBikeNamesCache';
+function readContractBikesCache() {
+  try {
+    const raw = localStorage.getItem(CONTRACT_BIKES_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || !Array.isArray(parsed.bikeNames)) return null;
+    return parsed;
+  } catch (e) { return null; }
+}
+function writeContractBikesCache(names, soldSet) {
+  try {
+    localStorage.setItem(CONTRACT_BIKES_CACHE_KEY, JSON.stringify({
+      bikeNames: names, soldBikeNames: Array.from(soldSet), cachedAt: Date.now()
+    }));
+  } catch (e) { /* localStorage full/unavailable -- best-effort only */ }
+}
+
 function loadBikeNames() {
   if (bikeNamesPromise) return bikeNamesPromise;
-  setBikeModelLoadStatus('Loading bikes…');
+
+  const cachedBikes = readContractBikesCache();
+  if (cachedBikes) {
+    // This list gates the WHOLE page behind a red "Loading bikes…" card
+    // today, every single visit -- exactly the "blank screen on every nav"
+    // problem this pattern exists for. Open the page immediately with the
+    // last-known bike list, refresh in the background, swap in the real
+    // list the moment it lands.
+    bikeNames = cachedBikes.bikeNames;
+    soldBikeNameSet = new Set(cachedBikes.soldBikeNames || []);
+    setBikeModelLoadStatus('Showing saved bike list from ' + timeAgoLabel(cachedBikes.cachedAt) + ' — refreshing…');
+    renderResults();
+    document.body.classList.add('bikes-ready');
+  } else {
+    setBikeModelLoadStatus('Loading bikes…');
+  }
+
   bikeNamesPromise = getPartsBikeNamesFromJson()
     .then(data => {
       if (!data.success) throw new Error(data.error || 'Could not load bike list');
@@ -4572,16 +4661,21 @@ function loadBikeNames() {
       renderResults();
       // Bikes are in -- open the page up.
       document.body.classList.add('bikes-ready');
+      writeContractBikesCache(bikeNames, soldBikeNameSet);
       return bikeNames;
     })
     .catch(err => {
-      setBikeModelLoadStatus('Could not load bike list: ' + err.message);
+      if (cachedBikes) {
+        setBikeModelLoadStatus('Could not refresh bike list (' + err.message + ') — showing saved data from ' + timeAgoLabel(cachedBikes.cachedAt) + '.');
+      } else {
+        setBikeModelLoadStatus('Could not load bike list: ' + err.message);
+      }
       if (!document.body.classList.contains('bikes-ready')) {
         pageGate.classList.add('gate-error');
         pageGateMsg.textContent = 'Could not load the bikes list: ' + err.message;
       }
       bikeNamesPromise = null;
-      return [];
+      return bikeNames;
     });
   return bikeNamesPromise;
 }
