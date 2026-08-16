@@ -6,6 +6,59 @@ This exists because work on this project gets picked up across multiple
 Claude sessions/accounts with no shared memory between them — this file is
 the handoff.
 
+## ✅ HOTFIX, tested and delivered — live "part.body.pipe is not a
+## function" error on every real photo upload (contract passport photos
+## AND bike photos), root cause was a long-standing bug, not a regression
+## (2026-08-15)
+
+**What happened:** Anton hit a live error on contract.html: after saving a
+new customer's details successfully, the passport photo failed with
+`Passport photo could not be uploaded: part.body.pipe is not a function`.
+
+**Root cause, confirmed against the actual library source and a matching
+GitHub issue rather than guessed:** `createImageFile` in
+`lib/googleDrive.js` passed a raw Node `Buffer` as `media.body` to
+`drive.files.create()`. googleapis' shared multipart-upload builder
+(`apirequest.ts`, used by every client the `googleapis` package generates)
+combines `requestBody` (metadata) + `media` (content) into one
+`multipart/related` request -- for any part whose body isn't a string, it
+unconditionally calls `part.body.pipe(...)`, assuming a Readable stream. A
+plain Buffer has no `.pipe`, hence the exact error. Matches
+`googleapis/google-api-nodejs-client#1833`, a long-standing, previously
+reported instance of this exact error.
+
+This is NOT a regression from anything shipped today (or ever) -- it looks
+to have been broken since `createImageFile` was first written. It was
+invisible to every test in this project because the fake Drive test
+doubles just stored `media.body` directly, never exercising googleapis'
+real pipe-based multipart internals. `createImageFile` is shared by BOTH
+contract passport-photo uploads (`api/contracts/[...path].js`) and bike
+photo uploads (`api/photos/[...path].js`, used by bikephotos.html) -- so
+this almost certainly affected bike photo uploads too, not just contracts.
+Worth Anton spot-checking whether any bike photos actually made it into
+Drive successfully in the past, or whether they've been silently failing
+the same way.
+
+**The fix:** wrap the buffer in a real Readable stream before handing it to
+googleapis -- `media: { mimeType, body: Readable.from(buffer) }` (`stream`
+is a Node built-in, no new dependency). This is the exact fix the
+library's own community points to for this error.
+
+**Testing:** upgraded the shared fake-Drive test double (`fakedrive.js`,
+used by `/tmp/contracttest` and `/tmp/phototest3`) to actually reject a raw
+Buffer passed as `media.body` -- exactly like the real library does --
+instead of silently accepting whatever shape it's handed, so the EXISTING
+photo-upload tests in both suites now function as real regression tests
+for this bug. Confirmed the old (buggy) code failed those tests against
+the upgraded fake with the expected error message, then confirmed the
+fixed code passes: `/tmp/contracttest/test.js` 51/51,
+`/tmp/phototest3/test.js` 30/30, plus `/tmp/yearcache/test.js` 39/39 and
+`/tmp/aitest/test.js` 60/60 (both unaffected, re-run for safety since they
+also depend on `lib/googleDrive.js`).
+
+**Files changed:** `lib/googleDrive.js` only (`createImageFile`, plus a new
+`require('stream')`).
+
 ## ✅ PERF FIX, tested and delivered — file-id caching, closing the gap
 ## Anton flagged after comparing this app's write speed to property-app's
 ## (2026-08-15)
