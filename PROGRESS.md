@@ -6,8 +6,9 @@ This exists because work on this project gets picked up across multiple
 Claude sessions/accounts with no shared memory between them — this file is
 the handoff.
 
-## 🔧 accounts.html: optimistic save UX (instant + background), CODED AND
-## TEST-GREEN, NOT YET DEPLOYED (2026-08-16)
+## 🔧 accounts.html: optimistic save UX (instant + background) + a
+## cross-page failure badge, CODED AND TEST-GREEN, NOT YET DEPLOYED
+## (2026-08-16)
 
 **What this is:** a different kind of speed fix than everything below. The
 write-parallelization + region work already got a single save down from
@@ -66,39 +67,109 @@ Retry (resubmits the exact same payload) or Discard per item.
   regardless of action, which would have silently hidden a still-real row
   after a failed edit or delete. Fixed, and now covered by dedicated tests
   (5 and 6 below) so it can't silently regress.
-- Deliberately NOT persisted across a page reload/close -- closing the tab
-  mid-save loses local tracking of it (the request may or may not have
-  completed server-side; there's no durable local queue). A proper
-  offline-friendly queue would be a real follow-on if that turns out to
-  matter in practice; explicitly out of scope for this pass.
+**UPDATE (later the same day) -- real-world test caught a genuine
+double-submit bug, since fixed:** Anton deployed nothing yet, but ran the
+first version against a real deployed build (`staff-app-six-phi.vercel.app`),
+actually turned his wifi off mid-save to test the failure path for real.
+The banner correctly appeared ("failed to add"). He clicked Retry; it
+wasn't obviously visible that anything had started, so he clicked Retry
+again -- and once wifi came back, BOTH attempts went through, creating a
+duplicate row. Root cause: `queueMonthSave`'s serialization only stops two
+writes from racing each other on the wire -- it does nothing to stop a
+SECOND retry from being queued at all while a first one is still
+outstanding; both eventually ran, both eventually succeeded, both wrote a
+row. Fixed with a new `optInFlight` Set that `submitOptimistically()`
+checks and holds for the full duration of a submission (including time
+spent waiting in the per-month queue, not just the network call) --
+`retryOptItem()` is now a no-op if the same optId is already mid-submission,
+so a second trigger (double click, or anything else that might call it
+again) can never queue a duplicate attempt. Covered by a new test (7,
+below) that calls `retryOptItem()` twice back-to-back and asserts only one
+extra network call happens. NOTE: this closes the double-submission path,
+but there's a harder, separate problem this does NOT fully solve -- if a
+save actually succeeds server-side but the client's connection drops
+before the response arrives, the client will still believe it failed and
+a subsequent retry would create a real duplicate. Fixing THAT would need
+an idempotency key generated client-side and checked server-side before
+writing, which is a backend change -- out of scope for this "frontend UX,
+accounts.html only" pass. Flagging it here in case duplicates keep
+happening even after this fix; that's the tell it's this deeper issue
+rather than the one just fixed.
+
+**Also considered, then explicitly dropped by Anton:** automatic
+background retry (checking failed saves every 30s and retrying them
+without a person having to tap anything). Built once, then removed at
+Anton's request ("don't worry about the auto retry, just stick with
+manual") -- not in the delivered code. If this comes up again later, the
+`optInFlight` guard already in place is exactly what would make auto-retry
+and manual retry safe to coexist (whichever fires first wins, the other
+is a no-op) -- see the git history around this entry if picking that back
+up.
+
+**Also added -- a cross-page failure indicator, since accounts.html's own
+banner only helps while you're actually on that page:** this is a
+multi-page site, not a single-page app, so navigating to bikes.html/
+contract.html/etc. tears down accounts.html's whole script (and its
+in-memory failure list) the moment you leave. Failed (not pending, not
+warning) saves are now mirrored into `localStorage` under
+`aaAccountsFailedSaves` (`persistFailedSaves()`/`restoreFailedSaves()` in
+accounts.html) every time the in-page list changes. `nav.js` -- the shared
+header included on every page -- reads that same key on load and shows a
+small red pill in the top bar ("⚠ N") linking back to accounts.html when
+there's anything unresolved; absent otherwise. accounts.html itself also
+reads it back in on its own load, so a failure now survives a reload of
+accounts.html, not just navigation elsewhere (retry still works even
+though the specific row's pending/failed visual can't be reconstructed
+after a reload -- currentExpenses/currentIncome are freshly loaded from
+the server at that point and have no memory of a never-saved local entry;
+`retryOptItem` already guards on `if (entry)` so this degrades gracefully,
+it just resubmits without a matching row to flag). Real limitation worth
+knowing: the badge is only read once per page load -- it won't live-update
+if you're sitting on a different page while a failure happens elsewhere
+(there's nothing "elsewhere" to cause that in a single-tab workflow, but
+worth knowing if this app ever gets used multi-tab).
+
+**Deliberately still NOT persisted:** anything currently in flight
+(mid-save or mid-retry) -- only settled failures are saved to
+`localStorage`. Closing the tab mid-save still loses tracking of that one
+specific attempt; there's no durable queue for in-flight state, same
+limitation as the first version of this entry, just narrowed now that
+failures themselves do survive.
 
 **Testing:** pure frontend change (no Drive/backend code touched), so the
 fake-Drive harness pattern used for the write-parallelization pass doesn't
 apply here -- instead built a Playwright-driven test harness
-(`/tmp/optsave/test.js` on the sandbox -- local scratch, recreate if picked
-up again) that serves the real modified `accounts.html` over a local HTTP
-server, drives it through actual clicks/field-fills (not calling internal
-functions directly except where that's the more faithful way to set up a
-scenario), and monkey-patches only the two network-touching functions
+(`/tmp/optsave/test.js` on the sandbox, plus `/tmp/optsave/nav-test-host.html`
+for the badge -- both local scratch, recreate if picked up again) that
+serves the real modified `accounts.html`/`nav.js` over a local HTTP server,
+drives it through actual clicks/field-fills (not calling internal functions
+directly except where that's the more faithful way to set up a scenario or
+to test a guard robustly regardless of UI timing -- see Test 7), and
+monkey-patches only the two network-touching functions
 (`accountsWriteDispatch`, `getAccountsDataFromJson`) to script
 success/failure/disambiguation responses with an artificial delay, so
-timing assertions are meaningful. 28/28 green across 6 scenarios: add
-succeeds (instant pending row, page stays interactive, clean settle,
-reconciled to the real row number); add fails then a Retry succeeds
-(banner appears/clears correctly); edit hits `needsDisambiguation` (reverts
-to the original value, the REAL picker UI reopens -- not a fake stand-in --
-candidate choice resubmits correctly with `cashRowChoice`); two same-month
-saves fired back-to-back never overlap on the wire (proves the
-serialization queue); failed-edit Discard restores the original value
-without deleting the row; failed-delete Discard un-marks the row without
-removing it (the two tests that caught and pin the Discard bug above).
+timing assertions are meaningful. 41/41 green across 10 scenarios (the
+original 6 -- see below -- plus): retrying the same item twice before the
+first attempt resolves submits exactly once, not twice (pins the real bug
+above); a failed save writes to `localStorage` and clears once resolved;
+reloading accounts.html mid-failure brings the banner/review panel/working
+Retry back with no user action; nav.js's badge shows the right count and
+is absent when there's nothing to review. Original 6: add succeeds
+(instant pending row, page stays interactive, clean settle, reconciled to
+the real row number); add fails then a Retry succeeds (banner appears/
+clears correctly); edit hits `needsDisambiguation` (reverts to the original
+value, the REAL picker UI reopens -- not a fake stand-in -- candidate
+choice resubmits correctly with `cashRowChoice`); two same-month saves
+fired back-to-back never overlap on the wire (proves the serialization
+queue); failed-edit Discard restores the original value without deleting
+the row; failed-delete Discard un-marks the row without removing it.
 
 **Not yet done:** deliver via the device bridge, get Anton's go-ahead to
 push, then a real test click or two (including deliberately going offline
-mid-save, if there's an easy way to simulate that) to confirm the feel
-matches what the mockup/tests predicted before calling this settled.
+mid-save again) to confirm the double-submit fix and the nav badge both
+hold up for real, before calling this settled.
 
-**Files changed:** `accounts.html` only.
+**Files changed:** `accounts.html`, `nav.js`.
 
 ---
 

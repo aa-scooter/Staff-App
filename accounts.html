@@ -3806,6 +3806,20 @@ let optSeq = 0;
 // loadMonth() (switching months and back doesn't lose it).
 const optItems = new Map();
 
+// optIds currently mid-submission -- covers both a fresh save/delete and a
+// retry of a failed one. This is the guard against double-submitting the
+// same logical change: without it, clicking Retry a second time (or an
+// auto-retry tick firing while a manual retry is still out) would queue a
+// SECOND real accountsWriteDispatch call for the same entry, and
+// queueMonthSave's serialization only stops them from racing each other --
+// it does nothing to stop both from eventually running and both
+// succeeding, which is exactly how Anton got a duplicate row testing this
+// live (turned wifi off, saw "failed to add", hit Retry, it looked like
+// nothing happened so hit Retry again -- both went through once wifi came
+// back). Every retry path (manual click, auto-retry tick below) MUST go
+// through submitOptimistically, which is the only thing that checks this.
+const optInFlight = new Set();
+
 // Serializes background saves per month, so two saves fired close together
 // (now possible since Save no longer blocks the page) can't race each
 // other's read-modify-write against the same Drive file -- the same class
@@ -3821,7 +3835,71 @@ function queueMonthSave(monthIndex, taskFn) {
   return run;
 }
 
+// Shared with nav.js's shared topbar (see the "sync-badge" block there) so
+// a failed save is visible from ANY page, not just while sitting on
+// accounts.html -- this is a normal multi-page site, not a single-page
+// app, so navigating to bikes.html/contract.html/etc. tears down this
+// whole script and optItems along with it. Persisting the failed (not
+// pending, not warning -- see persistFailedSaves) list here is what lets
+// both the nav badge AND a reload of accounts.html itself recover it.
+// Only ever read/written here and in nav.js -- keep the two in sync if
+// this shape ever changes.
+const FAILED_SAVES_STORAGE_KEY = 'aaAccountsFailedSaves';
+
+// Called every time optItems changes (see updateOptBanner below, the one
+// place both are always kept in step). Deliberately only persists 'failed'
+// items, not 'warning' ones (a warning means the save already succeeded --
+// nothing at risk, not worth alarming someone on a different page over)
+// and not anything currently in flight (optInFlight -- an in-progress
+// retry has no stable state worth freezing; if the tab closes mid-retry
+// the outcome is genuinely unknown either way, same limitation as before
+// this pass). Wrapped in try/catch -- localStorage can throw in private
+// browsing or when full; the in-page banner still works regardless, this
+// is purely a best-effort cross-page nicety on top of it.
+function persistFailedSaves() {
+  try {
+    const arr = [];
+    optItems.forEach((item, optId) => {
+      if (item.kind !== 'failed') return;
+      arr.push({ optId, isIncome: item.isIncome, monthIndex: item.monthIndex, payload: item.payload, label: item.label, message: item.message });
+    });
+    if (arr.length) localStorage.setItem(FAILED_SAVES_STORAGE_KEY, JSON.stringify(arr));
+    else localStorage.removeItem(FAILED_SAVES_STORAGE_KEY);
+  } catch (e) { /* best-effort, see comment above */ }
+}
+
+// Called once on page load (see the init section near the bottom of this
+// script) -- brings back whatever was left unresolved from before this
+// page load (a reload of accounts.html itself, or arriving here via the
+// nav badge from a different page). Deliberately does NOT try to restore
+// the in-list placeholder row's pending/failed visual -- currentExpenses/
+// currentIncome are freshly loaded from the server at this point and have
+// no memory of a never-saved local entry. What it DOES restore is the
+// banner + review panel + Retry/Discard, which is the part that actually
+// matters (retryOptItem resubmits payload just fine even when there's no
+// matching row to visually flag -- see its own `if (entry)` guard).
+function restoreFailedSaves() {
+  try {
+    const raw = localStorage.getItem(FAILED_SAVES_STORAGE_KEY);
+    if (!raw) return;
+    const arr = JSON.parse(raw);
+    if (!Array.isArray(arr)) return;
+    arr.forEach(rec => {
+      if (!rec || !rec.optId || !rec.payload) return;
+      optItems.set(rec.optId, {
+        kind: 'failed', isIncome: !!rec.isIncome, monthIndex: rec.monthIndex,
+        payload: rec.payload, label: rec.label || (rec.isIncome ? 'Income entry' : 'Expense'),
+        message: rec.message || 'Save failed.'
+      });
+    });
+    updateOptBanner();
+  } catch (e) {
+    localStorage.removeItem(FAILED_SAVES_STORAGE_KEY); // corrupt/old shape -- don't let a stale badge get stuck forever
+  }
+}
+
 function updateOptBanner() {
+  persistFailedSaves();
   const banner = document.getElementById('optBanner');
   let failed = 0, warned = 0;
   optItems.forEach(i => { if (i.kind === 'failed') failed++; else warned++; });
@@ -3866,6 +3944,16 @@ function openSaveReview(focusOptId) {
   }
 }
 function closeSaveReview() { document.getElementById('optOverlay').classList.remove('show'); }
+
+// Re-renders the review panel's contents in place if it's already open --
+// used after a retry/discard/auto-retry tick changes optItems. Deliberately
+// does NOT open the panel if it wasn't already open -- an auto-retry tick
+// firing in the background must never pop a panel open that the user never
+// asked to see.
+function refreshReviewPanelIfOpen() {
+  if (!document.getElementById('optOverlay').classList.contains('show')) return;
+  if (optItems.size === 0) closeSaveReview(); else openSaveReview();
+}
 document.getElementById('optOverlay').addEventListener('click', (e) => { if (e.target.id === 'optOverlay') closeSaveReview(); });
 document.getElementById('optPanelCloseBtn').addEventListener('click', closeSaveReview);
 document.getElementById('optBanner').addEventListener('click', () => openSaveReview());
@@ -3887,15 +3975,24 @@ function discardOptItem(optId) {
   // have wrongly hidden a still-real row after a failed edit or delete).
   revertOptimistic(optId, item.payload, item.isIncome);
   updateOptBanner();
-  if (optItems.size === 0) closeSaveReview(); else openSaveReview();
+  refreshReviewPanelIfOpen();
 }
 
+// Triggered by the review panel's Retry button OR by autoRetryTick() below
+// -- both go through this same function, and both are subject to the same
+// optInFlight guard inside submitOptimistically(), which is what actually
+// stops a manual retry and an auto-retry (or two manual clicks) from ever
+// both being in flight for the same item at once. If a retry is already
+// running for this optId, submitOptimistically() below is a no-op, so
+// calling this again is always safe -- callers don't need to check
+// optInFlight themselves.
 function retryOptItem(optId) {
   const item = optItems.get(optId);
   if (!item) return;
+  if (optInFlight.has(optId)) return; // already retrying -- ignore, don't queue a second attempt
   optItems.delete(optId);
   updateOptBanner();
-  if (optItems.size === 0) closeSaveReview(); else openSaveReview();
+  refreshReviewPanelIfOpen();
   const isDeleteRetry = item.payload.action === 'deleteExpense' || item.payload.action === 'deleteIncome';
   if (Number(monthSelect.value) === item.monthIndex) {
     const arr = item.isIncome ? currentIncome : currentExpenses;
@@ -3945,11 +4042,21 @@ function revertOptimistic(optId, payload, isIncome) {
 // regardless of how long the request took or whether the user has since
 // switched months.
 async function submitOptimistically(payload, optId) {
+  // The actual double-submit guard (see optInFlight's own comment above).
+  // queueMonthSave alone only prevents two writes from racing each other
+  // on the wire -- it does NOT stop a second one from being queued and
+  // later running (and succeeding) after the first one already did. This
+  // does: if this optId is already mid-submission, don't even queue
+  // another attempt.
+  if (optInFlight.has(optId)) return;
+  optInFlight.add(optId);
+
   const isDelete = payload.action === 'deleteIncome' || payload.action === 'deleteExpense';
   const isIncome = payload.action === 'addIncome' || payload.action === 'editIncome' || payload.action === 'deleteIncome';
   const stillOnThatMonth = () => Number(monthSelect.value) === payload.monthIndex;
 
-  await queueMonthSave(payload.monthIndex, async () => {
+  try {
+    await queueMonthSave(payload.monthIndex, async () => {
     let res, err = null;
     try {
       // DISCONNECTED: writes to the static data/ JSON export instead of the live scriptUrl (see project CLAUDE.md)
@@ -4012,7 +4119,10 @@ async function submitOptimistically(payload, optId) {
       });
       updateOptBanner();
     }
-  });
+    });
+  } finally {
+    optInFlight.delete(optId);
+  }
 }
 
 // Shared by both Save and Delete -- applies the change to the on-page list
@@ -4327,6 +4437,11 @@ transferModalSaveBtn.addEventListener('click', async () => {
 
 // Default to the current month.
 loadMonth(new Date().getMonth());
+
+// Bring back any failed saves left over from before this page load (a
+// reload of this page, or arriving here via the nav badge -- see
+// restoreFailedSaves()'s own comment above).
+restoreFailedSaves();
 </script>
 
 

@@ -138,6 +138,23 @@
     '  }\n' +
     '  .topbar .cal-link:hover{ background:rgba(255,255,255,.22); }\n' +
     '  .topbar .cal-link.active{ background:rgba(255,255,255,.28); }\n' +
+    '  .topbar .sync-badge{\n' +
+    '    display:flex;\n' +
+    '    align-items:center;\n' +
+    '    gap:4px;\n' +
+    '    padding:0 8px;\n' +
+    '    height:26px;\n' +
+    '    border-radius:7px;\n' +
+    '    background:#C53030;\n' + // hardcoded, not var(--bad) -- this file only guarantees --petrol/--cone/--line exist on every page (see the top-of-file comment), not --bad
+    '    color:#fff;\n' +
+    '    text-decoration:none;\n' +
+    "    font-family:'Barlow Condensed',sans-serif;\n" +
+    '    font-weight:700;\n' +
+    '    font-size:12px;\n' +
+    '    letter-spacing:.02em;\n' +
+    '    white-space:nowrap;\n' +
+    '  }\n' +
+    '  .topbar .sync-badge:hover{ background:#A82828; }\n' +
     '  .topbar .bug-link{\n' +
     '    all:unset;\n' + // several pages define a bare `button{...}` reset for their
                          // own form buttons (customers.html, contract.html, parts.html,
@@ -428,11 +445,36 @@
     });
   }
 
+  // Small alert pill shown in the shared header when accounts.html has one
+  // or more saves that failed to reach Google Drive and are still waiting
+  // on a retry -- see accounts.html's persistFailedSaves()/optItems/
+  // FAILED_SAVES_STORAGE_KEY, which this key name and shape are shared
+  // with (keep both in sync if either ever changes). This exists because
+  // accounts.html's own in-page banner only helps while you're actually
+  // ON accounts.html -- this is a normal multi-page site, not a
+  // single-page app, so navigating anywhere else tears down that page's
+  // whole script (and its in-memory failure list) along with it. Read
+  // fresh once per page load, same as the rest of this topbar -- doesn't
+  // live-update if another tab changes it while this page stays open.
+  function syncBadgeHtml() {
+    try {
+      var raw = localStorage.getItem('aaAccountsFailedSaves');
+      if (!raw) return '';
+      var arr = JSON.parse(raw);
+      if (!Array.isArray(arr) || !arr.length) return '';
+      var n = arr.length;
+      return '<a class="sync-badge" href="accounts.html" title="' + n + ' accounts save' + (n === 1 ? '' : 's') +
+        ' didn\'t reach Google Drive -- tap to review">&#9888; ' + n + '</a>';
+    } catch (e) { return ''; } // corrupt/inaccessible storage -- fail quiet, same as everything else here
+  }
+
   function renderTopbar() {
     var mount = document.getElementById('topbar-mount');
     if (!mount) return; // page opted out of the shared header
 
     injectCss();
+
+    var syncHtml = syncBadgeHtml();
 
     // Links to the in-app Calendar page (calendar.html), which embeds the
     // shared bike-returns Google Calendar directly -- no separate Google
@@ -457,6 +499,7 @@
       '      <img src="https://scooterrentalchiangmai.com/wp-content/uploads/2025/02/cropped-logo-3333-101x105.png" alt="AA Scooters logo">\n' +
       '      <span>AA Scooter Rental</span>\n' +
       '    </a>\n' +
+      '    ' + syncHtml + '\n' +
       '    ' + calLinkHtml + '\n' +
       '    ' + bugLinkHtml + '\n' +
       '  </div>\n' +
