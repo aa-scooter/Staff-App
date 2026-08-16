@@ -6,6 +6,199 @@ This exists because work on this project gets picked up across multiple
 Claude sessions/accounts with no shared memory between them — this file is
 the handoff.
 
+## 🔧 IN PROGRESS — accounts.html write parallelization: coded, tested
+## GREEN against a fake-Drive harness, NOT YET DEPLOYED (2026-08-16)
+
+**Status: mid-task, picking up here.** Before touching code, re-verified
+the working copy on Anton's Mac against `origin/main` (given this
+project's documented history of files silently reverting) -- `git status`
+showed only an uncommitted `PROGRESS.md`, and a direct hash comparison of
+`lib/accountsWrites.js`/`api/accounts/write.js`/`accounts.html` against
+their `origin/main` blobs came back byte-identical. Clean start, no drift.
+
+**What was built, per the plan approved at the end of the previous
+session** (see the untouched paragraphs below this one for the original
+root-cause analysis): `lib/accountsWrites.js`'s six write functions
+(`addExpenseRowFromJson`, `addIncomeRowFromJson`, `editExpenseRowFromJson`,
+`editIncomeRowFromJson`, `deleteExpenseRowFromJson`,
+`deleteIncomeRowFromJson`) were each restructured from a long chain of
+sequential `await`s into: solitary initial read(s) → solitary primary row
+write (unchanged failure semantics -- still aborts the whole request if it
+fails, still runs before any best-effort side effect) → one `Promise.all`
+batch of independent lanes (notes sidecar / cash sheet / bikes sheet /
+"touch the month sheet again" for deposit-total and expense-type-total,
+whichever apply) → a second `Promise.all` pairing the summary cascade with
+the transaction-log write. Each lane keeps its own existing try/catch
+exactly as before (same warning messages, same best-effort semantics), so
+none of the `Promise.all` calls can reject on their own -- only a genuine
+hard failure in the solitary row write still aborts the request.
+`editExpense`/`editIncome`/`deleteExpense`/`deleteIncome` also got a small
+bonus win: their two initial reads (the month-sheet row and the
+`<month>_notes` sidecar) don't depend on each other and are now batched too.
+`transferToBankFromJson` and `bulkSetExpenseTypeFromJson` were deliberately
+left untouched (short/different shape, not what was flagged slow). Every
+function also got `Date.now()`-based timing instrumentation
+(`console.log('[accountsWrites] <label>: <ms>ms')` around each phase and a
+`TOTAL` at the end) since Vercel's log tool has no per-request duration
+breakdown -- the next real test click will show actual per-wave numbers.
+
+**A real correctness bug was found and fixed by the test suite below, not
+guessed at:** `logTransactionB`'s retry-on-`ConflictError` loop only
+protects against a race where `transactionLog.json` already EXISTS --
+`writeJsonFile`'s conflict check is skipped entirely when the file doesn't
+exist yet (no `modifiedTime` to compare against). Once several lanes could
+call `logTransactionB` concurrently in the same request (e.g. a cash
+append's own internal log call racing the top-level log call), if
+`transactionLog.json` happened not to exist yet at all, two concurrent
+"doesn't exist, I'll create it" callers could both create it -- Drive
+allows duplicate filenames in the same folder -- silently orphaning one
+entry in a duplicate file no later read would ever see again. This could
+never happen in the old sequential code (only ever one `logTransactionB` in
+flight at a time). Fixed with a small in-request promise queue
+(`logQueue`) that every `logTransactionB` call chains onto, serializing
+just the log read-modify-write across all lanes without blocking any
+lane's other, unrelated work -- safe to scope per-request since
+`createAccountsWrites` is instantiated fresh per request already (see
+`api/accounts/write.js`). In production this specific race is unlikely to
+ever fire (`transactionLog.json` has existed since this feature's original
+15/08/2026 launch), but it's a real gap this pass introduced and is now
+closed rather than left as a known risk.
+
+**Testing (fake-Drive, differential against the git-committed pre-change
+version, not just eyeballed):** built a fresh harness (`/tmp/accountstest3/`
+on the sandbox -- local scratch, not part of the delivered project,
+recreate if picked up again) rather than reusing the described-but-ephemeral
+`/tmp/accountstest2/` from the prior session (never existed in this
+session's environment). Rather than hand-computing expected sums for a
+made-up fixture, took the git-committed pre-change `lib/accountsWrites.js`
+(`git show HEAD:...`, commit `1527511`) as the OLD/sequential baseline, ran
+BOTH the OLD and NEW code through IDENTICAL fixtures (a from-scratch but
+internally-consistent fake month sheet/notes sidecar/cash sheet/bikes
+sheet, built to satisfy every label/column lookup the real code performs,
+self-healing row search included), and asserted the FINAL Drive file state
+and response payload are byte-identical between the two -- so correctness
+is checked against the actual old behavior, not a hand-derived guess. 8
+scenarios covering all 6 restructured functions and every lane
+(`addExpense` cash+personal+bikeSplit, `addExpense` wise+business,
+`addIncome` cash+bikeSplit, `addIncome` wise+paidFromDeposit -- exercising
+the two-same-file-writes-in-one-lane case, `editExpense`
+cash→wise/business→personal, `editIncome` wise→cash, `deleteExpense`
+cash+wages+bikeSplit, `deleteIncome` wise+bikeSplit), each diffed with
+`transactionLog` entries' volatile `id`/`ts` fields masked and sorted
+(since concurrent log-append order isn't -- and was never meant to be --
+guaranteed). This is what caught the `logTransactionB` race above
+(`editIncome wise→cash` failed the diff before the fix, matched after).
+Also added: a same-file-overlap guard (records every read/write's wall-clock
+start/end keyed by `folderId::filename`, asserts no two writes to the same
+key ever overlap -- green); a real-concurrency timing proof (80ms artificial
+delay on the notes/cash/bikes files, real `setTimeout`-based, run through
+both OLD and NEW -- OLD took ~590ms, genuinely sequential; NEW took
+~260ms, well under 60% of OLD's time, with the three delayed lanes'
+reads starting within 0-1ms of each other, proving they actually ran
+concurrently and not just "looks parallel in the code"). Regression-proofed
+the `logTransactionB` fix specifically: reverted just the queue, re-ran,
+confirmed the EXACT same scenario (`editIncome wise→cash`) failed and
+nothing else did, restored, confirmed 20/20 green again. Final tested file
+hash-verified identical to what's about to be delivered.
+
+**Not yet done:** deploy, then ask Anton for one more real "add expense"
+click, then pull fresh Vercel production logs -- this time the new
+`console.log` instrumentation should show real per-wave timings (not just
+total request time) to confirm the actual measured improvement, the way
+every prior perf pass in this file was verified against real production
+logs rather than fake-Drive timing alone.
+
+**Files changed:** `lib/accountsWrites.js` only.
+
+---
+
+**Original root-cause writeup this pass was scoped from (2026-08-16,
+kept for reference):** The entry directly below this one ("ARCHITECTURE
+CHANGE... every add/edit/delete/transfer is now ONE browser round trip")
+shipped and deployed (commit `1527511`, confirmed live). Anton tested it
+for real right after deploy and reported it was STILL ~16 seconds to add
+an expense -- so the architecture move alone did not fix the perceived
+slowness, even though it worked correctly.
+
+**What was checked (Vercel MCP connector, `get_runtime_errors` +
+`get_runtime_logs`, projectId `prj_Af5KhlICFm0SIQKIYKvlyefQZ7Sj`, teamId
+`team_o7QzdS7AYzDGLMCvQdObHMlC`):** pulled fresh production logs for
+Anton's two real test saves (05:31:29 and 05:32:01 UTC, 2026-08-16).
+Confirmed good news first: zero errors on `/api/accounts/write` (the one
+unrelated pre-existing warning, `url.parse()` deprecation on
+`/api/data/[sheet]`, is untouched by this work), and the browser really is
+only making ONE request per save now -- the architecture fix itself is
+correct and live.
+
+**Root cause of the continued slowness:** the ~9-13 Drive read/write calls
+that used to be spread across separate browser round trips are now all
+happening inside that ONE server request -- but STILL sequentially, one
+`await`ed after another, inside `lib/accountsWrites.js`. Evidence: in both
+observed saves, the gap between the `POST /api/accounts/write` log line and
+the immediate follow-up `GET /api/data/August` + `GET /api/data/August_notes`
+(the client's `refreshSummaryAfterSave` call, fired right after the save
+response comes back) was a consistent ~14 seconds both times -- strongly
+implicating the POST itself as the slow part, not client-side think time.
+Manually counting Drive calls for one plain "add cash expense" through
+`addExpenseRowFromJson` (even on a WARM session with every folder/file id
+already cached) comes to roughly 13 sequential Drive API calls: read+write
+month sheet (x2, once for the row write, once again inside the summary
+cascade), read+write notes sidecar, read+write cash sheet, one more cash
+write inside the cascade recompute, read+write transactionLog (x2, since
+`logTransactionB` now runs twice per cash expense -- once from
+`appendCashExpenseRowFromJson`'s own internal log call, once as the
+top-level entry -- and is now `await`ed both times instead of
+fire-and-forget). None of that changed the CORRECTNESS of the port (the
+call count math matches what was already documented/tested in the entry
+below) -- it just means the "9 separate trips" problem was moved inside one
+request rather than actually reduced, and several of those calls are
+genuinely independent of each other (e.g. reading the month sheet, its
+notes sidecar, and the cash sheet don't depend on each other's results) but
+the ported code still runs them one at a time, exactly as it did in the
+browser version, because that's what a byte-for-byte port preserves.
+
+**Fix approved by Anton, NOT YET STARTED:** (1) add lightweight timing
+instrumentation (e.g. wrap `sheetIO.fetchSheetWithMeta`/`writeSheetJson`
+calls, or bracket each major step with `console.time`/`console.timeEnd`, or
+Date.now() diffs logged via `console.log`) so the NEXT test click gives real
+per-step numbers instead of the estimate above -- Vercel's runtime-log tool
+has no built-in per-request duration breakdown, only start/status/path per
+line, so this is the only way to get real data. (2) Parallelize the
+genuinely-independent Drive reads/writes inside `lib/accountsWrites.js`'s
+write functions (`addExpenseRowFromJson`/`addIncomeRowFromJson`/
+`editExpenseRowFromJson`/etc.) using `Promise.all`, the exact same pattern
+already proven twice in this project's own history: `api/data/[sheet].js`'s
+own `resolveYearFolderId` caching writeup, and (cited directly to Anton
+during the earlier "why is property-app faster" discussion)
+`property-app`'s `api/data/route.ts` GET handler, whose own comment
+explicitly credits running independent Drive calls concurrently instead of
+stacked for cutting a "fifteen seconds every time" load down to "roughly
+whichever one is slowest, not the sum of all three." SAME testing
+discipline as every other change in this project: fake-Drive regression
+suite first (there's already one at `/tmp/accountstest2/` from the previous
+pass, though that's local scratch, not committed -- recreate/extend it,
+verifying call ORDER doesn't matter for correctness once parallelized, only
+that genuinely-independent calls are the ones being parallelized, never
+ones with a real data dependency), then deploy, then ask Anton for one more
+real test click and pull fresh logs to confirm the actual number improved.
+Do NOT reduce the total DATA correctness of any write while doing this --
+this is purely a "run the independent parts at the same time instead of
+back-to-back" change, not a change to what gets written or when relative to
+what depends on it.
+
+**Anton's own words approving this, verbatim (2026-08-16, right before this
+session had to hand off due to a usage limit):** "Yes. Good afternoon. Go
+ahead and do it." -- said in direct response to the plan above (timing
+instrumentation + parallelizing independent Drive calls in
+`lib/accountsWrites.js`, tested the same rigorous way as every prior change,
+deploy, then verify with one more real click + fresh logs).
+
+**Files involved:** `lib/accountsWrites.js` (the file to change),
+`api/accounts/write.js` (unlikely to need changes, but re-check once
+`lib/accountsWrites.js`'s function signatures/return shapes are touched),
+`accounts.html` (should NOT need further changes for this specific fix --
+its `accountsWriteDispatch` already just does one `fetch()`).
+
 ## ✅ ARCHITECTURE CHANGE, tested and delivered — accounts.html's write
 ## layer moved server-side; every add/edit/delete/transfer is now ONE
 ## browser round trip instead of ~9 (2026-08-16)
