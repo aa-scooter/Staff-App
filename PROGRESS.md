@@ -6,6 +6,118 @@ This exists because work on this project gets picked up across multiple
 Claude sessions/accounts with no shared memory between them — this file is
 the handoff.
 
+## 🚧 Phase 2, bikes.html write layer: INVENTORY/DESIGN DONE, NO CODE
+## WRITTEN YET (2026-08-16, later same evening) -- read this before starting
+## the actual port
+
+**Status, plainly:** the read-side cache pass above finished clean, tested,
+and is queued to push. Immediately after, started on bikes.html's write-
+layer port (the optimistic + idempotency pattern, same as accounts.html
+got) per Anton's go-ahead to work on it unattended overnight. Traced the
+ENTIRE write surface (below) but deliberately did **not** start writing
+`lib/bikesWrites.js` -- explaining why, since "why stop here" matters more
+than usual on this one.
+
+**Why no code got written tonight:** every write action on this page turns
+out to touch several sheets in a chained, sometimes multi-step cascade
+(ledger entry, monthly income row, cash sheet, bikes-sheet running total,
+Contract-row sync, deposit-bucket release/pay, transaction log -- see the
+action list below), with direct row/column cell math in places (e.g.
+`returnDepositFromJson`'s deposit-clear step indexes into
+`cat.dateCol`/`cat.amountCol`/`cat.nameCol` directly). This is a bigger,
+more interdependent write surface than accounts.html's was, and
+accounts.html's own port -- by Anton's own account -- took a full
+dedicated session AND caught a real bug (the double-submit issue) only
+because of the Playwright suite. Starting to port this business logic
+into `lib/bikesWrites.js` without being able to finish AND fully test it
+in the same sitting would leave a half-translated, unverified copy of
+money-and-inventory logic sitting in the repo -- worse than not starting,
+because a future session (or Anton) could mistake partially-ported code
+for trustworthy. Per the standing rule above ("never deliver a half-
+ported write layer") and CLAUDE.md's own file-integrity history on this
+project, the safer stopping point was: fully map the surface, write
+NOTHING into `lib/`, leave bikes.html's actual behavior 100% unchanged.
+
+**The full write-action inventory (traced by reading the actual click
+handlers, not guessed from function names):**
+
+1. **`performMarkReturned(rowNumber, isoDate)`** -- normal return (the
+   "Early return" box left unticked). Triggered from the `.confirm-return`
+   click handler via `confirmReturn()`.
+2. **`earlyReturnBikeFromJson(data)`** -- early return with refund
+   (`.confirm-return` handler, `confirmReturn()`, when the Early Return box
+   IS ticked -- refund can be 0, still routes through this action rather
+   than #1). Full refund/ledger/Contract/bikes-sheet cascade -- see the
+   function's own block comment.
+3. **`returnDepositFromJson(data)`** -- fires as a SEPARATE best-effort
+   follow-up call after #1 or #2 succeeds, only when a security deposit was
+   matched on the return popup. Clears the matched deposit cell(s) and, if
+   a deduction was entered, logs it as income. A failure here does NOT
+   roll back the return that already succeeded (surfaces its own alert).
+4. **`performUpdateReturnPickup(rowNumber, isoDate, hhmm, deliveryLink)`**
+   -- the separate "edit pickup/return time" popup, independent of a full
+   return.
+5. **`extendBikeRowFromJson(data)`** -- SHORT extension (under 30 days,
+   "long extension" box unticked): simple in-place update to the existing
+   customer row. Triggered via `confirmExtend()`.
+6. **`closeBikeForExtendFromJson(rowNumber)` THEN
+   `customerIntakeFromJson(payload)`** -- LONG extension (30+ days, or the
+   checkbox ticked): TWO sequential, dependent write calls, not one -- close
+   out the old booking, then submit a brand-new customer row for the new
+   period (reusing bikes.html's own local `customerIntakeFromJson`, NOT
+   customers.html's or contract.html's -- three separate copies of similar
+   logic across the app, confirmed by reading each file, not assumed).
+   Also triggered via `confirmExtend()`, the other branch.
+7. **`swapBikeFromJson(data)`** -- bike swap. Closes out the old customer
+   row, opens a new one for the swapped bike, touches the bikes sheet.
+   Triggered via `submitSwap()`. Cleanest/most self-contained of the set --
+   candidate to port FIRST next session, same "smallest real slice first"
+   approach as anything else this rollout has done.
+
+**Internal helpers these 7 actions cascade through** (not separate UI-
+triggered actions themselves, but each is real business logic that has to
+be ported faithfully as part of whichever action(s) call it -- listed so
+the next session doesn't have to re-discover them): `appendLedgerEntryFromJson`,
+`appendMonthlyIncomeRowFromJson`, `appendCashSheetRowFromJson`,
+`addRentalAmountToBikesSheetFromJson`, `addRentalAmountToBikesSheetForMonthFromJson`,
+`processDepositForPaymentFromJson`, `addAmountToContractRowFromJson`,
+`syncContractReturnDateOnlyFromJson`, `syncContractRowTotalsFromJson`,
+`renameContractBikeOnSwapFromJson`, `appendSwapUpgradeIncomeRowFromJson`,
+`appendEarlyReturnRefundToLedgerFromJson`, `appendEarlyReturnRefundIncomeRowFromJson`,
+`appendCashExpenseRowFromJson`, `writeDepositTransferIncomeRowFromJson`,
+`writeDepositTransferExpenseRowFromJson`, `releaseDepositIntoBucketFromJson`,
+`payDepositOutOfBucketFromJson`, `logSecurityDepositFromJson`,
+`findRentedContractRowForBackfillFromJson`, `flipMatchingContractStatus`,
+`mirrorDeliveryLinkToContract`, `recomputeCashSheetTotalsB`,
+`recomputeMonthlySummaryCascadeB`, `recomputeCurrentMonthSummaryCascadeB`.
+That's the "13+" write-shaped-function count from the original rollout
+plan's estimate -- it undercounted because it was a grep-based guess, not
+a traced one; the real number of INTERNAL steps is closer to 25+, just
+organized under 7 user-facing actions.
+
+**Recommended approach for whoever (me or Anton) picks this up next:**
+Port ONE action at a time, starting with `swapBikeFromJson` (#7,
+self-contained, no chained second call) — not all 7 in one sitting. For
+each: port its full call graph into `lib/bikesWrites.js` (mirroring
+`createAccountsWrites(sheetIO)`'s factory pattern), add it to a new
+`api/bikes/write.js` single-dispatch endpoint (mirror `api/accounts/write.js`
+almost verbatim), write a fake-Drive test for JUST that action, confirm
+green, THEN move to the next action. Do not wire ANY optimistic-UI/
+idempotency frontend changes into bikes.html until every one of the 7
+actions is ported and passing its backend test — a page that's "half
+optimistic" (some buttons instant, others still blocking) is confusing
+and error-prone for staff using it live. The two chained-call actions (#3
+piggybacking on #1/#2, and #6's close-then-intake pair) need an explicit
+decision on how idempotency keys apply to a two-request sequence -- flag
+this as a genuine design question, not a mechanical copy, before starting
+#6.
+
+**Files touched this entry:** none (research/design only -- `bikes.html`
+itself is untouched since the read-cache entry above; no new `lib/`or
+`api/` files created).
+
+---
+
 ## 🔧 Read-side stale-while-revalidate cache rolled out to 12 more pages,
 ## CODED AND TEST-GREEN, NOT YET DEPLOYED (2026-08-16, same day as accounts.html's)
 
