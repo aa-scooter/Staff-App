@@ -6,6 +6,114 @@ This exists because work on this project gets picked up across multiple
 Claude sessions/accounts with no shared memory between them — this file is
 the handoff.
 
+## ✅ ARCHITECTURE CHANGE, tested and delivered — accounts.html's write
+## layer moved server-side; every add/edit/delete/transfer is now ONE
+## browser round trip instead of ~9 (2026-08-16)
+
+**What happened:** the perf pass just below this one (3 "safe wins") shipped
+and DEPLOYED to production, but Anton reported it "not any faster" -- still
+20+ seconds per save. Investigation via fresh Vercel production logs (Vercel
+MCP connector, real "add expense" click traced end to end) confirmed the
+safe wins DID work exactly as measured (call count genuinely dropped), but
+they were never the dominant cost. The real cost is architectural: every
+one of accounts.html's ~9 remaining Drive touches (row write, notes,
+cash, deposit total, bike splits, summary cascade, transaction log) was its
+own SEPARATE browser<->Vercel<->Drive<->browser round trip, because the
+business logic deciding what to write lived in the BROWSER (a 1:1 port of
+Code.gs's function-per-concern shape) -- and Anton is in Thailand, so every
+one of those 9 hops pays full transcontinental latency + TLS + auth on top
+of the actual (fast) Drive work. Compared side-by-side against Anton's own
+`property-app` (a separate project), which does the equivalent business
+logic server-side in ONE Next.js API route and makes exactly one browser
+round trip per save -- confirmed via that project's own `api/data/route.ts`
+comment and source. Anton, after a "don't code, just discuss" investigation
+and his own correct read of the situation ("can't it just write all that in
+one trip?"), approved a 6-part plan to move accounts.html's write layer
+server-side, scoped to accounts.html only (other pages explicitly
+deferred), then approved building it.
+
+**What changed:**
+
+1. **New `lib/accountsWrites.js`.** A byte-for-byte port of accounts.html's
+   entire client-side WRITE layer (the block between the "WRITE layer" and
+   "end WRITE layer" banner comments there -- `addExpenseRowFromJson`,
+   `addIncomeRowFromJson`, `editExpenseRowFromJson`, `editIncomeRowFromJson`,
+   `deleteExpenseRowFromJson`, `deleteIncomeRowFromJson`,
+   `bulkSetExpenseTypeFromJson`, `transferToBankFromJson`, plus every helper
+   they call). Verified byte-for-byte (not retyped by hand -- extracted via
+   script from the exact source line ranges and diffed back against the
+   original to confirm zero drift) with exactly two intentional changes:
+   `fetchSheetWithMeta`/`writeSheetJson` now resolve through a new
+   `createSheetIO(drive, folderId, session)` (direct `readJsonFile`/
+   `writeJsonFile` calls, mirroring `api/data/[sheet].js`'s own
+   folder/filename-resolution logic exactly) instead of `fetch('/api/data/
+   ...')`; and `logTransactionB`'s 10 call sites are now `await`ed instead
+   of fire-and-forget, since the reason that was dropped (an extra
+   browser<->Drive round trip after an already-successful save) doesn't
+   apply when the whole request runs server-side in one function
+   invocation. `shiftNotesForInsertedRowFromJson` was NOT ported -- confirmed
+   dead code in the browser version (defined, never called;
+   `applyMonthNotesEditsFromJson`'s own `shiftInsertedRow` option superseded
+   it). `accountsWriteDispatch`'s switch gained a `'transferToBank'` case it
+   never had client-side (that function used to be called directly from a
+   separate click handler, not through the dispatcher) -- now the single
+   entry point for all 8 actions.
+
+2. **New `api/accounts/write.js`.** `withDrive`-wrapped (same auth guard as
+   every other route here), single `POST {action, ...payload}` ->
+   `accountsWriteDispatch(body)` -> one JSON response. `ConflictError` maps
+   to a 409 with `isConflict:true`, same contract `api/data/[sheet].js`
+   already uses.
+
+3. **accounts.html client-side:** `accountsWriteDispatch`'s implementation
+   replaced with a single `fetch('/api/accounts/write', ...)` -- same exact
+   response shape as before, so `runPendingPayload` (rendering, the cash
+   disambiguation modal, warning display, local list updates) needed NO
+   changes. The Transfer-to-Bank modal's Save handler was updated to call
+   `accountsWriteDispatch({action:'transferToBank', ...})` instead of
+   calling `transferToBankFromJson` directly (it never went through the
+   dispatcher before). The old ~2000 lines of now-unreachable client-side
+   write functions were deliberately LEFT IN PLACE (not deleted) with a
+   clear "dead code" banner comment explaining why and pointing at
+   `lib/accountsWrites.js` -- lets this be verified live with an easy revert
+   if needed; costs nothing at runtime (an uncalled function declaration).
+   Physically deleting that dead code is a separate, purely-cosmetic
+   follow-up once the new path is proven in production.
+
+**Testing:** built a fake-Drive test harness (`/tmp/accountstest2/` --
+local scratch, not part of the delivered project) simulating the exact
+subset of the real `googleapis` Drive v3 surface `lib/googleDrive.js` calls
+(`files.list/get/create/update`), fixtures matching the real column layouts
+(`ACCOUNTS_SUMMARY_ITEMS`, cash sheet, bikes sheet, deposit-log columns),
+and called `lib/accountsWrites.js`'s functions directly (no HTTP layer
+needed now that there's no more fetch-based dispatch to simulate). 11
+scenarios / 36 assertions covering all 8 actions including
+`transferToBank`, the free-row-reuse AND insert-shift paths, cash-row
+disambiguation (single match and ambiguous-2-candidates),
+`consumeDepositFromJson`, the bikes-sheet income/expense cascade,
+`ConflictError` propagation (a stale-`modifiedTime` write correctly throws
+`ConflictError`, which `api/accounts/write.js` maps to 409), and the
+now-awaited transaction log (asserted present immediately after the action
+resolves, not racily). Also confirmed the SAME pre-existing "cash sheet
+layout has drifted" bug (see the entry below) reproduces identically
+post-port under the same conditions -- proof it's an unrelated, unchanged
+bug, not something this pass introduced. Separately verified the ported
+body is byte-identical to the original accounts.html source (script-diffed
+the extracted+transformed lines back against `lib/accountsWrites.js`) --
+the only content differences anywhere are the intentional
+`fetchSheetWithMeta`/`writeSheetJson`/`logTransactionB` changes described
+above.
+
+**Not yet done (per the approved plan, step 6 -- explicitly deferred until
+this is proven):** pulling fresh Vercel production logs after deploy to
+confirm one browser round trip per action and measure real elapsed time;
+deciding whether to roll the same server-side-write pattern out to other
+pages with similar multi-step writes (bikes.html, deposits.html, etc.).
+
+**Files changed:** `accounts.html` (client dispatch + transfer button call
+site only -- see above), new `lib/accountsWrites.js`, new
+`api/accounts/write.js`.
+
 ## ✅ PERF FIX, tested and delivered — accounts.html "add expense" write
 ## chain cut from ~16-18 sequential Drive round trips (~20-25s observed in
 ## production logs) down to a smaller, still-correct set of calls (2026-08-16)
