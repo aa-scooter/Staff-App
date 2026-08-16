@@ -6,6 +6,82 @@ This exists because work on this project gets picked up across multiple
 Claude sessions/accounts with no shared memory between them — this file is
 the handoff.
 
+## ❌ TESTED AND SETTLED — Vercel function region: `iad1` (Washington D.C.)
+## is the fastest of everything tried, despite being the farthest from
+## Thailand -- do not retry region-switching without new evidence (2026-08-16)
+
+**What happened:** after the parallelization pass below shipped, Anton
+asked whether region also affects speed, since he's in Thailand. Reasoning
+at the time: Vercel's edge network already receives his requests in
+Singapore, then forwards them to `iad1` for the function to actually run
+(confirmed in a real production log -- "Received in Singapore (sin1)" then
+"Routed to Washington, D.C., USA (iad1)") -- eliminating that forward-hop
+looked like a clear, free win, and `sin1` is Vercel's closest region to
+Thailand. Shipped a one-line `vercel.json` (`{"regions": ["sin1"]}`, commit
+`872fe95`) and asked Anton to test with a real "add expense" click.
+
+**Result: measurably worse, not better.** Fresh production log, same
+`console.log` instrumentation from the parallelization pass: total function
+execution went from ~11.5s (`iad1`, previous test) to ~18.9s (`sin1`) --
+roughly 1.5-2x slower, and consistently so across EVERY individually-timed
+step, not just one outlier call: read month sheet 455ms → 1777ms, write row
+1832ms → 2569ms, the cash lane 4143ms → 7227ms, the cascade lane 3717ms →
+7088ms. That consistency across 8 independent measurements, all in the same
+direction and similar magnitude, ruled out random noise.
+
+**Follow-up: built a lightweight diagnostic tool to test more candidates
+without needing a real click each time.** Real business-logic tests
+(add-expense through the whole write layer) are expensive to iterate on --
+each one needs Anton to click through the UI and pull fresh logs. Added a
+TEMPORARY, unauthenticated route (`api/diag/ping.js`, deliberately bypassing
+`withDrive`/OAuth so it needs no session cookie) that pings a real, public
+Google endpoint (the Drive v3 discovery doc) 3 times and reports the
+timings plus `process.env.VERCEL_REGION`. This let region swaps be tested
+by just re-fetching one URL instead of a full add-expense-and-pull-logs
+cycle. (Note: Claude's own sandboxed shell couldn't reach the deployment
+directly -- `curl` failed with `blocked-by-allowlist` from the sandbox's
+egress proxy -- but the generic `web_fetch` tool worked once given a
+cache-busting query param, since it otherwise de-duplicated repeat fetches
+of the same URL for up to an hour.)
+
+**Tested 3 regions total, `iad1` won by a wide margin:**
+- `iad1` (Washington D.C.): 170ms, 47ms, 66ms -- avg ~94ms
+- `hkg1` (Hong Kong -- closest major hub to Thailand): 343ms, 216ms, 258ms
+  -- avg ~272ms, ~2.9x worse
+- `hnd1` (Tokyo -- huge Google infrastructure presence): 302ms, 197ms,
+  197ms -- avg ~232ms, ~2.5x worse
+
+**Important nuance this diagnostic tool surfaced:** `iad1`'s raw ping to
+Google's API front door is only ~94ms average -- nowhere near the 800ms-1.8s
+per call seen in the REAL business-logic logs (the read/write/cascade
+steps in the entry below). That gap means most of the real slowness isn't
+network distance at all -- it's Google Drive's own per-operation cost
+(file lookup, permission checks, actual read/write to storage), which
+doesn't meaningfully change by region. Region selection still matters (a
+~2.5-2.9x difference between the best and worst tested is real and
+worth avoiding), but it was never going to be the dominant lever -- the
+parallelization work below remains the bigger win, and the diagnostic
+`iad1` number is a reasonable proxy for "network path is fine, the
+remaining cost lives inside Drive's own API."
+
+**The fix:** settled on `iad1` -- `vercel.json` explicitly sets
+`{"regions": ["iad1"]}` (matches the platform default, kept explicit so a
+future session doesn't wonder whether the region was ever considered).
+`api/diag/ping.js` removed (`git rm`) once testing was done -- it was
+temporary and existed purely to make region comparisons cheap; keeping it
+would cost a permanent slot against the Hobby plan's 12-function cap for
+zero ongoing value. If a future session wants to explore other regions
+(there are 20 total -- see Vercel's region list), the diagnostic-ping
+approach here is reusable: re-add a similar unauthenticated route, swap
+`vercel.json`, re-fetch. Candidates not yet tried: `bom1` (Mumbai), `icn1`
+(Seoul), `syd1` (Sydney), `dxb1` (Dubai) -- no strong reason to expect any
+of these beat `iad1` given the pattern so far (every region physically
+closer to Thailand has been WORSE, not better), so this isn't a high
+priority to revisit without a specific reason.
+
+**Files changed:** `vercel.json` (net: present, set to `iad1` explicitly);
+`api/diag/ping.js` added then removed (net: no file).
+
 ## 🔧 IN PROGRESS — accounts.html write parallelization: coded, tested
 ## GREEN against a fake-Drive harness, NOT YET DEPLOYED (2026-08-16)
 
