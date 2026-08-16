@@ -164,12 +164,80 @@ fired back-to-back never overlap on the wire (proves the serialization
 queue); failed-edit Discard restores the original value without deleting
 the row; failed-delete Discard un-marks the row without removing it.
 
+**UPDATE 2 (same day, after the double-submit fix above was live) -- the
+deeper "client failed but server actually succeeded" risk flagged above
+just happened for real, fixed:** Anton tested the offline path again on
+the deployed build. Wifi dropped mid-save on an income entry ("twse",
+฿5,135,131,515.00), the client showed "Failed to fetch" same as before --
+but the row had actually already been written to Drive (visible in the
+list with real data). He hit Retry once wifi was back; the retry
+succeeded too, and this time it WAS a real second "twse" row on Drive (the
+`optInFlight` fix from UPDATE 1 only prevents the same click firing twice
+client-side -- it can't know the server already finished a request the
+client itself gave up on). Screenshots confirmed both rows genuinely exist
+side by side.
+
+Fixed with an actual idempotency key, exactly as flagged as the remaining
+risk in UPDATE 1: `accounts.html` now generates one random id
+(`genClientTxnId()` -- `crypto.randomUUID()` with a fallback) per logical
+ADD, at the moment the user hits Save, and keeps it on the retained
+payload object for the rest of that attempt's life -- every retry reuses
+the SAME id, and it survives a page reload too since it's part of what
+`persistFailedSaves()` already writes to `localStorage`. Edits/deletes
+don't get one -- an edit retried twice just reapplies the same field
+values (already harmless), and a delete-of-an-already-deleted-row is a
+separate, much lower-frequency risk not addressed here.
+
+Server-side, `lib/accountsWrites.js`'s `addExpenseRowFromJson`/
+`addIncomeRowFromJson` now check the `<monthName>_notes` sidecar (the same
+file already used for bike-splits/expense-type notes, `[row, col, note]`
+shape, new reserved col 900/901 so it can't collide with anything real)
+for that id BEFORE creating a row. If it's already there, this is a replay
+of an add that already landed -- skip the write entirely, return the
+original row as a success (`duplicate: true`, purely informational, the
+client treats it like any other success). If not, proceed exactly as
+before, and record the id as part of the SAME notes-sidecar write the add
+already does for bike-splits/type notes (no extra round trip on the normal
+path -- only the pre-check read is new). Fully backward compatible: a
+request with no `clientTxnId` is a complete no-op through this whole path,
+identical to pre-fix behavior.
+
+**Testing (this update):** two suites, since this update touches both the
+frontend (accounts.html) and, for the first time in this whole entry, the
+backend (`lib/accountsWrites.js`).
+- Backend: a new fake-Drive Node harness (`/tmp/optsave/test-idempotency.js`
+  on the sandbox, local scratch -- recreate if picked up again), using
+  `createAccountsWrites(sheetIO)` with an in-memory `sheetIO` (no real Drive
+  credentials needed). 19/19 green: the exact reported bug (same
+  `clientTxnId` submitted twice) now produces only ONE real row both for
+  addIncome and addExpense, with the second call reporting
+  `duplicate: true` and the same row number; two calls with genuinely
+  different ids still both write for real (not over-eagerly deduping
+  legitimate repeat entries, e.g. two separate "Bolt" rides); a call with
+  no id at all behaves exactly as it did before this fix (backward compat);
+  an edit retried twice is untouched/unaffected.
+- Frontend: extended the existing Playwright suite (`/tmp/optsave/test.js`)
+  with Test 11 -- an add's `clientTxnId` is generated once and the exact
+  same value is sent again on retry; a separate add gets its own distinct
+  id; an edit payload carries no `clientTxnId` at all. 45/45 green
+  (41 original + 4 new), confirming this change didn't regress anything
+  from UPDATE 1.
+
+**Known remaining gap, deliberately out of scope:** the pre-check read and
+the marker-write happen in two separate round trips (read-before-write,
+then write-as-part-of-the-existing-notes-lane-after). If a retry's
+pre-check read landed in the tiny window between the original request's
+row write and its notes lane finishing, it could still theoretically slip
+through. In practice this window is milliseconds and a manual Retry click
+happens seconds-to-minutes later, so this is not expected to matter, but
+worth knowing if a duplicate somehow still occurs.
+
 **Not yet done:** deliver via the device bridge, get Anton's go-ahead to
 push, then a real test click or two (including deliberately going offline
-mid-save again) to confirm the double-submit fix and the nav badge both
-hold up for real, before calling this settled.
+mid-save again, and confirming a genuine "twse"-style retry-after-drop no
+longer duplicates) before calling this fully settled.
 
-**Files changed:** `accounts.html`, `nav.js`.
+**Files changed:** `accounts.html`, `nav.js`, `lib/accountsWrites.js`.
 
 ---
 

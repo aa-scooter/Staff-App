@@ -3806,6 +3806,24 @@ let optSeq = 0;
 // loadMonth() (switching months and back doesn't lose it).
 const optItems = new Map();
 
+// IDEMPOTENCY (16/08/2026): one random id per logical ADD, generated once
+// at submit time and carried on the payload object for the rest of that
+// attempt's life -- including every retry, since retryOptItem() resubmits
+// the SAME payload object rather than building a new one, and a failed
+// item's payload (id included) survives a page reload via
+// persistFailedSaves()/restoreFailedSaves() below. The server
+// (addExpenseRowFromJson/addIncomeRowFromJson in lib/accountsWrites.js)
+// uses this to recognize "this exact add already landed" and skip writing
+// a second row -- see that file's own comment for the full story (this is
+// the fix for the real "twse" double-entry Anton hit on 16/08/2026: his
+// wifi dropped after the save had already reached Drive, the client never
+// saw the response and showed "Failed to add", and his Retry -- a brand
+// new request with no memory of the first -- wrote a genuine duplicate).
+function genClientTxnId() {
+  if (window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID();
+  return 'ctx_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10);
+}
+
 // optIds currently mid-submission -- covers both a fresh save/delete and a
 // retry of a failed one. This is the guard against double-submitting the
 // same logical change: without it, clicking Retry a second time (or an
@@ -4179,6 +4197,10 @@ modalSaveBtn.addEventListener('click', () => {
     date: fDate.value || ''
   };
   if (isEdit) payload.row = modalEditRow;
+  // IDEMPOTENCY (16/08/2026): add-only -- see genClientTxnId's comment.
+  // Generated ONCE here at submit time; retryOptItem() reuses this same
+  // payload object (and therefore this same id) on every retry.
+  else payload.clientTxnId = genClientTxnId();
 
   // Required-fields check (added 14/08/2026 -- Anton reported the modal
   // silently saved an expense with "— Select —" left as the payment
