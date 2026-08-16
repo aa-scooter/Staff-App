@@ -2937,6 +2937,10 @@ async function bulkSetExpenseTypeFromJson(data) {
   if (skipped.length) {
     responsePayload.warning = skipped.length + ' row(s) were skipped because their type had already changed since the list was loaded -- please refresh and try again if needed.';
   }
+  // See accountsWriteDispatch's matching comment -- this doesn't route
+  // through there (bulk type-change stayed on its own older direct path),
+  // so it needs its own explicit invalidation of the new read cache.
+  if (changed.length) clearMonthCache(data.monthIndex, year);
   return responsePayload;
 }
 
@@ -2981,6 +2985,14 @@ async function accountsWriteDispatch(payload) {
   // goes back to the network instead of possibly serving stale data from
   // before this write.
   Object.keys(accountsJsonCache).forEach(k => delete accountsJsonCache[k]);
+  // Same reasoning, extended to the new persistent read cache (16/08/2026):
+  // this month's localStorage snapshot is now one write out of date, so
+  // drop it -- the next time this month is opened (including a full page
+  // reload/navigation, which the in-memory cache above can't survive
+  // anyway) it does a real fetch instead of risking a stale-while-
+  // revalidate flash of pre-write data. See loadMonth()'s own comment for
+  // the full picture.
+  if (payload.monthIndex !== undefined) clearMonthCache(payload.monthIndex, accountsCurrentYear());
   return res;
 }
 
@@ -3177,34 +3189,124 @@ function renderSummary(summary) {
 
 let loadToken = 0;
 
+// ==== Read-side cache: stale-while-revalidate (16/08/2026) ================
+// The write side got "don't make me wait" treatment earlier today; this is
+// the same idea for reads. accountsJsonCache above already avoids a
+// repeat Drive round trip when flipping between months WITHIN one page
+// load, but it's in-memory only -- the instant you navigate away or
+// reload (this is a multi-page site, not an SPA -- every .html file tears
+// down the whole script), it's gone and the next visit starts from a
+// blank "Loading…" screen again. This adds a layer that survives THAT:
+// localStorage (same mechanism the failed-save badge already uses), keyed
+// per month+year, holding the last successfully rendered expenses/income/
+// summary. loadMonth() now renders whatever's cached IMMEDIATELY (with a
+// small "showing saved data from Xm ago, refreshing…" note instead of a
+// blank screen), then still kicks off the real fetch in the background
+// exactly as before and swaps in the true data the moment it lands.
+//
+// Why this is safe on a shared, multi-person sheet: these reads are
+// display-only. Every actual save still reads fresh from Drive and checks
+// for a conflict at write time (see writeJsonFile's ConflictError) -- it
+// never writes based on what this cache happens to hold. Worst case is
+// seeing numbers that are a few minutes out of date for a second or two
+// before the background refresh catches up, never a correctness risk.
+// (The one pre-existing edge case this makes very slightly more likely,
+// not new: opening a stale-looking Edit/Delete on a row someone else has
+// since changed -- already surfaces as the existing "changed by someone
+// else" conflict error at save time.)
+//
+// Invalidation: rather than trying to track exactly which write touched
+// which month (fragile -- see accountsWriteDispatch's own comment on why
+// it does a blanket accountsJsonCache clear instead of per-sheet), any
+// successful accounts write just drops this month's cache entry outright,
+// so the NEXT time it's opened it's guaranteed to do a real fetch instead
+// of possibly serving stale post-write data -- see clearMonthCache's call
+// sites below.
+const MONTH_CACHE_PREFIX = 'aaAccountsMonthCache_';
+function monthCacheKey(monthIndex, year) { return MONTH_CACHE_PREFIX + year + '_' + monthIndex; }
+function readMonthCache(monthIndex, year) {
+  try {
+    const raw = localStorage.getItem(monthCacheKey(monthIndex, year));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || !Array.isArray(parsed.expenses) || !Array.isArray(parsed.income)) return null;
+    return parsed;
+  } catch (e) { return null; }
+}
+function writeMonthCache(monthIndex, year, res) {
+  try {
+    localStorage.setItem(monthCacheKey(monthIndex, year), JSON.stringify({
+      expenses: res.expenses || [],
+      income: res.income || [],
+      summary: res.summary || null,
+      cachedAt: Date.now()
+    }));
+  } catch (e) { /* localStorage full/unavailable -- best-effort only, never blocks a real load */ }
+}
+function clearMonthCache(monthIndex, year) {
+  try { localStorage.removeItem(monthCacheKey(monthIndex, year)); } catch (e) {}
+}
+function timeAgoLabel(ms) {
+  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  if (s < 5) return 'just now';
+  if (s < 60) return s + 's ago';
+  const m = Math.round(s / 60);
+  if (m < 60) return m + 'm ago';
+  const h = Math.round(m / 60);
+  return h + 'h ago';
+}
+
 async function loadMonth(monthIndex) {
   const myToken = ++loadToken;
   monthSelect.value = monthIndex;
   document.getElementById('prevMonthBtn').disabled = monthIndex <= 0;
   document.getElementById('nextMonthBtn').disabled = monthIndex >= 11;
 
-  setLoadStatus('Loading ' + MONTH_NAMES[monthIndex] + '…');
-  document.getElementById('expensesList').innerHTML = '';
-  document.getElementById('incomeList').innerHTML = '';
-  document.getElementById('totalExpenses').textContent = '—';
-  document.getElementById('totalIncome').textContent = '—';
-  document.getElementById('summaryGrid').innerHTML = '';
+  const year = accountsCurrentYear();
+  const cached = readMonthCache(monthIndex, year);
+  if (cached) {
+    // Show last-known-good instantly instead of a blank "Loading…" state --
+    // the real fetch below still runs and replaces this the moment it
+    // resolves, same as it always has.
+    renderExpenses(cached.expenses);
+    renderIncome(cached.income);
+    renderSummary(cached.summary);
+    setLoadStatus('Showing saved data from ' + timeAgoLabel(cached.cachedAt) + ' — refreshing…', false);
+  } else {
+    setLoadStatus('Loading ' + MONTH_NAMES[monthIndex] + '…');
+    document.getElementById('expensesList').innerHTML = '';
+    document.getElementById('incomeList').innerHTML = '';
+    document.getElementById('totalExpenses').textContent = '—';
+    document.getElementById('totalIncome').textContent = '—';
+    document.getElementById('summaryGrid').innerHTML = '';
+  }
 
   try {
-    const res = await getAccountsDataFromJson(monthIndex); // DISCONNECTED: reads the static data/ JSON export instead of the live scriptUrl (see project CLAUDE.md)
+    const res = await getAccountsDataFromJson(monthIndex, year); // DISCONNECTED: reads the static data/ JSON export instead of the live scriptUrl (see project CLAUDE.md)
     if (myToken !== loadToken) return; // A newer month was selected while this was in flight.
 
     if (!res.success) {
-      setLoadStatus(res.error || ('No sheet found for ' + MONTH_NAMES[monthIndex] + '.'), true);
+      // A cached view is strictly more useful than a blank error screen --
+      // leave it showing and just flag that the refresh itself failed.
+      if (cached) {
+        setLoadStatus('Could not refresh (' + (res.error || 'unknown error') + ') — showing saved data from ' + timeAgoLabel(cached.cachedAt) + '.', true);
+      } else {
+        setLoadStatus(res.error || ('No sheet found for ' + MONTH_NAMES[monthIndex] + '.'), true);
+      }
       return;
     }
     setLoadStatus(res.warning || null, !!res.warning);
     renderExpenses(res.expenses || []);
     renderIncome(res.income || []);
     renderSummary(res.summary || null);
+    writeMonthCache(monthIndex, year, res);
   } catch (err) {
     if (myToken !== loadToken) return;
-    setLoadStatus('Failed to load: ' + err.message, true);
+    if (cached) {
+      setLoadStatus('Could not refresh (' + err.message + ') — showing saved data from ' + timeAgoLabel(cached.cachedAt) + '.', true);
+    } else {
+      setLoadStatus('Failed to load: ' + err.message, true);
+    }
   }
 }
 

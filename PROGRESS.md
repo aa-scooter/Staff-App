@@ -6,6 +6,108 @@ This exists because work on this project gets picked up across multiple
 Claude sessions/accounts with no shared memory between them — this file is
 the handoff.
 
+## 🔧 accounts.html: read-side stale-while-revalidate cache, CODED AND
+## TEST-GREEN, NOT YET DEPLOYED (2026-08-16)
+
+**What this is:** the read-side counterpart to the optimistic-save entry
+just below. Anton: "the reads are reasonably quick... but could we somehow
+save what's been read... keep a version of this and just periodically
+update it." Reads here were never as slow as writes were, but every month
+load (and every page visit, since this is a multi-page site and every
+navigation tears down the whole script) still started from a blank
+"Loading…" screen for however long the Drive round trip took. Now
+accounts.html shows whatever was last successfully loaded for that month
+INSTANTLY, then quietly refreshes in the background and swaps in the real
+data the moment it lands -- classic stale-while-revalidate.
+
+**Scope: accounts.html ONLY, piloting first**, same "prove it out on one
+page before wider rollout" approach as the write-side change. Anton
+specifically asked to start here and "go from there" -- other pages
+(bikes.html etc.) would each need their own pass; this doesn't touch them.
+
+**How it works:** `accountsJsonCache` (further up in this file) already
+avoided a repeat Drive round trip when flipping between months WITHIN one
+page load, but it's in-memory only -- gone the instant you navigate away
+or reload. The new layer sits underneath `loadMonth()`, keyed to
+localStorage (same mechanism the failed-save badge already uses, so it
+survives a full reload/navigation): `readMonthCache`/`writeMonthCache`/
+`clearMonthCache`, keyed `aaAccountsMonthCache_<year>_<monthIndex>`. On
+entry, `loadMonth()` now checks this cache first -- if there's something
+there, it renders it immediately (with a small "Showing saved data from
+Xm ago — refreshing…" note instead of a blank screen) and THEN still fires
+the real `getAccountsDataFromJson` fetch exactly as before; when that
+resolves, the real data replaces what was showing and the cache is
+refreshed with a new timestamp. A month with nothing cached yet (first
+ever visit) behaves exactly as it always has -- normal "Loading…" state,
+no stale flash of anything.
+
+**Why this is safe on a shared, multi-person sheet:** these reads are
+purely for display. Every actual save still reads fresh from Drive and
+checks for a conflict at write time (`ConflictError`/`writeJsonFile`'s
+`modifiedTime` check) -- a save is never based on what this cache happens
+to be holding client-side, it's based on whatever's actually on Drive at
+the moment of the write. Worst case is seeing numbers that are a few
+minutes out of date for a second or two before the background refresh
+catches up. The one pre-existing edge case this makes marginally more
+likely, not new: opening what turns out to be a stale-looking row for
+Edit/Delete right as someone else finishes changing it elsewhere --
+already surfaces as the existing "this record was changed by someone else"
+conflict error at save time, same as it always has.
+
+**Refresh failure handling:** if the background refresh itself fails
+(offline, Drive hiccup, etc.) while a cached view is already showing, the
+cache stays up rather than being blown away -- the status line instead
+says "Could not refresh (<error>) — showing saved data from Xm ago." A
+stale-but-real number beats a blank error screen. (If there's NO cache and
+the real fetch fails, behavior is unchanged from before -- the normal
+error message.)
+
+**Invalidation (so a write never leaves stale post-write data sitting in
+the cache):** rather than track exactly which write touched which month
+(the exact same call accountsJsonCache's own blanket-clear made, see
+accountsWriteDispatch's comment), any successful accounts write just drops
+that month's cache entry outright. Wired into both live write paths:
+`accountsWriteDispatch` (covers add/edit/delete expense/income and
+transferToBank -- the main server-side write route) and
+`bulkSetExpenseTypeFromJson` (the bulk type-recolor buttons, which stayed
+on their own older direct-write path and don't go through
+accountsWriteDispatch). Next time that month is opened, it's guaranteed to
+do a real fetch rather than risk showing pre-write data as if it were
+current.
+
+**Known remaining gap, deliberately out of scope:** a write from a
+DIFFERENT device/tab/person doesn't proactively clear THIS device's
+cached copy of that month -- there's no push/realtime channel here, so
+this device only finds out on its own next load. Same class of staleness
+window as everything else in this entry, just from someone else's write
+instead of a background refresh in progress; not expected to matter for a
+small in-person team, flagging it in case it ever does.
+
+**Testing:** extended the same Playwright suite as the write-side entry
+(`/tmp/optsave/test.js`), now 57/57 green (52 prior + 5 new): a normal
+load seeds the cache; reloading the page shows the cached data instantly,
+then swaps to the real data once the (deliberately slowed, for the test)
+background fetch resolves, with the status note present while refreshing
+and gone once settled; a failed background refresh leaves the cached view
+up with a "could not refresh" note instead of going blank; a
+never-before-loaded month shows the normal loading state with no stale
+flash; a successful save clears that month's cache entry (this one had to
+restore the REAL `accountsWriteDispatch` via a stashed reference and fake
+the network underneath it with `page.route()`, since the invalidation
+logic lives inside that function's own body and every other test
+deliberately mocks over it).
+
+**Not yet done:** deliver via the device bridge, get Anton's go-ahead to
+push, then a real click-around (including a slow/offline refresh) to
+confirm the "showing saved data" note and the swap-in both look right in
+practice before calling this settled. If it proves out, next candidates
+for the same treatment would be whichever other pages feel slow to open --
+bikes.html was mentioned in passing during this discussion.
+
+**Files changed:** `accounts.html` only.
+
+---
+
 ## 🔧 accounts.html: optimistic save UX (instant + background) + a
 ## cross-page failure badge, CODED AND TEST-GREEN, NOT YET DEPLOYED
 ## (2026-08-16)
