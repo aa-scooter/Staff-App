@@ -6,6 +6,102 @@ This exists because work on this project gets picked up across multiple
 Claude sessions/accounts with no shared memory between them — this file is
 the handoff.
 
+## 🔧 accounts.html: optimistic save UX (instant + background), CODED AND
+## TEST-GREEN, NOT YET DEPLOYED (2026-08-16)
+
+**What this is:** a different kind of speed fix than everything below. The
+write-parallelization + region work already got a single save down from
+~16-20s to roughly 3-8s, but that's still "sit and watch a spinner" time,
+because Save blocked the whole page (`setAllButtonsDisabled(true)`) until
+the full Drive round trip finished. Anton asked for the save itself to
+feel instant -- update the screen right away, hold it as "pending", save
+to Drive in the background, and surface a clear way to notice/fix it if a
+background save ever actually fails. Explicitly NOT a database migration
+-- Anton considered that (see the DB options doc delivered this session)
+and decided to stay on Drive; this is a frontend-only UX change layered on
+top of the existing (unmodified) Drive write layer.
+
+**Scope: accounts.html ONLY**, confirmed explicitly with Anton before
+starting. bikes.html/contract.html/deposits.html/etc. are untouched and
+still block-and-wait exactly as before -- if this pattern proves out,
+extending it to other pages is future work, each needing its own pass
+(they don't share accounts.html's save plumbing). Within accounts.html,
+`transferToBank` and the bulk expense-type-change buttons are also
+untouched -- different shape, not what was flagged slow, same scoping
+decision every prior pass in this file made.
+
+**What changed, all in `accounts.html` (no backend/Drive code touched):**
+Add/Edit/Delete Expense/Income now apply to the on-page list and close the
+modal INSTANTLY, using the data just typed in (not the server's response),
+then save to Drive in the background. Rows in flight show a dashed
+border + small spinner ("Saving…"/"Deleting…"); the page stays fully
+interactive, nothing is disabled. On success the row quietly settles to
+normal. On failure it stays visible, flagged red ("Didn't save — tap to
+review"), and a sticky banner appears at the top of the page (independent
+of whichever month is currently on screen) with a review panel offering
+Retry (resubmits the exact same payload) or Discard per item.
+
+**Design decisions worth a future session knowing about:**
+- A brand-new Add has no real row number until the server responds, so it
+  gets a placeholder (`row: -1000000 - n`) that can never collide with a
+  real sheet row; reconciled to the real `res.row` on success.
+- Two saves fired close together (now possible since Save no longer blocks
+  the page) are serialized per-month via a small promise-chain queue
+  (`queueMonthSave`) before they ever reach `accountsWriteDispatch` --
+  otherwise two concurrent read-modify-writes against the same Drive file
+  could race, the same class of bug the `logTransactionB` queue fixed
+  within a single save (see the parallelization entry below). Saves to
+  different months are never serialized against each other.
+- `needsDisambiguation` (the rare "which 'cash' row is this?" case, only
+  possible on edit/delete) genuinely can't be resolved in the background --
+  it needs a person to pick. Handled by reverting the optimistic change
+  and falling back to exactly the existing blocking picker flow, rather
+  than guessing which entries will hit it ahead of time.
+- Discard is action-aware, not a blanket "remove the row": discarding a
+  failed ADD removes the placeholder (it was never real), but discarding a
+  failed EDIT or DELETE restores/un-marks the row instead of deleting it,
+  since that row's real data is still sitting on Drive untouched. **This
+  was a genuine bug caught by testing, not designed correctly the first
+  time** -- the first version of `discardOptItem` always deleted the row
+  regardless of action, which would have silently hidden a still-real row
+  after a failed edit or delete. Fixed, and now covered by dedicated tests
+  (5 and 6 below) so it can't silently regress.
+- Deliberately NOT persisted across a page reload/close -- closing the tab
+  mid-save loses local tracking of it (the request may or may not have
+  completed server-side; there's no durable local queue). A proper
+  offline-friendly queue would be a real follow-on if that turns out to
+  matter in practice; explicitly out of scope for this pass.
+
+**Testing:** pure frontend change (no Drive/backend code touched), so the
+fake-Drive harness pattern used for the write-parallelization pass doesn't
+apply here -- instead built a Playwright-driven test harness
+(`/tmp/optsave/test.js` on the sandbox -- local scratch, recreate if picked
+up again) that serves the real modified `accounts.html` over a local HTTP
+server, drives it through actual clicks/field-fills (not calling internal
+functions directly except where that's the more faithful way to set up a
+scenario), and monkey-patches only the two network-touching functions
+(`accountsWriteDispatch`, `getAccountsDataFromJson`) to script
+success/failure/disambiguation responses with an artificial delay, so
+timing assertions are meaningful. 28/28 green across 6 scenarios: add
+succeeds (instant pending row, page stays interactive, clean settle,
+reconciled to the real row number); add fails then a Retry succeeds
+(banner appears/clears correctly); edit hits `needsDisambiguation` (reverts
+to the original value, the REAL picker UI reopens -- not a fake stand-in --
+candidate choice resubmits correctly with `cashRowChoice`); two same-month
+saves fired back-to-back never overlap on the wire (proves the
+serialization queue); failed-edit Discard restores the original value
+without deleting the row; failed-delete Discard un-marks the row without
+removing it (the two tests that caught and pin the Discard bug above).
+
+**Not yet done:** deliver via the device bridge, get Anton's go-ahead to
+push, then a real test click or two (including deliberately going offline
+mid-save, if there's an easy way to simulate that) to confirm the feel
+matches what the mockup/tests predicted before calling this settled.
+
+**Files changed:** `accounts.html` only.
+
+---
+
 ## ❌ TESTED AND SETTLED — Vercel function region: `iad1` (Washington D.C.)
 ## is the fastest of everything tried, despite being the farthest from
 ## Thailand -- do not retry region-switching without new evidence (2026-08-16)
@@ -82,8 +178,28 @@ priority to revisit without a specific reason.
 **Files changed:** `vercel.json` (net: present, set to `iad1` explicitly);
 `api/diag/ping.js` added then removed (net: no file).
 
-## 🔧 IN PROGRESS — accounts.html write parallelization: coded, tested
-## GREEN against a fake-Drive harness, NOT YET DEPLOYED (2026-08-16)
+## ✅ CORRECTION (2026-08-16, later the same day): the entry directly below
+## was left saying "NOT YET DEPLOYED" after it actually shipped -- fixing
+## that here rather than leaving stale docs in the file. A later session
+## picked this project back up with a handoff summary claiming this work
+## was done/deployed/confirmed-live, which contradicted this entry's own
+## "not yet done: deploy" closing line. Checked git directly to settle it:
+## commit `c55ae13` ("Parallelize accounts.html write layer's independent
+## Drive calls; fix a transactionLog race the parallelization introduced")
+## is committed and pushed, `git status` clean, and it sits BEFORE all four
+## region-testing commits in the entry above -- meaning it was live before
+## region testing even started (that entry's own reference to reusing
+## "the console.log instrumentation from the parallelization pass" only
+## makes sense if this had already shipped). So: this DID deploy, the
+## "Not yet done" paragraph below is stale and should be read as historical
+## only. Real lesson for future sessions: update this file's status line
+## the moment something deploys, in the same commit, exactly as the rule at
+## the top of this file says -- this entry is the counterexample of what
+## happens when that slips.
+
+## 🔧 accounts.html write parallelization: coded, tested
+## GREEN against a fake-Drive harness, DEPLOYED (2026-08-16 -- see
+## correction above; original entry text below is otherwise unchanged)
 
 **Status: mid-task, picking up here.** Before touching code, re-verified
 the working copy on Anton's Mac against `origin/main` (given this

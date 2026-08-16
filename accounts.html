@@ -273,9 +273,93 @@
     cursor:pointer; white-space:nowrap;
   }
   .btn-transfer-all:active{ transform:scale(.97); }
+
+  /* ---- Optimistic save UX (16/08/2026) --------------------------------
+  Add/Edit/Delete on this page used to block the whole UI (all buttons
+  disabled, spinner in the modal) for the full Drive round trip, which is
+  still several seconds even after the write-parallelization pass. Now the
+  change shows on-page the instant you hit Save, and the actual Drive save
+  happens in the background -- see runPendingPayload()/queueMonthSave() in
+  the script below for the logic. Every class here is prefixed "opt-" so
+  it's easy to find/remove as a unit and can't collide with any existing
+  class name on this page. ---- */
+  .row.opt-pending, .row.opt-pending-delete{
+    background:#FBFAF5; border-style:dashed; border-color:#CFC3A8; opacity:.88;
+  }
+  .row.opt-pending .amt, .row.opt-pending-delete .amt{ opacity:.55; }
+  .row.opt-pending-delete .title{ text-decoration:line-through; color:var(--muted); }
+  .opt-tag{
+    display:inline-flex; align-items:center; gap:5px; font-size:10.5px; font-weight:700;
+    letter-spacing:.04em; text-transform:uppercase;
+  }
+  .opt-tag.pending{ color:#B36A2E; }
+  .opt-spinner{
+    width:9px; height:9px; border-radius:50%; border:1.5px solid #E7C596; border-top-color:#B36A2E;
+    animation:opt-spin .7s linear infinite; flex-shrink:0;
+  }
+  @keyframes opt-spin{ to{ transform:rotate(360deg); } }
+  .row.opt-just-saved{ background:#EFF7F1; border-color:#BFE0C8; }
+  .opt-tag.saved{ color:var(--ok); }
+  .row.opt-failed{ background:#FDF2F2; border-color:#F3C6C6; opacity:1; cursor:pointer; }
+  .row.opt-failed .amt{ opacity:1; }
+  .opt-tag.failed{ color:var(--bad); }
+  .opt-tag .dot{ width:6px; height:6px; border-radius:50%; background:currentColor; flex-shrink:0; }
+
+  .opt-banner{
+    position:sticky; top:0; z-index:40; background:#FCEBEB; color:var(--bad);
+    border-bottom:1px solid #F3C6C6; font-family:'Barlow Condensed',sans-serif; font-weight:700;
+    font-size:14px; letter-spacing:.02em; display:none; align-items:center; justify-content:center;
+    gap:8px; padding:11px 14px; cursor:pointer; text-align:center;
+  }
+  .opt-banner.warn-only{ background:#FFF3E6; color:#B36A2E; border-bottom-color:#F3D9B8; }
+  .opt-banner.show{ display:flex; }
+  .opt-banner:active{ opacity:.85; }
+
+  .opt-overlay{
+    position:fixed; inset:0; background:rgba(15,61,62,.35); display:none; align-items:flex-end;
+    justify-content:center; z-index:50;
+  }
+  .opt-overlay.show{ display:flex; }
+  @media (min-width:640px){ .opt-overlay{ align-items:center; } }
+  .opt-panel{
+    background:var(--card); width:100%; max-width:480px; border-radius:16px 16px 0 0;
+    padding:20px; max-height:80vh; overflow-y:auto;
+  }
+  @media (min-width:640px){ .opt-panel{ border-radius:14px; } }
+  .opt-panel h3{ font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:19px; color:var(--petrol); margin:0 0 4px; }
+  .opt-panel .sub{ font-size:12.5px; color:var(--muted); margin-bottom:16px; }
+  .opt-item{ border:1px solid #F3C6C6; background:#FDF2F2; border-radius:10px; padding:12px; margin-bottom:10px; }
+  .opt-item.warn{ border-color:#F3D9B8; background:#FFF3E6; }
+  .opt-item .rt{ font-weight:500; font-size:13.5px; }
+  .opt-item .rm{ font-size:12px; color:var(--muted); margin-top:2px; }
+  .opt-item .why{ font-size:12px; color:var(--bad); margin-top:6px; }
+  .opt-item.warn .why{ color:#B36A2E; }
+  .opt-item .actions{ display:flex; gap:8px; margin-top:10px; }
+  .opt-item .actions button{
+    flex:1; padding:9px; border:none; border-radius:8px; font-family:'Barlow Condensed',sans-serif;
+    font-weight:700; font-size:12.5px; letter-spacing:.02em; text-transform:uppercase; cursor:pointer;
+  }
+  .opt-btn-retry{ background:var(--cone); color:#fff; }
+  .opt-btn-discard{ background:#E4E0D8; color:var(--petrol); }
+  .opt-panel-close{
+    width:100%; margin-top:6px; padding:12px; border:1px solid var(--line); background:#fff;
+    border-radius:9px; font-family:'Barlow Condensed',sans-serif; font-weight:700; color:var(--petrol);
+    cursor:pointer;
+  }
 </style>
 </head>
 <body>
+
+<!-- Optimistic-save global banner + review panel (16/08/2026) -- lives
+outside <main> so it's independent of which month is currently loaded;
+see the "opt-" prefixed block near the end of the <script> below. -->
+<div class="opt-banner" id="optBanner"></div>
+<div class="opt-overlay" id="optOverlay"><div class="opt-panel">
+  <h3 id="optPanelTitle">Changes needing attention</h3>
+  <div class="sub" id="optPanelSub"></div>
+  <div id="optPanelList"></div>
+  <button class="opt-panel-close" type="button" id="optPanelCloseBtn">Close</button>
+</div></div>
 
 <div id="topbar-mount"></div>
 
@@ -2972,6 +3056,26 @@ const EXPENSE_TYPE_LABELS = {
   transfer: 'To Transfer', transferComplete: 'Transfer Complete'
 };
 
+// ---- Optimistic-save row decoration (16/08/2026) -- shared by
+// renderExpenses/renderIncome below. An entry with an `_opt` field is a
+// row that hasn't been confirmed by the server yet:
+//   'pending'         -- a new/edited row, save in flight
+//   'pending-delete'  -- an existing row, delete in flight (stays visible,
+//                        struck through, so nothing vanishes before it's
+//                        actually gone)
+//   'failed'          -- the save/delete came back unsuccessful (or
+//                        errored/timed out); stays visible and tappable,
+//                        also tracked in optItems (see queueMonthSave
+//                        section) which drives the global banner.
+// No `_opt` at all (undefined) means "server-confirmed", i.e. the normal
+// case this page has always rendered. ----
+function optMetaHtml(entry, dateStr) {
+  if (entry._opt === 'pending') return '<span class="opt-tag pending"><span class="opt-spinner"></span>Saving…</span>';
+  if (entry._opt === 'pending-delete') return '<span class="opt-tag pending"><span class="opt-spinner"></span>Deleting…</span>';
+  if (entry._opt === 'failed') return '<span class="opt-tag failed"><span class="dot"></span>Didn’t save — tap to review</span>';
+  return dateStr || '';
+}
+
 function renderExpenses(expenses) {
   currentExpenses = expenses;
   const list = document.getElementById('expensesList');
@@ -2980,11 +3084,14 @@ function renderExpenses(expenses) {
   } else {
     list.innerHTML = expenses.map((e, i) => {
       const bg = EXPENSE_TYPE_COLORS[e.type];
+      const inFlight = e._opt === 'pending' || e._opt === 'pending-delete';
+      const optClass = e._opt === 'pending' ? ' opt-pending' : e._opt === 'pending-delete' ? ' opt-pending-delete' : e._opt === 'failed' ? ' opt-failed' : '';
+      const clickableClass = inFlight ? '' : ' clickable';
       return `
-      <div class="row clickable" data-index="${i}" ${bg ? `style="background:${bg};"` : ''}>
+      <div class="row${clickableClass}${optClass}" data-index="${i}" ${bg && !e._opt ? `style="background:${bg};"` : ''}>
         <div class="left">
           <div class="title">${e.expense || '—'}</div>
-          <div class="meta">${e.date || ''}</div>
+          <div class="meta">${optMetaHtml(e, e.date)}</div>
           <div class="chips">
             ${e.payment ? `<span class="chip pay">Payment: ${e.payment}</span>` : ''}
             ${e.type && e.type !== 'business' ? `<span class="chip name">${EXPENSE_TYPE_LABELS[e.type]}</span>` : ''}
@@ -2995,10 +3102,13 @@ function renderExpenses(expenses) {
     `;
     }).join('');
     list.querySelectorAll('.row').forEach(rowEl => {
-      rowEl.addEventListener('click', () => openExpenseModal(currentExpenses[Number(rowEl.dataset.index)]));
+      const entry = currentExpenses[Number(rowEl.dataset.index)];
+      if (entry._opt === 'pending' || entry._opt === 'pending-delete') return; // nothing to do while in flight
+      if (entry._opt === 'failed') { rowEl.addEventListener('click', () => openSaveReview(entry._optId)); return; }
+      rowEl.addEventListener('click', () => openExpenseModal(entry));
     });
   }
-  const total = expenses.reduce((sum, e) => sum + (typeof e.amount === 'number' ? e.amount : 0), 0);
+  const total = expenses.reduce((sum, e) => sum + (e._opt !== 'pending-delete' && typeof e.amount === 'number' ? e.amount : 0), 0);
   document.getElementById('totalExpenses').textContent = money(total);
 }
 
@@ -3008,11 +3118,15 @@ function renderIncome(income) {
   if (!income.length) {
     list.innerHTML = '<div class="empty-hint">No income logged this month.</div>';
   } else {
-    list.innerHTML = income.map((r, i) => `
-      <div class="row clickable" data-index="${i}">
+    list.innerHTML = income.map((r, i) => {
+      const inFlight = r._opt === 'pending' || r._opt === 'pending-delete';
+      const optClass = r._opt === 'pending' ? ' opt-pending' : r._opt === 'pending-delete' ? ' opt-pending-delete' : r._opt === 'failed' ? ' opt-failed' : '';
+      const clickableClass = inFlight ? '' : ' clickable';
+      return `
+      <div class="row${clickableClass}${optClass}" data-index="${i}">
         <div class="left">
           <div class="title">${r.income || '—'}</div>
-          <div class="meta">${r.date || ''}</div>
+          <div class="meta">${optMetaHtml(r, r.date)}</div>
           <div class="chips">
             ${r.name ? `<span class="chip name">Name: ${r.name}</span>` : ''}
             ${r.paidBy ? `<span class="chip pay">Payment: ${r.paidBy}</span>` : ''}
@@ -3020,12 +3134,16 @@ function renderIncome(income) {
         </div>
         <div class="amt income">${money(r.amount)}</div>
       </div>
-    `).join('');
+    `;
+    }).join('');
     list.querySelectorAll('.row').forEach(rowEl => {
-      rowEl.addEventListener('click', () => openIncomeModal(currentIncome[Number(rowEl.dataset.index)]));
+      const entry = currentIncome[Number(rowEl.dataset.index)];
+      if (entry._opt === 'pending' || entry._opt === 'pending-delete') return;
+      if (entry._opt === 'failed') { rowEl.addEventListener('click', () => openSaveReview(entry._optId)); return; }
+      rowEl.addEventListener('click', () => openIncomeModal(entry));
     });
   }
-  const total = income.reduce((sum, r) => sum + (typeof r.amount === 'number' ? r.amount : 0), 0);
+  const total = income.reduce((sum, r) => sum + (r._opt !== 'pending-delete' && typeof r.amount === 'number' ? r.amount : 0), 0);
   document.getElementById('totalIncome').textContent = money(total);
 }
 
@@ -3664,85 +3782,281 @@ async function refreshSummaryAfterSave(monthIndex) {
   if (res.success) renderSummary(res.summary || null);
 }
 
-// Shared by both Save and Delete -- posts whatever's in pendingPayload, and
-// either finishes normally, shows an error, or (if the server couldn't
-// uniquely match a "cash" sheet row) shows the disambiguation picker above
-// and waits for the user to choose before resubmitting.
-async function runPendingPayload() {
-  if (!pendingPayload) return;
-  const payload = pendingPayload;
-  const isDelete = payload.action === 'deleteIncome' || payload.action === 'deleteExpense';
+// ==== Optimistic save (16/08/2026) =======================================
+// Save/Delete used to disable every button on the page and sit on a
+// spinner for the full Drive round trip (still several seconds even after
+// this week's write-parallelization pass). Now the change appears on
+// screen the instant you hit Save, the page stays fully usable, and the
+// actual Drive write happens in the background -- see runPendingPayload()
+// (the click handler's entry point, now synchronous) and
+// submitOptimistically() (the actual background save/reconcile) below.
+//
+// Deliberately NOT persisted across a page reload/close -- if you close
+// the tab while something's still mid-save, tracking of it is lost (the
+// request may or may not have completed server-side). A durable
+// offline-friendly queue would be a real follow-on if that turns out to
+// matter in practice; out of scope for this pass. transferToBank and the
+// bulk expense-type-change buttons are untouched -- different shape, not
+// what was flagged slow.
+let optSeq = 0;
+// optId -> { kind: 'failed'|'warning', isIncome, monthIndex, payload, label, message }
+// -- the source of truth for the global banner/review panel. Deliberately
+// separate from currentExpenses/currentIncome so a failure/warning stays
+// tracked even after those two arrays get wholesale-replaced by the next
+// loadMonth() (switching months and back doesn't lose it).
+const optItems = new Map();
 
-  setAllButtonsDisabled(true);
-  setModalError(null);
-  startSaveProgress();
-  try {
-    // DISCONNECTED: writes to the static data/ JSON export instead of the live scriptUrl (see project CLAUDE.md)
-    const res = await accountsWriteDispatch(payload);
-    stopSaveProgress();
+// Serializes background saves per month, so two saves fired close together
+// (now possible since Save no longer blocks the page) can't race each
+// other's read-modify-write against the same Drive file -- the same class
+// of bug the logTransactionB queue fixed for concurrent lanes within one
+// save; this is the equivalent guard across separate saves. Saves to
+// different months are never serialized against each other.
+const optMonthChains = {};
+function queueMonthSave(monthIndex, taskFn) {
+  const key = String(monthIndex);
+  const prev = optMonthChains[key] || Promise.resolve();
+  const run = prev.then(taskFn, taskFn);
+  optMonthChains[key] = run.then(() => {}, () => {}); // chain continues regardless of outcome
+  return run;
+}
+
+function updateOptBanner() {
+  const banner = document.getElementById('optBanner');
+  let failed = 0, warned = 0;
+  optItems.forEach(i => { if (i.kind === 'failed') failed++; else warned++; });
+  if (!failed && !warned) { banner.classList.remove('show'); return; }
+  banner.classList.toggle('warn-only', failed === 0);
+  banner.textContent = failed > 0
+    ? '⚠ ' + failed + (failed === 1 ? ' change' : ' changes') + ' didn’t save' +
+      (warned > 0 ? ' (+' + warned + ' with a note)' : '') + ' — tap to review'
+    : '● ' + warned + (warned === 1 ? ' save' : ' saves') + ' with a note — tap to review';
+  banner.classList.add('show');
+}
+
+function openSaveReview(focusOptId) {
+  const listEl = document.getElementById('optPanelList');
+  const items = Array.from(optItems.entries());
+  const anyFailed = items.some(([, i]) => i.kind === 'failed');
+  document.getElementById('optPanelTitle').textContent = anyFailed ? 'Changes that didn’t save' : 'Saved, with a note';
+  document.getElementById('optPanelSub').textContent = anyFailed
+    ? 'These are only on this device -- Google Drive doesn’t have them yet. Retry when you’re ready, or discard.'
+    : 'These saved fine, but the server flagged something worth a look.';
+  listEl.innerHTML = items.map(([optId, item]) => `
+    <div class="opt-item${item.kind === 'warning' ? ' warn' : ''}" data-optid="${optId}">
+      <div class="rt">${item.label}</div>
+      <div class="rm">${item.isIncome ? 'Income' : 'Expense'} — ${MONTH_NAMES[item.monthIndex]}</div>
+      <div class="why">${item.message}</div>
+      <div class="actions">
+        ${item.kind === 'failed' ? `<button type="button" class="opt-btn-retry" data-act="retry" data-optid="${optId}">Retry</button>` : ''}
+        <button type="button" class="opt-btn-discard" data-act="${item.kind === 'failed' ? 'discard' : 'dismiss'}" data-optid="${optId}">${item.kind === 'failed' ? 'Discard' : 'Dismiss'}</button>
+      </div>
+    </div>
+  `).join('') || '<div class="empty-hint">Nothing pending.</div>';
+  listEl.querySelectorAll('button[data-act]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (btn.dataset.act === 'retry') retryOptItem(btn.dataset.optid);
+      else discardOptItem(btn.dataset.optid);
+    });
+  });
+  document.getElementById('optOverlay').classList.add('show');
+  if (focusOptId) {
+    const el = listEl.querySelector(`[data-optid="${focusOptId}"]`);
+    if (el) el.scrollIntoView({ block: 'nearest' });
+  }
+}
+function closeSaveReview() { document.getElementById('optOverlay').classList.remove('show'); }
+document.getElementById('optOverlay').addEventListener('click', (e) => { if (e.target.id === 'optOverlay') closeSaveReview(); });
+document.getElementById('optPanelCloseBtn').addEventListener('click', closeSaveReview);
+document.getElementById('optBanner').addEventListener('click', () => openSaveReview());
+
+function discardOptItem(optId) {
+  const item = optItems.get(optId);
+  if (!item) return;
+  optItems.delete(optId);
+  // "Discard" means "give up on retrying this", which is NOT the same
+  // undo for every action: a failed ADD never existed on Drive, so discard
+  // removes the placeholder row entirely; a failed EDIT's row still holds
+  // its real, last-saved values on Drive, so discard restores the
+  // pre-edit snapshot rather than deleting the row; a failed DELETE means
+  // the row was never actually removed, so discard just un-marks it back
+  // to normal. Exactly the same three cases as an unresolved
+  // disambiguation revert, so this reuses that function rather than
+  // duplicating the logic (and previously DID duplicate it, incorrectly --
+  // it used to delete the row outright in all three cases, which would
+  // have wrongly hidden a still-real row after a failed edit or delete).
+  revertOptimistic(optId, item.payload, item.isIncome);
+  updateOptBanner();
+  if (optItems.size === 0) closeSaveReview(); else openSaveReview();
+}
+
+function retryOptItem(optId) {
+  const item = optItems.get(optId);
+  if (!item) return;
+  optItems.delete(optId);
+  updateOptBanner();
+  if (optItems.size === 0) closeSaveReview(); else openSaveReview();
+  const isDeleteRetry = item.payload.action === 'deleteExpense' || item.payload.action === 'deleteIncome';
+  if (Number(monthSelect.value) === item.monthIndex) {
+    const arr = item.isIncome ? currentIncome : currentExpenses;
+    const entry = arr.find(e => e._optId === optId);
+    if (entry) { entry._opt = isDeleteRetry ? 'pending-delete' : 'pending'; if (item.isIncome) renderIncome(currentIncome); else renderExpenses(currentExpenses); }
+  }
+  submitOptimistically(item.payload, optId);
+}
+
+function markOptFailed(optId, payload, isIncome, message) {
+  optItems.set(optId, {
+    kind: 'failed', isIncome, monthIndex: payload.monthIndex, payload,
+    label: isIncome ? (payload.income || 'Income entry') : (payload.expense || 'Expense'),
+    message
+  });
+  if (Number(monthSelect.value) === payload.monthIndex) {
+    const arr = isIncome ? currentIncome : currentExpenses;
+    const entry = arr.find(e => e._optId === optId);
+    if (entry) { entry._opt = 'failed'; if (isIncome) renderIncome(currentIncome); else renderExpenses(currentExpenses); }
+  }
+  updateOptBanner();
+}
+
+// Undoes an optimistic change that turned out to need cash-row
+// disambiguation (the one outcome that genuinely can't be resolved in the
+// background -- see submitOptimistically). Removes a would-be add,
+// restores an edit's pre-save snapshot, or un-marks a pending delete.
+// Only touches the DOM if the user's still on that month.
+function revertOptimistic(optId, payload, isIncome) {
+  if (Number(monthSelect.value) !== payload.monthIndex) return;
+  const arr = isIncome ? currentIncome : currentExpenses;
+  const idx = arr.findIndex(e => e._optId === optId);
+  if (idx === -1) return;
+  if (payload.action === 'deleteExpense' || payload.action === 'deleteIncome') {
+    arr[idx]._opt = undefined;
+  } else if (payload._optOriginal) {
+    arr[idx] = payload._optOriginal;
+  } else {
+    arr.splice(idx, 1);
+  }
+  if (isIncome) renderIncome(currentIncome); else renderExpenses(currentExpenses);
+}
+
+// Actually performs the background save/delete for one payload (queued
+// per-month, see queueMonthSave) and reconciles whatever's on screen once
+// the server responds, keyed by optId so it can find the right row again
+// regardless of how long the request took or whether the user has since
+// switched months.
+async function submitOptimistically(payload, optId) {
+  const isDelete = payload.action === 'deleteIncome' || payload.action === 'deleteExpense';
+  const isIncome = payload.action === 'addIncome' || payload.action === 'editIncome' || payload.action === 'deleteIncome';
+  const stillOnThatMonth = () => Number(monthSelect.value) === payload.monthIndex;
+
+  await queueMonthSave(payload.monthIndex, async () => {
+    let res, err = null;
+    try {
+      // DISCONNECTED: writes to the static data/ JSON export instead of the live scriptUrl (see project CLAUDE.md)
+      res = await accountsWriteDispatch(payload);
+    } catch (e) { err = e; }
+
+    if (err) { markOptFailed(optId, payload, isIncome, err.message); return; }
 
     if (res.needsDisambiguation) {
-      showCashDisambiguation(res.candidates, payload);
+      // Can't be resolved in the background -- needs a person to pick
+      // which "cash" row this actually is. Fall back to exactly the
+      // blocking picker flow this page always used, rather than guessing.
+      // runPendingPayload() already closed the modal optimistically, so
+      // it has to be reopened here for the picker to actually be visible
+      // -- showCashDisambiguation() only toggles the sub-panels inside an
+      // already-open modal, it never opens the modal itself.
+      revertOptimistic(optId, payload, isIncome);
+      if (stillOnThatMonth()) {
+        modalBackdrop.classList.add('show');
+        showCashDisambiguation(res.candidates, payload);
+      }
       return;
     }
     if (!res.success) {
-      setModalError(res.error || (isDelete ? 'Delete failed — please try again.' : 'Save failed — please try again.'));
+      markOptFailed(optId, payload, isIncome, res.error || (isDelete ? 'Delete failed.' : 'Save failed.'));
       return;
     }
-    pendingPayload = null;
-    closeModal();
 
-    // Deletes always reload the month (rows shift, and deletes are rare
-    // enough that correctness beats speed here). Add/Edit update the
-    // on-page list directly from what was just saved -- unless the server
-    // flagged a rare row-insert shift, in which case a full reload is the
-    // only safe option.
-    if (isDelete || res.shifted) {
-      loadMonth(Number(monthSelect.value));
-    } else if (payload.action === 'addExpense' || payload.action === 'editExpense') {
-      upsertLocalExpense({
-        row: res.row,
-        date: isoToDmy(payload.date),
-        expense: payload.expense,
-        amount: payload.amount === '' ? '' : Number(payload.amount),
-        payment: payload.payment,
-        type: payload.expenseType,
-        bikeSplits: payload.expenseBikeSplits
-      });
-    } else if (payload.action === 'addIncome' || payload.action === 'editIncome') {
-      upsertLocalIncome({
-        row: res.row,
-        date: isoToDmy(payload.date),
-        income: payload.income,
-        name: payload.name,
-        amount: payload.amount === '' ? '' : Number(payload.amount),
-        paidBy: payload.paidBy,
-        bikeSplits: payload.incomeBikeSplits
-      });
-    }
-
-    // The list itself is updated locally above (no full reload needed), but
-    // the summary strip (Total expenses/income, profit, cash & deposits) is
-    // NOT derived from that local list -- it's read off fixed cells the
-    // server just recalculated (recomputeMonthlySummaryCascadeB) when it
-    // wrote this save. Without this, the strip kept showing pre-save totals
-    // until the next full page load/reload (Anton reported this 2026-08-15).
-    // Best-effort and guarded against a month switch racing this fetch --
-    // a failure or a stale response here should never surface as a save
-    // error, since the save itself already succeeded.
-    if (!isDelete && !res.shifted) {
-      refreshSummaryAfterSave(payload.monthIndex).catch(() => {});
+    // Success. Reconcile what's on screen only if the user is still
+    // looking at this month -- if they've moved on, the next loadMonth()
+    // of this month will already show the correct saved state.
+    if (stillOnThatMonth()) {
+      // Deletes always reload the month (rows shift, and deletes are rare
+      // enough that correctness beats speed here). Add/Edit patch the
+      // placeholder entry in place -- unless the server flagged a rare
+      // row-insert shift, in which case a full reload is the only safe
+      // option, same as before this pass.
+      if (isDelete || res.shifted) {
+        loadMonth(payload.monthIndex);
+      } else {
+        const arr = isIncome ? currentIncome : currentExpenses;
+        const entry = arr.find(e => e._optId === optId);
+        if (entry) {
+          entry.row = res.row;
+          entry._opt = undefined;
+          if (isIncome) renderIncome(currentIncome); else renderExpenses(currentExpenses);
+        }
+      }
+      // Summary strip isn't derived from currentExpenses/currentIncome --
+      // see the original comment this replaced. Best-effort, guarded
+      // against a month switch racing it.
+      if (!isDelete && !res.shifted) refreshSummaryAfterSave(payload.monthIndex).catch(() => {});
     }
 
     if (res.warning) {
-      alert((isDelete ? 'Deleted, but: ' : 'Saved, but: ') + res.warning);
+      optItems.set(optId, {
+        kind: 'warning', isIncome, monthIndex: payload.monthIndex, payload,
+        label: isIncome ? (payload.income || 'Income entry') : (payload.expense || 'Expense'),
+        message: res.warning
+      });
+      updateOptBanner();
     }
-  } catch (err) {
-    stopSaveProgress();
-    setModalError((isDelete ? 'Delete failed: ' : 'Save failed: ') + err.message);
-  } finally {
-    setAllButtonsDisabled(false);
+  });
+}
+
+// Shared by both Save and Delete -- applies the change to the on-page list
+// immediately (marked pending), closes the modal right away, and kicks off
+// the actual Drive save in the background via submitOptimistically().
+function runPendingPayload() {
+  if (!pendingPayload) return;
+  const payload = pendingPayload;
+  pendingPayload = null;
+  const isDelete = payload.action === 'deleteIncome' || payload.action === 'deleteExpense';
+  const isEdit = payload.action === 'editExpense' || payload.action === 'editIncome';
+  const isIncome = payload.action === 'addIncome' || payload.action === 'editIncome' || payload.action === 'deleteIncome';
+
+  setModalError(null);
+  closeModal();
+
+  const optId = 'opt' + (++optSeq);
+  const arr = isIncome ? currentIncome : currentExpenses;
+
+  if (isDelete) {
+    const entry = arr.find(e => e.row === payload.row);
+    if (entry) { entry._opt = 'pending-delete'; entry._optId = optId; }
+  } else {
+    const fields = isIncome
+      ? { income: payload.income, name: payload.name, paidBy: payload.paidBy, bikeSplits: payload.incomeBikeSplits }
+      : { expense: payload.expense, payment: payload.payment, type: payload.expenseType, bikeSplits: payload.expenseBikeSplits };
+    const entry = {
+      row: isEdit ? payload.row : (-1000000 - optSeq), // placeholder row for a brand-new add; real one comes back in res.row
+      date: isoToDmy(payload.date),
+      amount: payload.amount === '' ? '' : Number(payload.amount),
+      _opt: 'pending', _optId: optId,
+      ...fields
+    };
+    if (isEdit) {
+      const idx = arr.findIndex(e => e.row === payload.row);
+      payload._optOriginal = idx > -1 ? { ...arr[idx] } : null;
+      if (idx > -1) arr[idx] = entry; else arr.push(entry);
+    } else {
+      arr.unshift(entry); // newest first -- the most useful place to see a just-added row
+    }
   }
+
+  if (isIncome) renderIncome(currentIncome); else renderExpenses(currentExpenses);
+  submitOptimistically(payload, optId);
 }
 
 modalSaveBtn.addEventListener('click', () => {
