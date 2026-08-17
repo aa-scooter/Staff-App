@@ -6,6 +6,135 @@ This exists because work on this project gets picked up across multiple
 Claude sessions/accounts with no shared memory between them — this file is
 the handoff.
 
+## 🐛 Fixed: shared "Saving…" strip could get stuck showing forever on
+## pages OTHER than bikes.html -- CODED AND TEST-GREEN, NOT YET DEPLOYED
+## (2026-08-17, reported live by Anton on parts.html, after the nav.js
+## save-strip move + bikes.html save-pipeline engine entries just below)
+
+**Bug report (Anton, live on staff-app-six-phi.vercel.app):** the shared
+"● Saving…" strip was stuck showing on parts.html for several minutes,
+survived a refresh of parts.html, and the underlying transaction had
+already gone through (visible on the sheet) ages before.
+
+**Root cause, traced through the actual code, not assumed:** the strip is
+READ-ONLY -- it just displays whatever's in `aaBikesPendingSaves`
+(localStorage). Only bikes.html's OWN script (`restoreUnresolvedSaves()`,
+run on ITS OWN page load) ever actually resubmits/clears a leftover entry.
+bikes.html's writes use `fetch(..., {keepalive:true})` -- keepalive keeps
+the NETWORK REQUEST alive across a navigation, but the JS that would
+receive the response and clear the flag is torn down the instant you
+leave bikes.html. If nobody happens to revisit bikes.html afterwards
+(entirely plausible -- there's no reason to go back to the page you just
+finished acting on), that flag -- and the strip on every other page -- is
+stuck forever, even though the write itself finished successfully
+server-side within seconds. This was a real gap in the design, not a
+one-off glitch: recovery was accidentally scoped to "whichever tab
+happens to load bikes.html next," not to the app as a whole.
+
+**Fix -- made recovery genuinely cross-page, in `nav.js`:**
+- New `recoverOrphanedSaves()` in nav.js, run once on load and again on
+  every 2.5s poll tick (alongside the existing `refreshSaveStrip()`).
+  Duplicates bikes.html's `bkDispatch`/`bkDispatchWithRetry` shape (same
+  POST to `/api/bikes/write`, same 409-retry-up-to-3) -- safe to blindly
+  resubmit because every action here is idempotency-guarded server-side,
+  same reasoning bikes.html's own recovery already relies on; this just
+  stops that recovery being stuck waiting for one specific page.
+- Only acts on items queued at least 15s ago (`RECOVERY_MIN_AGE_MS`) --
+  guards against jumping in on a save that's simply still genuinely in
+  flight on its own tab elsewhere. Also does nothing at all while
+  standing ON bikes.html itself (that page's own engine still owns
+  recovery there, per `PENDING_SAVE_SOURCES`'s `ownerPage` field) -- avoids
+  two different scripts racing to resubmit the same request at once.
+- A resolved item is removed from `aaBikesPendingSaves` by matching its
+  `clientTxnId` (read-modify-write scoped to that one item), not by
+  overwriting the whole key from a stale snapshot -- so this can't
+  clobber a genuinely NEW save bikes.html itself queues in another tab
+  while this recovery pass is mid-flight. A definitive failure (not a
+  409) is written to `aaBikesFailedSaves` instead, so it still surfaces
+  in bikes.html's own Retry/Discard review panel next time someone's
+  there, rather than being silently dropped.
+- Written generically against a `PENDING_SAVE_SOURCES` table (currently
+  one entry, bikes.html) rather than hardcoded -- contract.html's own
+  pending-save key should be added here the moment its save-pipeline
+  engine exists (see the rollout entries below), so this same fix covers
+  it automatically instead of needing to be rediscovered per page.
+- Confirmed explicitly with Anton: the strip's text must keep stepping
+  down correctly as multiple queued saves resolve one at a time (e.g. 2
+  pending → "Saving… (1 queued)" → one resolves → "Saving…" → the second
+  resolves → hidden), not just eventually land on the right end state --
+  tested directly (scenario 2 below).
+
+**Also fixed, found while touching `bkEnqueue()` for the `queuedAt`
+timestamp this needed:** `bkEnqueue`'s destructured parameters
+(`{ label, rows, requests, onAllSuccess }`) never captured `onStepSuccess`
+even though every multi-step call site (e.g. `confirmReturn`) passes one
+-- so the per-step local-state patch (e.g. patching `returnDate`/
+`situation` the moment `markReturned` succeeds, ahead of the `returnDeposit`
+follow-up) was silently a no-op the whole time bikes.html's save-pipeline
+engine has existed. Low real-world impact (a full reload already happens
+in most of these onAllSuccess handlers anyway) but a real, pre-existing
+bug, now fixed as part of this same edit since it's the same function
+signature. Confirmed by test (see below).
+
+**`bikes.html` changes:** `bkEnqueue()` now also captures `onStepSuccess`
+(bug fix, see above) and stamps `queuedAt: Date.now()` on every item;
+`persistPendingSaves()` includes `queuedAt` in what it writes;
+`restoreUnresolvedSaves()` preserves the ORIGINAL `queuedAt` from before
+a reload (falls back to `0`/"very old" for a pre-this-fix record with no
+`queuedAt` at all) rather than resetting the clock, so nav.js's staleness
+check reflects genuine age across a reload too.
+
+**Testing:** two fresh Node harnesses (no jsdom available in this sandbox
+-- registry access is blocked -- so both use `new Function(...)` source-
+slicing on the REAL files, same technique `frontend/dispatch.test.js` used
+last session, built in `/tmp/navtest/`, scratch, gone between sessions).
+- `run.js` against nav.js's sliced `currentPage`/`pendingBikesSaveCount`/
+  `refreshSaveStrip`/`recoverOrphanedSaves`, with a fake localStorage,
+  fake `document.getElementById('saveStrip')`, and a mocked `fetch`.
+  22/22 green across 7 scenarios: a single orphaned item gets resubmitted
+  and the strip clears; TWO orphaned items resolve in order with the
+  strip's text correctly stepping "(1 queued)" → plain "Saving…" → hidden
+  as each one lands (Anton's specific concern, see above); an item queued
+  only 2s ago is left untouched; standing on bikes.html itself skips
+  recovery entirely; a definitive (non-409) failure moves the item to
+  `aaBikesFailedSaves` with the server's own message; a 409 retries once
+  and succeeds transparently, NOT counted as a failure; a corrupted
+  localStorage value fails quiet, no throw.
+- `enginetest.js` against bikes.html's sliced save-pipeline engine block:
+  `bkEnqueue()` stamps a numeric `queuedAt` that's also written to
+  localStorage by `persistPendingSaves()`; `onStepSuccess` now actually
+  fires (proving the bug above is fixed); `onAllSuccess` still fires;
+  the queue drains and the pending key clears on success. 6/6 green.
+- Whole-file syntax check (`node --check` on nav.js, `new Function(...)`
+  on both of bikes.html's inline `<script>` blocks) clean after every
+  edit, same discipline as every other change in this project.
+- **28/28 assertions green** across both new harnesses. Did NOT re-run
+  bikes.html's full pre-existing fake-Drive suites (129 assertions) or
+  `frontend/save-queue.test.js` (33) this pass -- nothing server-side
+  changed, and the only client-side surface touched (`bkEnqueue`'s
+  signature) is covered fresh by `enginetest.js` above; re-verify those
+  too before the NEXT real change to bikes.html's engine, not just this
+  narrow fix.
+
+**Not yet done:**
+1. Deliver via the workspace folder, push. **This one's worth confirming
+   live once deployed** -- if practical, deliberately reproduce the
+   original bug (queue a save on bikes.html, navigate away before it
+   resolves, wait 15s+, check the strip clears on its own from a
+   different page) rather than only trusting the harness above, since
+   this fix's whole point is behavior that's inherently awkward to catch
+   with a synchronous mock (see `run.js`'s scenario 2 comment on why the
+   mock needed an artificial delay to even observe the intermediate
+   state).
+2. Add contract.html's own `{ownerPage, pendingKey, failedKey, endpoint}`
+   row to nav.js's `PENDING_SAVE_SOURCES` the moment its save-pipeline
+   engine exists (next task, see the rollout entries below) -- this fix
+   was written generically specifically so that's a one-line addition,
+   not a repeat of this whole investigation.
+3. The contract.html rollout itself (full optimistic-UI treatment,
+   mirroring bikes.html's engine) is still the next task per the rollout
+   plan -- this fix was a detour to handle Anton's live bug report first.
+
 ## 🔧 nav.js: "Saving..." strip moved into the SHARED header, visible from
 ## any page -- CODED AND TEST-GREEN, NOT YET DEPLOYED (2026-08-17, later
 ## same day as the bikes.html save-pipeline engine entry just below)

@@ -3138,12 +3138,21 @@ const bkFailedItems = new Map();
 // the corresponding lib/bikesWrites.js action checks for one.
 function bkQueueFull() { return bkQueue.length >= MAX_QUEUE; }
 
-function bkEnqueue({ label, rows, requests, onAllSuccess }) {
+function bkEnqueue({ label, rows, requests, onStepSuccess, onAllSuccess }) {
   const item = {
     id: ++bkSeq,
     clientTxnId: (requests[0] && requests[0].payload && requests[0].payload.clientTxnId) || genClientTxnId(),
     label, rows: (rows || []).slice(), requests, reqIndex: 0, results: [],
+    onStepSuccess: onStepSuccess || null,
     onAllSuccess: onAllSuccess || null,
+    // When this item was first queued (ms since epoch) -- persisted below so
+    // nav.js's shared header strip can tell a genuinely-in-flight save apart
+    // from one whose owning tab was navigated away from/closed before the
+    // keepalive fetch's response ever came back (see persistPendingSaves'
+    // comment, and nav.js's own recoverOrphanedSaves() -- added 17/08/2026
+    // after exactly this got reported stuck on parts.html with no way to
+    // clear it short of revisiting this page).
+    queuedAt: Date.now(),
     status: bkQueue.length === 0 ? 'running' : 'queued'
   };
   bkQueue.push(item);
@@ -3266,7 +3275,7 @@ function persistPendingSaves() {
   try {
     const arr = bkQueue.map(it => ({
       clientTxnId: it.clientTxnId, label: it.label, rows: it.rows,
-      requests: it.requests.slice(it.reqIndex)
+      requests: it.requests.slice(it.reqIndex), queuedAt: it.queuedAt || Date.now()
     }));
     if (arr.length) localStorage.setItem(PENDING_SAVES_KEY, JSON.stringify(arr));
     else localStorage.removeItem(PENDING_SAVES_KEY);
@@ -3314,6 +3323,14 @@ function restoreUnresolvedSaves() {
             id: ++bkSeq, clientTxnId: rec.clientTxnId, label: rec.label || 'Unfinished save',
             rows: rec.rows || [], requests: rec.requests, reqIndex: 0, results: [],
             onAllSuccess: () => { clearBikesCache(); loadData(); },
+            // Preserve the ORIGINAL queuedAt from before this reload, not a
+            // fresh timestamp -- otherwise every reload of this page would
+            // keep resetting the clock nav.js's recoverOrphanedSaves() uses
+            // to judge staleness, and an item genuinely stuck for minutes
+            // would never look old enough to be worth nav.js stepping in on
+            // some OTHER page. 0 (very old) is the safe fallback for a
+            // pre-this-fix record with no queuedAt field at all.
+            queuedAt: rec.queuedAt || 0,
             status: bkQueue.length === 0 ? 'running' : 'queued'
           };
           bkQueue.push(item);

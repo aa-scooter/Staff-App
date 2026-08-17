@@ -536,6 +536,174 @@
     el.classList.add('show');
   }
 
+  // =====================================================================
+  // Cross-page orphan-save recovery (Anton, 17/08/2026 -- reported the
+  // strip stuck on "Saving..." on parts.html for minutes, transaction
+  // long since gone through). Root cause: the strip above is READ-ONLY --
+  // it just displays whatever bikes.html's own save-pipeline engine last
+  // wrote to aaBikesPendingSaves. Only bikes.html's OWN script
+  // (restoreUnresolvedSaves(), run on ITS OWN page load) ever actually
+  // resubmits/clears a leftover entry. bikes.html's writes use
+  // fetch(..., {keepalive:true}) -- keepalive keeps the NETWORK REQUEST
+  // alive across a navigation, but the JS that would receive the response
+  // and clear the flag is torn down the instant you leave that page. If
+  // nobody goes back to bikes.html afterwards, that flag -- and the
+  // header strip everywhere else in the app -- is stuck forever, even
+  // though the write itself finished successfully server-side within
+  // seconds.
+  //
+  // Fix: give this shared file its OWN minimal resubmit capability,
+  // duplicated from bikes.html's bkDispatch/bkDispatchWithRetry (same
+  // POST shape, same 409-retry -- see that file's own comment for why
+  // this is safe: every action here is idempotency-guarded server-side,
+  // so blindly resubmitting something that already succeeded is a cheap,
+  // safe no-op that just confirms it and lets the flag clear). This runs
+  // from ANY page that includes this shared header, not just bikes.html,
+  // which is the actual fix -- recovery is no longer stuck waiting for
+  // someone to happen to revisit the one page that used to own it.
+  //
+  // One entry per page with its own save-pipeline engine + pending-save
+  // localStorage key. Add contract.html's here once its own engine exists
+  // (see PROGRESS.md's rollout plan) -- everything below is written
+  // generically against this table, not hardcoded to bikes.html.
+  var PENDING_SAVE_SOURCES = [
+    { ownerPage: 'bikes.html', pendingKey: 'aaBikesPendingSaves', failedKey: 'aaBikesFailedSaves', endpoint: '/api/bikes/write' }
+  ];
+
+  // Only items queued at least this long ago are treated as possibly
+  // orphaned. Guards against jumping in on a save that's simply still
+  // genuinely in flight on its own tab elsewhere (e.g. a slow long-
+  // extend) -- 15s is comfortably longer than any real round trip this
+  // app makes, per bikes.html's own comment on why several seconds is
+  // normal for a multi-step action.
+  var RECOVERY_MIN_AGE_MS = 15000;
+
+  function readJsonArray(key) {
+    try {
+      var raw = localStorage.getItem(key);
+      if (!raw) return [];
+      var arr = JSON.parse(raw);
+      return Array.isArray(arr) ? arr : [];
+    } catch (e) { return []; }
+  }
+  function writeJsonArrayOrRemove(key, arr) {
+    try {
+      if (arr.length) localStorage.setItem(key, JSON.stringify(arr));
+      else localStorage.removeItem(key);
+    } catch (e) { /* best-effort, same posture as everywhere else in this file */ }
+  }
+  // Read-modify-write scoped to ONE item (matched by clientTxnId) rather
+  // than overwriting the whole key with a stale snapshot -- so this can't
+  // clobber a genuinely NEW save some other tab queues on bikes.html
+  // itself while this recovery pass is still mid-flight.
+  function removeFromPending(pendingKey, clientTxnId) {
+    var current = readJsonArray(pendingKey);
+    writeJsonArrayOrRemove(pendingKey, current.filter(function (r) { return r && r.clientTxnId !== clientTxnId; }));
+  }
+
+  // Resubmits ONE item's remaining requests in strict order -- mirrors
+  // bikes.html's bkRun/bkDispatch/bkDispatchWithRetry, duplicated here
+  // per this project's per-file convention (see CLAUDE.md). Resolves to
+  // {success:true} or {success:false, message}.
+  function recoverItem(source, item) {
+    var i = 0;
+    function runNext() {
+      if (i >= item.requests.length) return Promise.resolve({ success: true });
+      var req = item.requests[i];
+      var body = Object.assign({ action: req.action }, req.payload);
+      var attempt = 1;
+      var maxAttempts = 3;
+      function attemptOnce() {
+        return fetch(source.endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+          keepalive: true
+        }).then(function (r) {
+          if (r.status === 401) return { success: false, message: 'Signed out -- please refresh to sign in again.' };
+          return r.json().catch(function () { return {}; }).then(function (res) {
+            if (r.status === 409) {
+              if (attempt < maxAttempts) {
+                attempt++;
+                return new Promise(function (resolve) { setTimeout(resolve, 700 * attempt); }).then(attemptOnce);
+              }
+              return { success: false, message: res.error || 'This record was changed by someone else in the meantime -- please reload and try again.' };
+            }
+            if (!r.ok || res.success === undefined) return { success: false, message: res.error || ('HTTP ' + r.status) };
+            if (res.success === false) return { success: false, message: res.error || 'Could not save.' };
+            return { success: true, __step: res };
+          });
+        }, function (err) {
+          return { success: false, message: (err && err.message) || 'Network error.' };
+        });
+      }
+      return attemptOnce().then(function (result) {
+        if (!result.success) return result;
+        i++;
+        return runNext();
+      });
+    }
+    return runNext();
+  }
+
+  // Guards against this running again while a previous pass is still
+  // resolving (a pass can take a few seconds across a couple of retries)
+  // -- the 2.5s poll tick that drives this would otherwise pile up
+  // overlapping fetches for the same stuck item.
+  var recoveryInFlight = false;
+
+  function recoverOrphanedSaves() {
+    if (recoveryInFlight) return;
+    var here = currentPage();
+    var jobs = [];
+    PENDING_SAVE_SOURCES.forEach(function (source) {
+      if (here === source.ownerPage) return; // that page's own engine already owns recovery while you're standing on it
+      var now = Date.now();
+      readJsonArray(source.pendingKey).forEach(function (rec) {
+        if (!rec || !Array.isArray(rec.requests) || !rec.requests.length) return;
+        var age = now - (rec.queuedAt || 0);
+        if (age >= RECOVERY_MIN_AGE_MS) jobs.push({ source: source, rec: rec });
+      });
+    });
+    if (!jobs.length) return;
+    recoveryInFlight = true;
+    console.warn('[nav] ' + jobs.length + ' unfinished save(s) elsewhere in the app look orphaned (queued 15s+ ago, not on their own page right now) -- resubmitting in the background to confirm/finish them.');
+
+    // Sequential, not parallel -- keeps this simple, and matches
+    // bikes.html's own one-at-a-time bkRun. The pending count (and the
+    // strip's text/visibility) is refreshed after EACH item resolves, not
+    // just once at the end, so "Saving... (1 queued)" correctly steps
+    // down to "Saving..." -- and then disappears entirely -- as each one
+    // actually finishes, the same way bikes.html's own strip already
+    // behaves while you're standing on that page. If a NEW save gets
+    // queued (on bikes.html itself, in another tab) partway through this
+    // pass, the next poll tick's refreshSaveStrip() picks it up
+    // immediately regardless, since that's always a fresh localStorage
+    // read.
+    function runOne(idx) {
+      if (idx >= jobs.length) { recoveryInFlight = false; refreshSaveStrip(); return; }
+      var job = jobs[idx];
+      recoverItem(job.source, job.rec).then(function (result) {
+        if (!result.success) {
+          var failedArr = readJsonArray(job.source.failedKey);
+          failedArr.push({
+            id: 'nav_' + Date.now() + '_' + idx, label: job.rec.label || 'Unfinished save',
+            rows: job.rec.rows || [], requests: job.rec.requests, message: result.message
+          });
+          writeJsonArrayOrRemove(job.source.failedKey, failedArr);
+        }
+        // Resolved (dropped) or moved to the failed list above -- either
+        // way it's no longer "pending". Removed by clientTxnId, not by
+        // overwriting the whole key, so a concurrently-added new save on
+        // the owner page survives untouched.
+        removeFromPending(job.source.pendingKey, job.rec.clientTxnId);
+        refreshSaveStrip();
+        runOne(idx + 1);
+      });
+    }
+    runOne(0);
+  }
+
   function renderTopbar() {
     var mount = document.getElementById('topbar-mount');
     if (!mount) return; // page opted out of the shared header
@@ -587,14 +755,22 @@
     initNavDropdowns();
 
     refreshSaveStrip();
+    // Attempt orphan recovery right away too (not just on the first poll
+    // tick 2.5s from now) -- see recoverOrphanedSaves()'s own comment for
+    // the full "why". Harmless/instant no-op when there's nothing old
+    // enough to act on, which is the common case.
+    recoverOrphanedSaves();
     // Polled (not just read once, unlike syncBadgeHtml's failed-save pill
     // above) so the strip stays reasonably fresh while sitting on a
     // DIFFERENT page from whichever one queued the save -- that page's own
     // script (the only thing that would otherwise resolve/clear it) is
     // gone the moment you navigate away. 2.5s is frequent enough to feel
     // live without hammering localStorage. Cleared and restarted is never
-    // needed -- renderTopbar() only ever runs once per page load.
-    setInterval(refreshSaveStrip, 2500);
+    // needed -- renderTopbar() only ever runs once per page load. Each
+    // tick also re-tries recoverOrphanedSaves() -- cheap when nothing
+    // qualifies, and lets an item that was too young to touch on the
+    // first pass become eligible without needing a reload.
+    setInterval(function () { refreshSaveStrip(); recoverOrphanedSaves(); }, 2500);
   }
 
   // =====================================================================
