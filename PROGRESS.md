@@ -6,6 +6,111 @@ This exists because work on this project gets picked up across multiple
 Claude sessions/accounts with no shared memory between them — this file is
 the handoff.
 
+## 🔧 Phase 2, bikes.html write layer: ALL 7 ACTIONS NOW PORTED AND
+## TEST-GREEN -- long-extension pair ('closeBikeForExtend' +
+## 'customerIntake') is the last one, NOT YET DEPLOYED, NOT YET WIRED
+## INTO THE FRONTEND (2026-08-17, later same day as the updateReturnPickup
+## + extendBike-short entry just below)
+
+**What this is:** the fourth and final backend-porting slice -- the
+long-extension pair, the last 2 of bikes.html's 7 write actions (both
+counted as one "action" conceptually -- the "Extend 1 month" checkbox /
+30+ day extend flow -- but implemented as 2 separate dispatch actions,
+see below for why). Added to the same `lib/bikesWrites.js` /
+`api/bikes/write.js` from the prior three entries (no new files).
+**bikes.html's own frontend is still completely untouched.** This
+completes backend porting for every write action bikes.html has -- the
+`bikesWriteDispatch` switch now handles all 7, and the file header STATUS
+comments in both files reflect that.
+
+**What got ported, byte-for-byte from bikes.html's own copies:**
+`closeBikeForExtendFromJson`, `customerIntakeFromJson` (+ its dependencies
+`findRentedContractRowForBackfillFromJson`, `syncContractRowTotalsFromJson`,
+`logSecurityDepositFromJson`, `stripBikeNameBracketsB3`). Everything else
+`customerIntakeFromJson` calls (`appendLedgerEntryFromJson`,
+`appendMonthlyIncomeRowFromJson`, `appendCashSheetRowFromJson`,
+`addRentalAmountToBikesSheetFromJson`, `processDepositForPaymentFromJson`,
+`flipMatchingContractStatus`) was already ported in earlier slices and
+reused verbatim.
+
+**Design resolution for the "two sequential dependent writes" question
+flagged in every prior entry:** turned out simpler than expected once
+actually traced through bikes.html's own frontend. `confirmExtend()`'s
+long-extension branch fires `closeBikeForExtendFromJson` and
+`customerIntakeFromJson` as **two separate sequential HTTP requests
+today**, not one atomic combined action -- so this port exposes them as 2
+separate dispatch actions (`'closeBikeForExtend'`, `'customerIntake'`)
+rather than inventing a wrapper bikes.html itself doesn't have. That
+means each one just needs its OWN independent idempotency treatment, the
+same as every other action already ported:
+- `closeBikeForExtend` got **no** clientTxnId guard -- it's naturally
+  idempotent, unconditionally setting situation to "Returned" regardless
+  of the row's current value, so a retry converges to the same end state
+  (same reasoning as `updateReturnPickup`'s gap in the prior entry).
+- `customerIntake` got the **same** clientTxnId guard `swapBikeFromJson`
+  uses (it also always creates a brand-new customer row), since a retried
+  intake would otherwise double-book the whole extension period as two
+  separate paid rows -- real money, so this needed protection. Tested
+  explicitly (Test 5 below).
+
+One residual gap, documented rather than silently shipped: if
+`closeBikeForExtend` succeeds but the page/network dies before
+`customerIntake`'s own retry-with-marker completes, a plain retry of the
+CLOSE call is harmless (idempotent), but if the ORIGINAL `customerIntake`
+call is somehow re-sent with a fresh `clientTxnId` (not a same-ID retry)
+it would create a second new row -- this is a fundamentally different
+risk than a same-ID replay and no guard here (or anywhere else in this
+codebase) protects against it. This is a pre-existing characteristic of
+bikes.html's own two-request design, not a new regression introduced by
+this port.
+
+**Testing:** same fake-Drive Node harness (`/tmp/bikestest/` on the
+sandbox, scratch, rebuild if picked up again), extended with a fourth
+test file (`long-extend.test.js`). 34/34 green across 7 scenarios:
+closeBikeForExtend basic success (situation flips to Returned, return
+date and total price both left untouched) and its natural idempotency (a
+repeated call is harmless with no guard needed); customerIntake
+(extend-sourced) basic success -- new row created with the right
+fields, ledger note CARRIES FORWARD the original leg's history and
+combines the running total (19 + 30 = 49 days), Contract row's return
+date and status synced, income + cash rows written; a fresh security
+deposit is correctly SKIPPED for an extend-sourced intake even when a
+deposit method is set; the money-critical idempotency case (Test 5 -- a
+retried intake with the SAME clientTxnId does NOT create a second row or
+a second income row, and reports the original row number back); two
+DIFFERENT clientTxnIds both apply independently as two separate rows
+(proves the guard doesn't over-suppress genuinely separate extensions);
+blank name validation. **All 4 test files together: 129/129 assertions
+green** (swap 25, return-family 32, updateReturnPickup+extendBike-short
+38, long-extension 34).
+
+**Not yet done, in order -- backend porting for bikes.html is DONE, this
+is what's left:**
+1. Deliver via the workspace folder, push (zero risk, nothing live changed).
+2. The frontend optimistic-UI + idempotency-submission layer in
+   bikes.html itself (mirroring accounts.html's
+   `genClientTxnId`/`optItems`/`optInFlight`/`queueMonthSave` pattern),
+   wired to `api/bikes/write.js`, generating and sending `clientTxnId` on
+   every action that has a guard (`swapBike`, `markReturned`,
+   `earlyReturnBike`, `extendBike`, `customerIntake`). Still nothing
+   user-visible changes before this step -- bikes.html's client script
+   stays untouched until this step actually starts.
+3. A jsdom-based frontend test batch for that layer (Playwright still
+   unavailable in this sandbox).
+4. Only after bikes.html's frontend is wired and tested: repeat this
+   whole Phase 2 process for the next page (contract.html, deposits.html,
+   add-bikes.html, or customers.html, per the original rollout plan's
+   suggested order).
+
+**Files changed this slice:** `lib/bikesWrites.js` (added
+`stripBikeNameBracketsB3`, `closeBikeForExtendFromJson`,
+`findRentedContractRowForBackfillFromJson`, `syncContractRowTotalsFromJson`,
+`logSecurityDepositFromJson`, `customerIntakeFromJson`; updated
+`bikesWriteDispatch` to add `'closeBikeForExtend'` and `'customerIntake'`;
+updated the factory's returned-exports object; updated the file header
+STATUS comment to reflect all 7 actions being done), `api/bikes/write.js`
+(updated the header STATUS comment only).
+
 ## 🔧 Phase 2, bikes.html write layer: 'updateReturnPickup' +
 ## 'extendBike' (SHORT extension only) PORTED AND TEST-GREEN, NOT YET
 ## DEPLOYED, NOT YET WIRED INTO THE FRONTEND (2026-08-17, later same day

@@ -7,11 +7,13 @@
 // Same withDrive guard, same ConflictError -> 409 mapping, same
 // setSessionCookie-on-change pattern every other /api/* route here uses.
 //
-// STATUS (2026-08-17): 6 of bikes.html's 7 actions are implemented in
-// lib/bikesWrites.js so far (swapBike, markReturned, earlyReturnBike,
-// returnDeposit, updateReturnPickup, extendBike) -- see that file's header
-// comment and PROGRESS.md for the full traced action inventory and
-// rollout plan. bikes.html's own
+// STATUS (2026-08-17): ALL 7 of bikes.html's actions are now implemented
+// in lib/bikesWrites.js (swapBike, markReturned, earlyReturnBike,
+// returnDeposit, updateReturnPickup, extendBike, closeBikeForExtend,
+// customerIntake -- the long-extension pair is 2 actions, matching
+// bikes.html's own frontend) -- see that file's header comment and
+// PROGRESS.md for the full traced action inventory and rollout plan.
+// bikes.html's own
 // frontend does NOT call this endpoint yet -- it is net-new and
 // unreferenced, so its mere existence changes nothing about how
 // bikes.html behaves today.
