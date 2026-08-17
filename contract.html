@@ -1070,6 +1070,29 @@ function fetchSheetJson(sheetName, year) {
   return contractJsonCache[cacheKey];
 }
 
+// BUG FIX 2026-08-17 (found live, reported by Anton): cancelContract
+// looked like it "did nothing" -- a just-canceled row stayed in the
+// Pending list forever, and clicking Cancel on it again and again never
+// made it disappear. The write itself was landing fine server-side (this
+// is what made the idempotent-replay fix above actually LOOK like it was
+// failing to fix anything). The real bug: this cache is keyed by sheet
+// name and only ever gets cleared in two places -- fetchSheetJson's own
+// .catch (on a FAILED fetch) and the old client-side writeSheetJson
+// (further down), which NOTHING calls anymore now that all 4 write
+// actions go through the server-side /api/contract/write engine instead.
+// ctReloadAndRerender() below was clearing sheetRows/rowsPromise and the
+// LOCALSTORAGE cache (aaContractRowsCache), but never THIS in-memory one
+// -- so loadRows() -> getContractRowsFromJson() -> fetchSheetJson kept
+// handing back the exact same stale pre-write snapshot from whenever the
+// page first loaded, for the rest of that page's lifetime, no matter how
+// many times "reload" ran. Every one of today's 4 actions' "reload and
+// rerender" was affected by this, not just cancelContract -- it just
+// happened to surface first there since a canceled-but-still-showing-
+// Pending row is the most visible symptom.
+function clearContractJsonCache() {
+  Object.keys(contractJsonCache).forEach(k => { delete contractJsonCache[k]; });
+}
+
 // ---- Decodes the JSON export's string-tagged date/datetime/time encoding
 // (see export_to_json.py's docstring) back into a JS Date, or null -- same
 // as bikes.html's identical helper (duplicated here, single-file page). ----
@@ -3214,6 +3237,7 @@ function ctReloadAndRerender() {
   sheetRows = null;
   rowsPromise = null;
   clearContractRowsCache();
+  clearContractJsonCache(); // see the FIX 2026-08-17 comment near fetchSheetJson above -- the actual bug
   loadRows().then(rows => {
     if (pendingBackdrop.classList.contains('show')) renderPendingList(rows);
     if (!searchView.classList.contains('hidden')) renderResults();

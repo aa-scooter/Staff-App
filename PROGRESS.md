@@ -6,6 +6,83 @@ This exists because work on this project gets picked up across multiple
 Claude sessions/accounts with no shared memory between them — this file is
 the handoff.
 
+## 🐛🔴 URGENT FIX: cancelContract (and every other reload-after-write)
+## looked like it did NOTHING -- a canceled row stayed showing "Pending"
+## forever, re-cancelable endlessly with no visible effect -- CODED,
+## UNIT-TESTED, NOT YET DEPLOYED (2026-08-17, reported live by Anton
+## immediately after the "ALL 4 actions wired" entry below went live --
+## this is the very next thing that broke)
+
+**Bug report (Anton, live on staff-app-six-phi.vercel.app):** canceled a
+Pending contract (a real one, "Liron Pasternak" / Gt black 5+4) -- it kept
+showing in the Pending Contracts list as if nothing happened. Clicked
+Cancel on it again, and again -- same result every time, record never
+disappears.
+
+**Root cause, traced through the actual code, not assumed:** the
+`cancelContract` write itself was landing FINE server-side every time
+(confirmed -- this made yesterday's idempotent-replay fix, just below,
+LOOK like it hadn't fixed anything, when it actually had). The real bug is
+a stale in-memory read cache: `contractJsonCache` (keyed by sheet name,
+declared right next to `fetchSheetJson`) is populated ONCE per sheet name
+and never invalidated by anything anymore -- it USED to get cleared by the
+old client-side `writeSheetJson`, but that function is dead code now that
+all 4 write actions go through the server-side `/api/contract/write`
+engine instead, and NOTHING calls it. `ctReloadAndRerender()` (the generic
+"reload and re-render whichever view is visible" callback every one of
+today's 4 actions' `onAllSuccess` uses) was clearing `sheetRows`/
+`rowsPromise` (a separate, higher-level cache) and the localStorage
+cache (`aaContractRowsCache`) -- but never `contractJsonCache`. So
+`loadRows()` → `getContractRowsFromJson()` → `fetchSheetJson('Contract')`
+kept handing back the EXACT SAME stale pre-write snapshot from whenever
+the page first loaded, for the rest of that page's lifetime, no matter how
+many times "reload" ran. **This affected all 4 actions' reload step, not
+just cancelContract** -- it just happened to surface first there, since a
+canceled-but-still-Pending row sitting untouched in a list is the most
+visible possible symptom (an edited/added record silently not showing its
+own fresh data would have been much easier to miss).
+
+**Fix:** added `clearContractJsonCache()` (clears every key in
+`contractJsonCache`) right next to `fetchSheetJson`, and call it from
+`ctReloadAndRerender()` alongside the existing `clearContractRowsCache()`.
+
+**Testing:** new Node harness (`run4.js`, real sliced source: the
+`fetchSheetJson`/`contractJsonCache`/`clearContractJsonCache` block,
+`getContractRowsFromJson`, and the engine's `ctReloadAndRerender`) directly
+reproduces the exact live scenario -- mock server returns "Pending" on the
+first `/api/data/Contract` fetch, "Canceled" on every fetch after (same as
+a real write having landed in between) -- and proves: (1) with the fix,
+calling `ctReloadAndRerender()` triggers a genuinely NEW fetch and
+`renderPendingList` receives the fresh "Canceled" data; (2) a control case
+confirms that WITHOUT clearing this cache, a reload keeps serving the
+stale "Pending" snapshot even though the underlying data changed -- i.e.
+this really is the mechanism, not a guess. Also re-ran the full existing
+suite (`run.js`/`run2.js`/`run3.js`, updated to account for
+`ctReloadAndRerender` now calling `clearContractJsonCache` too) --
+**88/88 green across all 4 harnesses.** Both inline `<script>` blocks
+re-syntax-checked clean.
+
+**Files changed:** `contract.html` only (`clearContractJsonCache()` added,
+`ctReloadAndRerender()` calls it). No backend files touched -- this was
+purely a client-side stale-cache bug, nothing to do with the server write
+logic itself.
+
+**Not yet done:**
+1. Deliver + push -- Anton asked for this ahead of everything else,
+   including the in-progress deposits.html rollout (paused, will resume
+   after). **Live test once deployed:** cancel a real/throwaway Pending
+   contract, confirm it now actually disappears from the Pending list
+   immediately after the "Saving…" badge clears, and doesn't reappear.
+   Worth double-checking Edit and Add too while at it -- same underlying
+   cache bug means an edited/added record's fresh data might not have been
+   showing either.
+2. Still outstanding, queued for the end of the CURRENT session (Anton's
+   own instruction): add a "Saving…" indicator to the Add form's bottom
+   statusBox immediately on submit (currently goes blank -- only the
+   shared top header strip shows progress; he wants local feedback too).
+3. Resume deposits.html rollout (backend port in progress, paused for
+   this fix).
+
 ## ✅ Phase 2, contract.html: ALL 4 write actions now wired onto the
 ## save-pipeline engine -- ROLLOUT COMPLETE for this page. CODED,
 ## TEST-GREEN (80/80 across 3 harnesses), NOT YET DEPLOYED (2026-08-17,
