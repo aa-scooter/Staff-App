@@ -1,10 +1,89 @@
 # AA Scooters — JSON-parity rewrite progress tracker
 
-Last updated: 2026-08-16. Keep this file current — whenever a page's write
+Last updated: 2026-08-17. Keep this file current — whenever a page's write
 layer gets ported/tested/pushed, update its row below in the same commit.
 This exists because work on this project gets picked up across multiple
 Claude sessions/accounts with no shared memory between them — this file is
 the handoff.
+
+## 🔧 Phase 2, bikes.html write layer: 'updateReturnPickup' +
+## 'extendBike' (SHORT extension only) PORTED AND TEST-GREEN, NOT YET
+## DEPLOYED, NOT YET WIRED INTO THE FRONTEND (2026-08-17, later same day
+## as the return-family entry just below)
+
+**What this is:** the third slice of the write-layer port -- 2 more of
+bikes.html's 7 actions (6 of 7 total now done), added to the same
+`lib/bikesWrites.js` / `api/bikes/write.js` from the prior two entries (no
+new files). Grouped together because they're bikes.html's two remaining
+small/self-contained actions -- everything left after this slice is just
+the long-extension pair, which is a genuinely different shape (two
+sequential dependent writes, not one). **bikes.html's own frontend is
+still completely untouched** -- same as the prior two entries, these are
+additions to files nothing else references yet.
+
+**What got ported, byte-for-byte from bikes.html's own copies:**
+`performUpdateReturnPickup` (+ its Contract-mirroring helper
+`mirrorDeliveryLinkToContract`), and `extendBikeRowFromJson` (the SHORT
+extension path only -- under 30 days, "1 month" checkbox not ticked; the
+LONG path is `closeBikeForExtendFromJson` + `customerIntakeFromJson`,
+still not ported) plus its two dependencies `buildRentalIncomeTextB` and
+`appendMonthlyIncomeRowFromJson`. Everything else `extendBikeRowFromJson`
+calls (`appendLedgerEntryFromJson`, `syncContractReturnDateOnlyFromJson`,
+`addAmountToContractRowFromJson`, `appendCashSheetRowFromJson`,
+`processDepositForPaymentFromJson`, `addRentalAmountToBikesSheetFromJson`)
+was already ported in the swap/return-family slices, so this slice reused
+those verbatim rather than re-adding them.
+
+**Idempotency -- ported for 1 of the 2, deliberately NOT for the other:**
+`extendBikeRowFromJson` got the same same-row `clientTxnId` guard
+`markReturned`/`earlyReturnBike` got -- it adds real money to the total
+price and appends a ledger/income/cash/bikes-sheet entry, so a retry
+without the guard would double-charge. Tested explicitly (Test 3 below):
+the same extend request submitted twice bumps the total price and the
+return date ONCE, not twice, and produces exactly one income row and one
+cash entry. `performUpdateReturnPickup` did NOT get a guard -- unlike
+every other guarded action it never adds money or appends a row, it's a
+plain field overwrite (return time/date/delivery link), so a retry
+converges to the same end state rather than double-applying anything.
+This matches bikes.html's own client version, which also has no
+idempotency handling for this action -- not a new gap, a carried-forward
+one, same as `returnDeposit`'s documented gap in the prior entry.
+
+**Testing:** same fake-Drive Node harness (`/tmp/bikestest/` on the
+sandbox, scratch, rebuild if picked up again), extended with a third test
+file (`extend-and-pickup.test.js`). 38/38 green across 6 scenarios:
+extendBike basic success (return date advances correctly, total price and
+Contract total both bumped by the paid amount, paidBy overwritten,
+timeConfirmed/confirmedReturnDate reset since the due date moved, ledger
+note gets a new line and an updated running total, income row + cash row
+written, "bikes" sheet monthly total bumped); validation (non-positive
+days / negative amount / missing paidBy all rejected); idempotency (Test
+3 -- the money-critical case: a retried extend does NOT double-charge);
+two DIFFERENT clientTxnIds both apply independently (proves the guard
+doesn't over-suppress genuinely separate extensions on the same booking);
+updateReturnPickup basic success including the delivery-link mirror onto
+the matching Contract row; updateReturnPickup with no delivery link given
+(customer sheet updates, Contract left untouched).
+
+**Not yet done, in order (unchanged from the prior entry's list, just 2
+actions closer -- 6 of 7 now ported):**
+1. Deliver via the workspace folder, push (zero risk, nothing live changed).
+2. Port the last remaining action: the long-extension pair
+   (`closeBikeForExtendFromJson` + `customerIntakeFromJson`) -- still has
+   the open "clientTxnId across two sequential dependent writes" design
+   question, now the ONLY remaining action with that shape.
+3. Only once all 7 are ported and individually test-green: the frontend
+   optimistic-UI + idempotency-submission layer in bikes.html itself, THEN
+   its own Playwright-equivalent test batch. Still nothing user-visible
+   changes before this step.
+
+**Files changed this slice:** `lib/bikesWrites.js` (added
+`mirrorDeliveryLinkToContract`, `performUpdateReturnPickup`,
+`buildRentalIncomeTextB`, `appendMonthlyIncomeRowFromJson`,
+`extendBikeRowFromJson`; updated `bikesWriteDispatch` to add
+`'updateReturnPickup'` and `'extendBike'`; updated the factory's returned-
+exports object; updated the file header STATUS comment), `api/bikes/write.js`
+(updated the header STATUS comment only).
 
 ## 🔧 Phase 2, bikes.html write layer: RETURN FAMILY ('markReturned',
 ## 'earlyReturnBike', 'returnDeposit') PORTED AND TEST-GREEN, NOT YET
