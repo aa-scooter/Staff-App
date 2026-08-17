@@ -6,6 +6,126 @@ This exists because work on this project gets picked up across multiple
 Claude sessions/accounts with no shared memory between them — this file is
 the handoff.
 
+## 🔧 Phase 2, bikes.html: FRONTEND NOW WIRED TO THE SINGLE-DISPATCH
+## SERVER ENDPOINT FOR ALL 7 ACTIONS -- LIVE-BEHAVIOR CHANGE, NOT YET
+## DEPLOYED (2026-08-17, later same day as the "all 7 actions ported"
+## backend entry just below)
+
+**What this is:** the first genuinely LIVE-BEHAVIOR-CHANGING step in this
+whole bikes.html rollout -- every one of the prior bikes.html entries
+below added new, unreferenced server-side code that changed nothing about
+how the page actually behaved. This one rewires bikes.html's own 7 write
+call sites (`confirmReturn`, `submitReturnDeposit`, `confirmEditTime`,
+`confirmExtend`'s short AND long paths, `submitSwap`) to call the new
+single-dispatch `/api/bikes/write` endpoint instead of the old local
+client-side functions -- so from this point on, every Return/Extend/Swap/
+Deposit action on bikes.html actually runs its business logic
+server-side, in ONE round trip, with idempotency protection on the
+money-affecting ones. This is the same architectural change
+accounts.html got on 16/08/2026, applied to bikes.html.
+
+**What changed:**
+- Added `bikesWriteDispatch(payload)` (byte-for-byte structural mirror of
+  accounts.html's `accountsWriteDispatch`) -- POSTs to `/api/bikes/write`,
+  throws a clear error on 401 (signed out), 409 (conflict -- someone else
+  saved this record in the meantime), or any other non-2xx/malformed
+  response, otherwise resolves to the parsed JSON body.
+- Added `genClientTxnId()` (identical to accounts.html's) -- one random id
+  per logical write, generated once at submit time.
+- All 7 call sites rewired to build a payload with an `action` field
+  (`markReturned`, `earlyReturnBike`, `returnDeposit`, `updateReturnPickup`,
+  `extendBike`, `closeBikeForExtend`, `customerIntake` -- matching
+  `bikesWriteDispatch`'s switch in `lib/bikesWrites.js` exactly) and call
+  `bikesWriteDispatch` instead of the old local function. `clientTxnId` is
+  generated and sent on every action that has a server-side idempotency
+  guard (`swapBike`, `markReturned`, `earlyReturnBike`, `extendBike`,
+  `customerIntake`) -- NOT sent for `updateReturnPickup`/
+  `closeBikeForExtend` (naturally idempotent, no guard exists) or
+  `returnDeposit` (documented pre-existing gap, see the "all 7 actions"
+  entry below).
+- The old client-side write-action block (`performMarkReturned` through
+  `customerIntakeFromJson`, ~2100 lines) is now genuinely DEAD CODE --
+  marked with the same banner comment accounts.html used for its own
+  equivalent block, left in place (not deleted) for an easy revert if
+  anything about the new endpoint needs fixing once this is live, per the
+  project's established convention.
+
+**SCOPE DECISION, called out explicitly (also documented in bikes.html's
+own DEAD CODE banner comment):** this pass did NOT build accounts.html's
+full silent-background-optimistic UI (instant modal close + on-page
+pending-row state + a dismissable failed-saves banner/review panel) on
+top of the new single-dispatch endpoint. bikes.html's EXISTING UX --
+modal stays open with a "Connecting…"/"Saving…" stage label and all
+buttons disabled until the request resolves, then `alert()` on failure --
+is UNCHANGED. Only what happens under the hood during that wait moved
+from up to ~10 sequential client-side round trips per action down to
+exactly 1, with idempotent retries now safe server-side. This was a
+deliberate cut, not an oversight: bikes.html's 7 actions patch completely
+different, heterogeneous on-page state (a Return, a long Extend, and a
+Swap each touch different parts of the UI) unlike accounts.html's uniform
+add/edit/delete-a-list-row shape, so reproducing that whole subsystem
+faithfully across all 7 in one unattended pass -- on a live money-handling
+page, with Playwright unavailable in this sandbox to verify visually --
+carried real risk for a UX-only win. The performance + idempotency win
+(the actual point of this rollout) is fully realized either way. Layering
+the instant-close/banner UX on top is a well-scoped, lower-risk follow-up
+once THIS pass has been verified live, not bundled into it.
+
+**Testing:** two layers, given the live-behavior nature of this change:
+1. Cross-checked every one of the 7 rewired payloads field-by-field
+   against `bikesWriteDispatch`'s switch statement and each target
+   function's own `data.<field>` reads in `lib/bikesWrites.js` (documented
+   inline above) -- 3 of the 7 payloads (`returnDeposit`, `swapBike`,
+   `customerIntake`) were constructed from object literals that were
+   ALREADY being passed to the old local functions unchanged (only
+   `action`/`clientTxnId` were added), so those carry over their existing
+   correctness by construction; the other 4 (`markReturned`,
+   `earlyReturnBike`, `updateReturnPickup`, `extendBike`,
+   `closeBikeForExtend`) were rebuilt and checked field-by-field against
+   the server function signatures.
+2. New jsdom test file (`frontend/dispatch.test.js` in `/tmp/bikestest/`)
+   -- extracts `bikesWriteDispatch`/`genClientTxnId`'s REAL source
+   (byte-for-byte from the actual bikes.html file, not a retyped copy) and
+   exercises them directly: success posts to `/api/bikes/write` with the
+   right method/headers/body; 401 throws a signed-out error; 409 throws
+   the server's conflict message; a 500 with an error field throws that
+   message; a malformed/non-JSON error response falls back to "HTTP
+   &lt;status&gt;" cleanly; `genClientTxnId` produces distinct ids via
+   `crypto.randomUUID` when available and falls back to a manual
+   `ctx_`-prefixed id when it isn't. 15/15 green. Did NOT attempt a full
+   jsdom render of the whole page (300KB inline script, hundreds of
+   top-level DOM lookups that assume a fully rendered page) to exercise
+   each of the 7 call sites end-to-end via simulated clicks -- judged not
+   worth the fragility for what would amount to re-verifying object
+   literals already checked field-by-field in step 1. All 4 backend
+   fake-Drive suites (129 assertions) re-run clean, confirming this
+   frontend change didn't require touching `lib/bikesWrites.js` again.
+   **144 assertions green across 5 test files total.**
+
+**This is the first change in the whole bikes.html rollout where a typo
+or wrong field name would show up as a real failure for Anton, not just
+inert dead code** -- flagging this clearly rather than folding it into
+the same "nothing live changed" framing every prior entry used.
+
+**Not yet done, in order:**
+1. Deliver via the workspace folder, push. **Recommend testing this one
+   live before moving on** -- try a Return, a short Extend, a long
+   Extend, and a Swap on a real (or throwaway test) booking and confirm
+   each one still works exactly as before, just faster.
+2. Optional follow-up, only after the above is confirmed solid: build the
+   accounts.html-style instant-close/optimistic-UI + failed-saves-banner
+   layer on top (see the SCOPE DECISION above for why this was cut from
+   this pass).
+3. Repeat this whole Phase 2 process (backend port, then frontend wiring)
+   for the next page (contract.html, deposits.html, add-bikes.html, or
+   customers.html, per the original rollout plan's suggested order).
+4. Phase 3 (make nav.js's failure badge page-aware) is still untouched.
+
+**Files changed this slice:** `bikes.html` (added `bikesWriteDispatch` +
+`genClientTxnId`; rewired all 7 write-action call sites to use them;
+updated the old write-action block's header comment to a DEAD CODE
+banner). No backend files touched.
+
 ## 🔧 Phase 2, bikes.html write layer: ALL 7 ACTIONS NOW PORTED AND
 ## TEST-GREEN -- long-extension pair ('closeBikeForExtend' +
 ## 'customerIntake') is the last one, NOT YET DEPLOYED, NOT YET WIRED

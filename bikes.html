@@ -805,34 +805,50 @@ async function getDepositsDataFromJson() {
   }
 }
 // ================== JSON-backed WRITE actions (ported 13/08/2026) ==================
-// Generic read-modify-write plumbing on top of POST /api/data/<sheet> (see
-// api/data/[sheet].js) -- fetch the whole sheet + its modifiedTime, mutate
-// the specific row(s) a Code.gs action used to touch, POST the whole sheet
-// back with that modifiedTime as the optimistic-lock guard (a 409 means
-// someone else saved in between -- surfaced as a normal error, same as any
-// other save failure, rather than silently overwriting).
+// DEAD CODE as of 2026-08-17 -- kept in place deliberately, not deleted.
+// Everything from here down to "end JSON-backed WRITE actions" below is no
+// longer called by anything: this whole block (all 7 write actions --
+// markReturned, updateReturnPickup, earlyReturnBike, extendBike (short),
+// swapBike, returnDeposit, and the long-extension closeBikeForExtend +
+// customerIntake pair) has been ported server-side, byte-for-byte, to
+// lib/bikesWrites.js, and every call site below (confirmReturn,
+// submitReturnDeposit, confirmEditTime, confirmExtend, submitSwap) now
+// goes through bikesWriteDispatch (see "end JSON-backed WRITE actions"
+// below), which just POSTs to the new /api/bikes/write endpoint instead of
+// calling any of these functions directly -- see lib/bikesWrites.js's own
+// file-level comment for the full "why" (in short: every one of these used
+// to be its own multi-round-trip fetchSheetWithMeta/writeSheetJson chain
+// against /api/data/<sheet>; moving the whole decision tree server-side
+// cuts each action down to ONE round trip, and adds a clientTxnId
+// idempotency guard on top for the actions where a lost-connection retry
+// could otherwise double-charge real money -- see lib/bikesWrites.js for
+// which actions have that guard and which don't, and why).
 //
-// SCOPE OF WHAT'S PORTED SO FAR -- only the two simplest, fully
-// self-contained write actions are wired up right now:
-//   - markReturned (a normal "Return", not an early return)
-//   - updateReturnPickup ("Adjust Pickup")
-// Both only ever touch a single customer row (plus a best-effort Contract-
-// sheet mirror) with no ledger-note math, no deposit/cash/bikes-sheet
-// cascades, and no multi-step sequencing -- the lowest-risk write actions
-// on this page to get right unattended. earlyReturnBike, extendBike
-// (short), swapBike, returnDeposit, and the long-extension
-// closeBikeForExtend+intake pair are DELIBERATELY NOT ported yet -- those
-// involve real money math (ledger running totals, deposit deductions,
-// Contract total-price sync, bikes-sheet formula-growth, cash/income
-// logging) that deserves a live test pass with Anton watching rather than
-// being pushed through unattended. Clicking those still hits the old
-// (empty) scriptUrl and fails cleanly with an alert -- nothing is silently
-// half-done. See the project's own task list for what's still open.
+// SCOPE DECISION for this pass (2026-08-17): the single-round-trip
+// server-side dispatch is now wired in for ALL 7 actions, but this pass
+// deliberately did NOT also build accounts.html's full silent-background-
+// optimistic UI (instant modal close + on-page pending state + a
+// dismissable failed-saves banner/review panel) on top of it. bikes.html's
+// existing UX -- keep the modal open with a "Connecting…"/"Saving…"
+// stage label and every button disabled until the request resolves, then
+// alert() on failure -- is UNCHANGED here; only what happens UNDER THE
+// HOOD during that wait moved from ~2-10 sequential client round trips per
+// action to exactly 1. This was a deliberate scope cut, not an oversight:
+// bikes.html's 7 actions are far more heterogeneous than accounts.html's
+// uniform add/edit/delete-a-list-row shape (a Return, a long Extend, and a
+// Swap each patch completely different on-page state), so reproducing
+// that whole subsystem faithfully across all 7 in one unattended pass
+// carried real risk of a subtle UI bug on a live money-handling page with
+// no way to verify visually (Playwright unavailable in this sandbox, see
+// PROGRESS.md). The perf/idempotency win (the main point of this whole
+// rollout) is fully in place either way; layering the instant-close/
+// banner UX on top is a well-scoped, lower-risk follow-up once this pass
+// has been verified live, not bundled into it.
 //
-// Google Calendar sync (syncCalendarForCustomerRow in Code.gs) is
-// intentionally NOT ported for either action below -- calendar cutover is
-// explicitly last on this project's plan (see CLAUDE.md), so neither of
-// these writes touches the shared bike-returns calendar right now.
+// Google Calendar sync (syncCalendarForCustomerRow in Code.gs) was never
+// ported for any of these actions -- calendar cutover is explicitly last
+// on this project's plan (see CLAUDE.md), so none of these writes touch
+// the shared bike-returns calendar, same as before this pass.
 
 async function fetchSheetWithMeta(sheetName, year) {
   const url = year
@@ -2931,6 +2947,45 @@ async function customerIntakeFromJson(data) {
 // ================== end long extension ==================
 // ================== end JSON-backed WRITE actions ==================
 
+// ---- Single dispatcher for every write action below (Return/Extend/Swap/
+// Deposit) -- mirrors accounts.html's accountsWriteDispatch exactly (see
+// that file's own comment for the full "why"). Does exactly ONE round
+// trip, to /api/bikes/write, which runs the exact same ported business
+// logic (lib/bikesWrites.js) server-side against Drive directly. The
+// RESPONSE SHAPE this resolves to is unchanged from what the old
+// (now-dead) client-side functions above used to return directly
+// ({success, warning?, row?/newRowNumber?} / {success:false, error} /
+// etc.), so every call site below needed no changes beyond swapping which
+// function they call. ----
+async function bikesWriteDispatch(payload) {
+  const r = await fetch('/api/bikes/write', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  if (r.status === 401) throw new Error('Signed out -- please refresh to sign in again.');
+  const res = await r.json().catch(() => ({}));
+  if (r.status === 409) {
+    throw new Error(res.error || 'This record was changed by someone else in the meantime -- please reload and try again.');
+  }
+  if (!r.ok || res.success === undefined) throw new Error(res.error || ('HTTP ' + r.status));
+  return res;
+}
+
+// IDEMPOTENCY (2026-08-17, mirrors accounts.html's 16/08/2026 pass): one
+// random id per logical money-affecting write, generated once at submit
+// time and sent as clientTxnId so a retry after a dropped connection can't
+// double-charge -- see lib/bikesWrites.js's own comments for exactly which
+// actions check this (swapBike, markReturned, earlyReturnBike, extendBike,
+// customerIntake) and which deliberately don't (updateReturnPickup,
+// closeBikeForExtend -- both naturally idempotent already; returnDeposit --
+// documented gap, no customer-row key in its payload, see that function's
+// own comment).
+function genClientTxnId() {
+  if (window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID();
+  return 'ctx_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10);
+}
+
 // ================== end JSON-backed data layer ==================
 
 let bikeNames = [];    // list of bike name strings, alphabetically sorted
@@ -4889,15 +4944,18 @@ function confirmReturn(rowNumber, isoDate, depositMatch, deductionAmount, reason
   // own comment in Code.gs), so ticking the box and leaving it at 0 is
   // still just a normal return, just routed through the one action that
   // already knows how to handle either case.
-  // A normal return (unticked) still goes through performMarkReturned;
-  // an early return (ticked, refund or not) goes through
-  // earlyReturnBikeFromJson -- see that function's own block comment for
-  // the full refund/ledger/Contract/bikes-sheet cascade.
+  // A normal return (unticked) still sends 'markReturned'; an early return
+  // (ticked, refund or not) sends 'earlyReturnBike' -- see
+  // lib/bikesWrites.js's earlyReturnBikeFromJson for the full refund/
+  // ledger/Contract/bikes-sheet cascade this now runs server-side in one
+  // round trip. clientTxnId generated once here so a dropped-connection
+  // retry of this same click can't double-apply a refund.
   const writePromise = isEarlyReturn
-    ? Promise.resolve().then(() => earlyReturnBikeFromJson({
-        rowNumber: rowNumber, returnDate: isoDate, refundAmount: refundAmount, refundPaidBy: refundPaidBy
-      }))
-    : performMarkReturned(rowNumber, isoDate);
+    ? bikesWriteDispatch({
+        action: 'earlyReturnBike', rowNumber: rowNumber, returnDate: isoDate,
+        refundAmount: refundAmount, refundPaidBy: refundPaidBy, clientTxnId: genClientTxnId()
+      })
+    : bikesWriteDispatch({ action: 'markReturned', rowNumber: rowNumber, returnDate: isoDate, clientTxnId: genClientTxnId() });
 
   writePromise
     .then(result => {
@@ -4982,7 +5040,7 @@ function submitReturnDeposit(depositMatch, deductionAmount, reason, customerName
     body.returnedVia = 'cash';
     body.returnedViaAmount = depositMatch.amount;
   }
-  Promise.resolve().then(() => returnDepositFromJson(body))
+  bikesWriteDispatch(body)
     .then(result => {
       if (!result.success) {
         alert('Bike marked returned, but the deposit could not be processed: ' + (result.error || 'unknown error'));
@@ -5008,7 +5066,7 @@ function confirmEditTime(rowNumber, isoDate, hhmm, deliveryLink) {
   setAllButtonsDisabled(true);
   const stageTimer = setTimeout(() => { savingEditTimeStage = 'saving'; render(); setAllButtonsDisabled(true); }, 500);
 
-  performUpdateReturnPickup(rowNumber, isoDate, hhmm, deliveryLink)
+  bikesWriteDispatch({ action: 'updateReturnPickup', rowNumber: rowNumber, returnDate: isoDate, returnTime: hhmm, deliveryLink: deliveryLink })
     .then(result => {
       clearTimeout(stageTimer);
       setAllButtonsDisabled(false);
@@ -5119,14 +5177,17 @@ function confirmExtend(rowNumber, daysToExtend, amountPaid, extendMonth, paidBy,
     const closeStageTimer = setTimeout(() => { savingExtendStage = 'saving'; render(); setAllButtonsDisabled(true); }, 500);
 
     // Closes out the old booking, then submits the new period straight
-    // through -- the same plain intake call customers.html's own Add form
-    // makes (no `action` field, so Code.gs's doPost falls through to its
-    // default customer-intake branch) -- instead of routing through that
-    // page for a manual review + click. Uses this booking's data exactly
-    // as it sits on the sheet right now; there's currently no in-app edit
-    // for a customer-sheet row, so if anything here turns out wrong,
-    // fix it on the sheet directly.
-    Promise.resolve().then(() => closeBikeForExtendFromJson(rowNumber))
+    // through -- the same plain intake action customers.html's own Add
+    // form uses (action:'customerIntake', see lib/bikesWrites.js) --
+    // instead of routing through that page for a manual review + click.
+    // Uses this booking's data exactly as it sits on the sheet right now;
+    // there's currently no in-app edit for a customer-sheet row, so if
+    // anything here turns out wrong, fix it on the sheet directly. Two
+    // separate round trips, same as before this pass (see the DEAD CODE
+    // block comment above for why this wasn't collapsed into one combined
+    // action) -- just each one now hits the server in a single request
+    // instead of its own multi-step client-side chain.
+    bikesWriteDispatch({ action: 'closeBikeForExtend', rowNumber: rowNumber })
       .then(closeResult => {
         if (!closeResult.success) throw new Error(closeResult.error || 'Could not close out the old booking.');
         // Post-write verification problems come back as a warning -- the
@@ -5159,7 +5220,12 @@ function confirmExtend(rowNumber, daysToExtend, amountPaid, extendMonth, paidBy,
           // already reads data.isDeal and appends the " Deal" tag onto this
           // new row's Contact-cell running-total note -- no backend change
           // needed for this to work.
-          isDeal: !!isDeal
+          isDeal: !!isDeal,
+          action: 'customerIntake',
+          // clientTxnId generated once here so a dropped-connection retry
+          // of this same click can't book the extension twice -- see
+          // customerIntakeFromJson's own comment in lib/bikesWrites.js.
+          clientTxnId: genClientTxnId()
         };
         // Cash (Anton, 13/08/2026) has no depositRow to select -- see
         // refreshExtendPaidFromDepositUI -- so it's allowed through here
@@ -5170,7 +5236,7 @@ function confirmExtend(rowNumber, daysToExtend, amountPaid, extendMonth, paidBy,
           payload.depositRow = depositCategory === 'cash' ? '' : Number(depositRow);
         }
 
-        return Promise.resolve().then(() => customerIntakeFromJson(payload))
+        return bikesWriteDispatch(payload)
           .then(addResult => {
             if (!addResult.success) throw new Error(addResult.error || 'Could not save the extension.');
             const warnings = [closeWarning, addResult.warning].filter(Boolean);
@@ -5203,17 +5269,20 @@ function confirmExtend(rowNumber, daysToExtend, amountPaid, extendMonth, paidBy,
   setAllButtonsDisabled(true);
   const stageTimer = setTimeout(() => { savingExtendStage = 'saving'; render(); setAllButtonsDisabled(true); }, 500);
 
-  // DISCONNECTED: writes to the static data/ JSON export instead of the live scriptUrl (see project CLAUDE.md)
-  Promise.resolve()
-    .then(() => extendBikeRowFromJson({
+  bikesWriteDispatch({
+      action: 'extendBike',
       rowNumber: rowNumber,
       daysToExtend: daysToExtend,
       amountPaid: amountPaid,
       paidBy: paidBy,
       paidFromDeposit: paidFromDeposit,
       depositCategory: depositCategory,
-      depositRow: depositRow
-    }))
+      depositRow: depositRow,
+      // clientTxnId generated once here so a dropped-connection retry of
+      // this same click can't double-charge -- see extendBikeRowFromJson's
+      // own comment in lib/bikesWrites.js.
+      clientTxnId: genClientTxnId()
+    })
     .then(result => {
       clearTimeout(stageTimer);
       setAllButtonsDisabled(false);
@@ -6089,15 +6158,20 @@ function submitSwap() {
   renderSwapModal();
   setAllButtonsDisabled(true);
 
-  Promise.resolve().then(() => swapBikeFromJson({
+  bikesWriteDispatch({
+      action: 'swapBike',
       rowNumber: swapModalRowNumber,
       newBikeModel: swapDraft.newBike,
       returnAmount: swapDraft.returnAmount,
       newBikeAmount: swapDraft.newBikeAmount,
       returnDate: todayIso(),
       additionalAmount: swapDraft.upgradeChecked ? swapDraft.additionalAmount : 0,
-      additionalPaidBy: swapDraft.upgradeChecked ? swapDraft.additionalPaidBy : ''
-    }))
+      additionalPaidBy: swapDraft.upgradeChecked ? swapDraft.additionalPaidBy : '',
+      // clientTxnId generated once here so a dropped-connection retry of
+      // this same click can't double-swap -- see swapBikeFromJson's own
+      // comment in lib/bikesWrites.js.
+      clientTxnId: genClientTxnId()
+    })
     .then(result => {
       setAllButtonsDisabled(false);
       if (!result.success) throw new Error(result.error || 'Could not save.');
