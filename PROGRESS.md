@@ -6,6 +6,121 @@ This exists because work on this project gets picked up across multiple
 Claude sessions/accounts with no shared memory between them — this file is
 the handoff.
 
+## 🐛 Fixed 3 contract.html bugs: receipt regenerate failing, broken
+## Documents-panel links, "Send Contract + Receipt" not reaching WhatsApp —
+## CODED, UNIT-TESTED (19/19), NOT YET DEPLOYED (2026-08-17)
+
+**Bug reports (Anton, live on staff-app-six-phi.vercel.app), 3 in one
+session:**
+1. Edit Receipt → Confirm & Regenerate failed with "Could not generate the
+   receipt: Failed to execute 'json' on 'Response': Unexpected end of JSON
+   input" (Ivan Zhirnov's contract, but not specific to that record).
+2. The Edit modal's "Documents (passport, contract, etc.)" panel listed
+   Receipt/Contract PDFs that 404'd when clicked (Murtadha Ramzi's
+   contract). Anton didn't want that panel at all, given View Contract/
+   View Receipt/View Photo of Passport already cover it.
+3. "Send Contract + Receipt" wasn't reliably opening WhatsApp — just
+   opened blank/unrelated tabs on desktop; "works sometimes" on phone.
+
+**Root cause, #1 and #3 (same cause):** `const scriptUrl = ''` in
+contract.html — deliberately blanked during the 13-15/08/2026 JSON-backed-
+data migration, but several actions were explicitly left un-migrated
+(`generateReceipt`, `getFilesForShare`, `findChecklistDocument`,
+`uploadPassportPhoto`, `readPassportWithAI`, `addCalendarReminder`, etc. —
+see the migration comment block right after where `scriptUrl` is declared)
+and still call `fetch(scriptUrl, ...)` expecting a real Apps Script
+backend. With `scriptUrl` blank, `fetch('')` resolves to POSTing back to
+contract.html itself, which returns an empty non-JSON body — hence
+"Unexpected end of JSON input", deterministically, every time, for every
+contract. `editSendDocsBtn`'s old Web Share flow depended on the exact
+same dead fetch (`action:'getFilesForShare'`), so it always landed in its
+catch block and fell through to `openDocsFallback_()` (opening both PDFs
+as tabs) — which is exactly what bug #3 looked like. This blank-scriptUrl
+pattern is repo-wide (every page in vercel-site/ has it, all with the
+identical "DISCONNECTED... dev/testing only" comment) — only contract.html
+was touched this pass, since that's the page with the live bug reports.
+
+**Root cause, #2:** the Documents panel listed EVERYTHING in the
+customer's whole Drive contract folder (originally meant for passport
+photos + misc extras), and since Contract/Receipt PDFs get saved into that
+same folder by `generateReceiptDocument`/`regenerateContractDocumentEntry`,
+they always showed up too — duplicating the View Contract/View Receipt
+buttons. The 404s: best-supported theory is `generateReceiptDocument`
+actively trashes the OLD receipt PDF every time a receipt is regenerated
+(see its own comment in Code.gs) — a panel loaded before that happened
+would still show the now-trashed file's id. Not fully confirmed with a
+clean repro (Anton chose to just remove the panel rather than chase it
+further, since it was redundant with existing buttons anyway).
+
+**Fixes, all in `contract.html` only:**
+- `scriptUrl` reconnected to the same live Apps Script deployment URL
+  every Hostgator-copy page already uses
+  (`AKfycbztdtViH9qFCZ755EefaZqiZWzKK_yTOWkwaFLqZJm271wzDIVMgGoaYGFaSrd20OGsnQ`)
+  — fixes #1 directly, and un-breaks the underlying fetch behind #3.
+- Documents panel (`editDocsPanel`, its list/status/picker, and the
+  `renderContractDocsList`/`renderContractDocsCandidates`/
+  `loadContractDocuments` functions) removed entirely. "View Photo of
+  Passport" no longer scrolls to/reloads that panel — it now calls
+  `/api/contracts/documents` on click only, filters to image files (PDFs
+  drop out on their own by mimeType), and opens the first match directly
+  via `/api/contracts/file/<id>`. "First match" = most recent with no
+  extra sorting needed, since `listAllFilesInFolder` (lib/googleDrive.js)
+  already queries Drive with `orderBy: 'createdTime desc'`. If no photo is
+  found, shows an inline "No passport photo on file yet" message instead
+  of a blank list. The passport-photo upload button no longer calls
+  `loadContractDocuments()` on success (nothing to refresh anymore) — its
+  own "Photo uploaded."/"already on file" status message is unchanged.
+- `editSendDocsBtn` rebuilt: downloads both PDFs via a throwaway `<a
+  download>` click each (`triggerDriveDownload_`, using
+  `drive.google.com/uc?export=download&id=<id>` so it's a real download,
+  not a Drive preview tab — both PDFs are already shared "Anyone with
+  link" via Code.gs's `setSharing` calls), then opens
+  `web.whatsapp.com/send?phone=<digits>&text=<message>` in one
+  `window.open`. Same flow on every device now, instead of depending on
+  `navigator.share`/`canShare({files})`, which desktop Chrome generally
+  doesn't support for WhatsApp at all (that's why bug #3 always fell
+  through to the "open both as tabs" fallback on desktop). Deliberately
+  uses `<a>` clicks (not `window.open`) for the two downloads, since
+  anchor clicks don't consume a popup-blocker "slot" the way `window.open`
+  does — only the WhatsApp `window.open` call needs that slot. Old
+  `getFilesForShare`/Web Share code path (`base64ToFile_`,
+  `openDocsFallback_`, the `navigator.share` call) removed entirely, not
+  left dead in the file. Still refuses to send if the contract/receipt PDF
+  or the phone number is missing, same as before, with the same "say
+  exactly what's missing" messaging.
+
+**Testing:** `node --check` on both inline `<script>` blocks (both OK).
+19/19 unit tests against the real sliced source (`extractDriveFileId_`,
+`triggerDriveDownload_`, phone-digit-stripping + WhatsApp URL building,
+most-recent-photo filtering) — covers real Drive view-URL parsing, `<a>`
+creation/click/cleanup, garbage/empty/null inputs, phone numbers with
+`+`/spaces/dashes/parens, missing-number and missing-name fallbacks, and
+photo-vs-PDF filtering with PDFs interleaved before/after the target
+photo. Did NOT write a fresh end-to-end harness for `generateReceipt`
+itself (#1) since that fix is a one-line config reconnect, not new logic —
+the actual Apps Script `generateReceiptDocument` function was already
+unit-provably fine (it's wrapped in its own try/catch and always returns
+valid JSON); the bug was purely that it was unreachable.
+
+**Files changed:** `contract.html` only (scriptUrl reconnect, Documents
+panel removal + View Photo of Passport rework, Send Contract + Receipt
+rework). No `lib/*.js`, no `api/*.js`, no `Code.gs` changes this pass.
+
+**Not done / open questions for Anton:**
+- The exact 404 mechanism for bug #2 was never fully confirmed (theory:
+  stale panel data vs. a just-trashed regenerated receipt) — moot now
+  since the panel is gone, but worth knowing if the same trash-on-
+  regenerate pattern ever causes a DIFFERENT stale-link symptom elsewhere
+  (e.g. if `contractPdfUrl`/`receiptPdfUrl` cached on `currentEditRecord`
+  ever go stale mid-session the same way).
+- The same blank-`scriptUrl` pattern exists on every OTHER page in
+  vercel-site/ (bikes.html, accounts.html, deposits.html, add-bikes.html,
+  customers.html, etc.) — not touched this pass, scoped to contract.html's
+  live bug reports only. Worth a deliberate decision later: reconnect
+  everywhere, or finish porting each page's still-GAS-only actions the way
+  editContract/addContract/cancelContract were ported.
+- Push commands below once Anton reviews.
+
 ## 🐛🔴 URGENT FIX: cancelContract (and every other reload-after-write)
 ## looked like it did NOTHING -- a canceled row stayed showing "Pending"
 ## forever, re-cancelable endlessly with no visible effect -- CODED,

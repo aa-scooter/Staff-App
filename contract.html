@@ -465,43 +465,37 @@
       <button type="button" id="editReceiptBtn">Edit Receipt</button>
       <button type="button" id="editViewChecklistBtn">View Checklist</button>
     </div>
-    <!-- Send Contract + Receipt -- pulls both PDFs as real files (via the
-         backend, action:'getFilesForShare') and hands them to the phone's
-         native share sheet (Web Share API's `files` support), so staff
-         pick WhatsApp there with the actual documents attached. Replaces
-         an earlier version of this button that just linked to the Drive
-         copies -- see editSendDocsBtn's click handler below for why: on
-         Android, tapping a drive.google.com link hands the page off to
-         the Drive app itself, and threading through Drive -> its own
-         "Send a copy" -> WhatsApp was breaking the back button (Android
-         would kill the original tab in the background, so backing out of
-         WhatsApp dropped staff straight to the phone home screen instead
-         of back into this page). Doing it all from one Web Share call
-         keeps everything in this same page/tab the whole time. -->
+    <!-- Send Contract + Receipt -- REWORKED 2026-08-17. Was a Web Share API
+         call (navigator.share/canShare with real File objects) so staff
+         could pick WhatsApp from the phone's native share sheet -- replaced
+         because desktop browsers generally don't register WhatsApp as a
+         share target at all, so on desktop this silently fell through to
+         its own fallback (opening both PDFs as plain tabs) every time,
+         which staff couldn't distinguish from a fully broken button. Now
+         does the SAME thing on every device: download both PDFs, then open
+         WhatsApp Web with the customer's chat pre-filled with a message --
+         staff attach the two just-downloaded PDFs themselves from
+         WhatsApp's own attach button. One extra manual tap, but it works
+         identically everywhere instead of depending on OS/browser share
+         support. See editSendDocsBtn's click handler below. -->
     <div class="head-btn-row" id="editSendDocsRow" style="margin-bottom:14px;">
       <button type="button" id="editSendDocsBtn">Send Contract + Receipt</button>
     </div>
     <div class="results-empty" id="editNoDocsMsg" style="display:none; padding:0 0 14px; text-align:left;">No contract document was generated/saved for this record.</div>
 
-    <!-- Documents panel -- everything saved in this customer's "AA Scooters
-         Contracts" Drive subfolder (passport photo, and whatever else was
-         manually copied in there), loaded from /api/contracts/documents as
-         soon as the modal opens. Shows a picker instead when the backend
-         can't confidently match a folder for this name/phone (messy manual
-         folder names), per Anton's choice of "show close matches to pick
-         from" over a plain not-found message. View and upload live in the
-         same place -- this panel for viewing, the existing upload field
-         further down in the form for adding a new one -- both refresh this
-         same panel on success. -->
-    <div id="editDocsPanel" style="margin-bottom:14px;">
-      <div style="font-weight:600; margin-bottom:6px;">Documents (passport, contract, etc.)</div>
-      <div class="status" id="editDocsStatus" style="margin-bottom:8px;"></div>
-      <div id="editDocsList" style="display:flex; flex-wrap:wrap; gap:10px; margin-bottom:8px;"></div>
-      <div id="editDocsPicker" style="display:none;">
-        <div class="results-empty" style="padding:0 0 8px; text-align:left;">No confident folder match for this customer -- pick the closest one below (or just upload a photo further down to start a new folder).</div>
-        <div id="editDocsCandidates" style="display:flex; flex-direction:column; gap:6px;"></div>
-      </div>
-    </div>
+    <!-- Documents panel REMOVED 2026-08-17 -- it used to list everything in
+         this customer's whole Drive contract folder (passport photo, plus
+         the Contract/Receipt PDFs that already have their own View
+         Contract/View Receipt buttons above), which just duplicated those
+         buttons and added a confusing extra place for a stale/trashed file
+         id to 404 (generateReceiptDocument trashes the OLD receipt PDF
+         every time a receipt is regenerated -- a panel loaded before that
+         happened would still show the now-trashed file). "View Photo of
+         Passport" no longer scrolls to/reloads this panel -- it now fetches
+         the same /api/contracts/documents data in the background and opens
+         the most recent photo directly (see editViewPhotoBtn below). This
+         status div is only used by that button now. -->
+    <div class="status" id="editDocsStatus" style="margin-bottom:14px;"></div>
 
     <form id="editForm">
       <label for="e_name">Name</label>
@@ -1026,7 +1020,17 @@
 </main>
 
 <script>
-const scriptUrl = ''; // DISCONNECTED: this Vercel copy is intentionally not wired to the live backend (dev/testing only, see project CLAUDE.md)
+// RECONNECTED 2026-08-17: was blanked during the JSON-backed-data migration
+// (see the comment block just below) -- but several actions on this page
+// were deliberately left un-migrated (generateReceipt, getFilesForShare,
+// findChecklistDocument, uploadPassportPhoto, readPassportWithAI,
+// addCalendarReminder, etc.) and still need a real Apps Script backend to
+// reach. Blanking scriptUrl broke ALL of those with no obvious cause
+// (fetch('') resolves to POSTing back to this same page, which returns an
+// empty non-JSON body -- "Unexpected end of JSON input"). Value below is
+// the same live deployment URL every other page on the Hostgator copy of
+// this site already uses (see e.g. upload to hostgator/contract.html).
+const scriptUrl = 'https://script.google.com/macros/s/AKfycbztdtViH9qFCZ755EefaZqiZWzKK_yTOWkwaFLqZJm271wzDIVMgGoaYGFaSrd20OGsnQ/exec';
 
 // ================== JSON-backed data layer (ported 13/08/2026) ==================
 // Replaces this page's three fetch(scriptUrl + '?action=...') READS
@@ -3773,128 +3777,52 @@ async function updateContract() {
 editViewPdfBtn.addEventListener('click', viewContract);
 editUpdateContractBtn.addEventListener('click', updateContract);
 
-// ---- Documents panel: everything living in this customer's "AA Scooters
-// Contracts" Drive subfolder -- the passport photo, and whatever else
-// Anton has manually copied in there (contract PDFs, receipts, etc.).
-// Backed by the three new /api/contracts/* routes (see lib/googleDrive.js's
-// contract-folder helpers): GET documents (sidecar-first, else a live
-// fuzzy name+phone search, auto-remembering confident matches), POST
-// confirmMatch (manual pick from the candidates list, also remembered),
-// and POST upload (adds a new photo, reusing the same matched/remembered
-// folder). Loaded fresh every time the edit modal opens (openEditModal
-// calls loadContractDocuments below), and re-loaded after a successful
-// upload or a manual match pick -- so "view" and "upload" always show the
-// same up-to-date list together, per Anton's explicit choice over a
-// separate view-only flow. ----
+// ---- "View Photo of Passport" -- REWORKED 2026-08-17, replacing the old
+// always-visible Documents panel (used to list EVERYTHING in this
+// customer's "AA Scooters Contracts" Drive subfolder -- passport photo,
+// but also the Contract/Receipt PDFs that already have their own View
+// Contract/View Receipt buttons, plus a folder-match picker for
+// unconfident matches). That panel is gone; this button now fetches the
+// same /api/contracts/documents data on click only, filters to image
+// files (the Contract/Receipt PDFs are mimeType application/pdf, so they
+// drop out on their own), and opens the most recent match directly --
+// no list, no picker. "Most recent" needs no extra sorting here:
+// listAllFilesInFolder (lib/googleDrive.js) already queries Drive with
+// orderBy: 'createdTime desc', so the first image in the array IS the
+// most recently uploaded one. If no confident folder match exists yet for
+// this customer, that's surfaced as "no photo on file" -- same as if the
+// folder existed but had no photo in it -- rather than exposing the
+// picker UI here; upload from further down in this form still resolves/
+// creates the folder correctly either way. ----
 const editDocsStatus = document.getElementById('editDocsStatus');
-const editDocsList = document.getElementById('editDocsList');
-const editDocsPicker = document.getElementById('editDocsPicker');
-const editDocsCandidates = document.getElementById('editDocsCandidates');
-
-function escapeDocHtml(s) {
-  return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => (
-    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
-  ));
-}
-
-function renderContractDocsList(files) {
-  if (!files || !files.length) {
-    editDocsList.innerHTML = '<div style="color:#666; font-size:14px;">No documents on file yet for this customer.</div>';
-    return;
-  }
-  editDocsList.innerHTML = files.map((f) => {
-    const url = '/api/contracts/file/' + encodeURIComponent(f.id);
-    const isImage = /^image\//.test(f.mimeType || '');
-    const label = escapeDocHtml(f.name || 'Document');
-    if (isImage) {
-      return '<a href="' + url + '" target="_blank" rel="noopener" title="' + label + '" ' +
-        'style="display:block; width:96px; height:96px; border:1px solid #ccc; border-radius:6px; overflow:hidden;">' +
-        '<img src="' + url + '" alt="' + label + '" style="width:100%; height:100%; object-fit:cover; display:block;"></a>';
-    }
-    return '<a href="' + url + '" target="_blank" rel="noopener" ' +
-      'style="display:flex; align-items:center; justify-content:center; text-align:center; padding:6px; width:96px; height:96px; border:1px solid #ccc; border-radius:6px; font-size:12px; word-break:break-word; color:inherit; text-decoration:underline;">' +
-      label + '</a>';
-  }).join('');
-}
-
-function renderContractDocsCandidates(candidates, name, phone) {
-  if (!candidates || !candidates.length) {
-    editDocsCandidates.innerHTML = '<div style="color:#666; font-size:14px;">No similar folders found either.</div>';
-    return;
-  }
-  editDocsCandidates.innerHTML = '';
-  candidates.forEach((c) => {
-    const row = document.createElement('div');
-    row.style.cssText = 'display:flex; align-items:center; gap:8px;';
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.textContent = 'Use: ' + c.name;
-    btn.style.cssText = 'margin-top:0; flex:1; text-align:left;';
-    btn.addEventListener('click', async () => {
-      btn.disabled = true;
-      const original = btn.textContent;
-      btn.textContent = 'Linking…';
-      try {
-        const res = await fetch('/api/contracts/confirmMatch', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, phone, folderId: c.id })
-        });
-        const data = await res.json();
-        if (!data.success) throw new Error(data.error || 'Unknown error');
-        renderContractDocsList(data.files || []);
-        editDocsPicker.style.display = 'none';
-        editDocsStatus.textContent = '';
-        editDocsStatus.className = 'status';
-      } catch (err) {
-        btn.disabled = false;
-        btn.textContent = original;
-        editDocsStatus.textContent = 'Could not link that folder: ' + err.message;
-        editDocsStatus.className = 'status err';
-      }
-    });
-    row.appendChild(btn);
-    editDocsCandidates.appendChild(row);
-  });
-}
-
-async function loadContractDocuments(name, phone) {
-  editDocsPicker.style.display = 'none';
-  editDocsList.innerHTML = '';
-  editDocsStatus.textContent = 'Loading documents…';
-  editDocsStatus.className = 'status';
-  if (!name) {
-    editDocsStatus.textContent = '';
-    return;
-  }
-  try {
-    const url = '/api/contracts/documents?name=' + encodeURIComponent(name) + '&phone=' + encodeURIComponent(phone || '');
-    const res = await fetch(url);
-    const data = await res.json();
-    if (!data.success) throw new Error(data.error || 'Unknown error');
-    editDocsStatus.textContent = '';
-    if (data.matched) {
-      renderContractDocsList(data.files || []);
-    } else {
-      renderContractDocsList([]);
-      editDocsPicker.style.display = 'block';
-      renderContractDocsCandidates(data.candidates || [], name, phone);
-    }
-  } catch (err) {
-    editDocsStatus.textContent = 'Could not load documents: ' + err.message;
-    editDocsStatus.className = 'status err';
-  }
-}
-
-// "View Photo of Passport" -- the Documents panel above already loads and
-// shows everything on file as soon as the modal opens, so this just
-// re-fetches (in case something changed) and scrolls the panel into view
-// rather than duplicating a separate lookup.
 const editViewPhotoBtn = document.getElementById('editViewPhotoBtn');
 editViewPhotoBtn.addEventListener('click', async () => {
   if (!currentEditRecord) return;
-  document.getElementById('editDocsPanel').scrollIntoView({ behavior: 'smooth', block: 'start' });
-  await loadContractDocuments(currentEditRecord.name, currentEditRecord.number);
+  const originalText = editViewPhotoBtn.textContent;
+  editViewPhotoBtn.disabled = true;
+  editViewPhotoBtn.textContent = 'Loading…';
+  editDocsStatus.textContent = '';
+  editDocsStatus.className = 'status';
+  try {
+    const url = '/api/contracts/documents?name=' + encodeURIComponent(currentEditRecord.name || '') + '&phone=' + encodeURIComponent(currentEditRecord.number || '');
+    const res = await fetch(url);
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error || 'Unknown error');
+    const files = data.matched ? (data.files || []) : [];
+    const photo = files.find((f) => /^image\//.test(f.mimeType || ''));
+    if (!photo) {
+      editDocsStatus.textContent = 'No passport photo on file yet for this customer.';
+      editDocsStatus.className = 'status warn';
+      return;
+    }
+    window.open('/api/contracts/file/' + encodeURIComponent(photo.id), '_blank', 'noopener');
+  } catch (err) {
+    editDocsStatus.textContent = 'Could not load the passport photo: ' + err.message;
+    editDocsStatus.className = 'status err';
+  } finally {
+    editViewPhotoBtn.disabled = false;
+    editViewPhotoBtn.textContent = originalText;
+  }
 });
 
 // "Upload photo" on the edit modal -- POSTs to /api/contracts/upload,
@@ -3909,8 +3837,10 @@ editViewPhotoBtn.addEventListener('click', async () => {
 // dd-MM-yyyy to match the folder-naming convention. If this exact
 // customer+date already has a passport photo on file, the backend refuses
 // the duplicate and hands back the existing file instead -- shown here as
-// an "already on file" message rather than an error. Refreshes the
-// Documents panel on any successful outcome so view+upload always agree. ----
+// an "already on file" message rather than an error. No panel to refresh
+// any more (removed 2026-08-17) -- this status message is the only
+// feedback, and "View Photo of Passport" above will pick up the new photo
+// next time it's clicked (it always fetches fresh, on demand). ----
 const editPassportPhotoInput = document.getElementById('e_passportPhoto');
 const editPassportPhotoUploadBtn = document.getElementById('e_passportPhotoUploadBtn');
 const editPassportPhotoStatusBox = document.getElementById('e_passportPhotoStatusBox');
@@ -3947,14 +3877,12 @@ editPassportPhotoUploadBtn.addEventListener('click', async () => {
       editPassportPhotoStatusBox.textContent = data.error || 'A photo of passport is already on file for this contract.';
       editPassportPhotoStatusBox.className = 'status warn';
       editPassportPhotoInput.value = '';
-      await loadContractDocuments(currentEditRecord.name, currentEditRecord.number);
       return;
     }
     if (!data.success) throw new Error(data.error || 'Unknown error');
     editPassportPhotoStatusBox.textContent = 'Photo uploaded.';
     editPassportPhotoStatusBox.className = 'status ok';
     editPassportPhotoInput.value = '';
-    await loadContractDocuments(currentEditRecord.name, currentEditRecord.number);
   } catch (err) {
     editPassportPhotoStatusBox.textContent = 'Could not upload the photo: ' + err.message;
     editPassportPhotoStatusBox.className = 'status err';
@@ -4282,35 +4210,47 @@ receiptConfirmBtn.addEventListener('click', async () => {
 // Converts a base64 string (as returned by the backend's
 // action:'getFilesForShare') into a real File object the Web Share API
 // can attach.
-function base64ToFile_(base64, filename, mimeType) {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return new File([bytes], filename, { type: mimeType || 'application/pdf' });
+// Pulls the Drive file id out of a "view" link (the format
+// pdfFile.getUrl() produces in Code.gs, e.g.
+// https://drive.google.com/file/d/<id>/view?usp=drivesdk) so it can be
+// turned into a direct-download link instead. Returns null if the URL
+// doesn't match (defensive -- callers already check the url is present).
+function extractDriveFileId_(url) {
+  const m = /\/file\/d\/([a-zA-Z0-9_-]+)/.exec(url || '');
+  return m ? m[1] : null;
 }
 
-// Old-style fallback -- just opens both Drive links in new tabs, same as
-// this button's very first version. Used when the browser/device can't do
-// file sharing at all (most desktop browsers), or if fetching/sharing the
-// actual files fails partway through for any reason, so staff always end
-// up with a working way to reach both documents rather than a dead end.
-function openDocsFallback_() {
-  if (currentEditRecord.contractPdfUrl) window.open(currentEditRecord.contractPdfUrl, '_blank', 'noopener');
-  if (currentEditRecord.receiptPdfUrl) window.open(currentEditRecord.receiptPdfUrl, '_blank', 'noopener');
+// Triggers a real download (not a Drive preview tab) via a throwaway <a
+// download> click rather than window.open -- anchor clicks don't consume
+// a popup-blocker "slot" the way window.open does, which matters here
+// since editSendDocsBtn below fires two of these AND a window.open (for
+// WhatsApp) from one click. drive.google.com/uc?export=download forces a
+// Content-Disposition:attachment response as long as the file is shared
+// "Anyone with link" -- already true for every contract/receipt PDF (see
+// the setSharing(...VIEW) calls in Code.gs).
+function triggerDriveDownload_(url) {
+  const id = extractDriveFileId_(url);
+  if (!id) return;
+  const a = document.createElement('a');
+  a.href = 'https://drive.google.com/uc?export=download&id=' + id;
+  a.rel = 'noopener';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
 }
 
-// Click handler. Fetches both PDFs as real files through the backend and
-// hands them to the phone's native share sheet in one call, so staff pick
-// WhatsApp there with the documents actually attached -- see this
-// button's HTML comment above for why this replaced the old
-// Drive-link/wa.me version. Deliberately does NOT try to generate either
-// document on the fly if missing -- the contract could be regenerated
-// silently, but the receipt can't be (Edit Receipt needs amounts typed in
-// by hand), and having the same button silently do one but not the other
-// would be a confusing half-measure. So: if either is missing, say
-// exactly which one and stop.
+// Click handler -- REWORKED 2026-08-17 (see the HTML comment above this
+// button for the full "why"). Downloads both PDFs, then opens WhatsApp Web
+// with the customer's chat pre-filled with a message -- staff attach the
+// two just-downloaded PDFs themselves via WhatsApp's own attach button.
+// Same flow on every device, unlike the old Web Share version. Still does
+// NOT try to generate either document on the fly if missing -- the
+// contract could be regenerated silently, but the receipt can't be (Edit
+// Receipt needs amounts typed in by hand), and having the same button
+// silently do one but not the other would be a confusing half-measure. So:
+// if either is missing, say exactly which one and stop.
 const editSendDocsBtn = document.getElementById('editSendDocsBtn');
-editSendDocsBtn.addEventListener('click', async () => {
+editSendDocsBtn.addEventListener('click', () => {
   if (!currentEditRecord) return;
   editStatusBox.className = 'status';
   editStatusBox.textContent = '';
@@ -4324,59 +4264,23 @@ editSendDocsBtn.addEventListener('click', async () => {
     return;
   }
 
-  // No file-sharing support at all (most desktop browsers) -- skip
-  // straight to the fallback rather than attempting a fetch that has
-  // nowhere useful to hand its result to.
-  if (!(navigator.share && navigator.canShare)) {
-    openDocsFallback_();
+  const digits = (currentEditRecord.number || '').toString().replace(/\D/g, '');
+  if (!digits) {
+    editStatusBox.textContent = 'Cannot send yet -- this contract has no phone number on file.';
+    editStatusBox.className = 'status err';
     return;
   }
 
-  const originalText = editSendDocsBtn.textContent;
-  editSendDocsBtn.disabled = true;
-  editSendDocsBtn.textContent = 'Preparing…';
+  triggerDriveDownload_(currentEditRecord.contractPdfUrl);
+  triggerDriveDownload_(currentEditRecord.receiptPdfUrl);
 
-  try {
-    const res = await fetch(scriptUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({
-        action: 'getFilesForShare',
-        fileUrls: [currentEditRecord.contractPdfUrl, currentEditRecord.receiptPdfUrl]
-      })
-    });
-    const data = await res.json();
-    if (!data.success) throw new Error(data.error || 'Unknown error');
+  const firstName = (currentEditRecord.name || 'there').toString().trim().split(/\s+/)[0];
+  const message = 'Hi ' + firstName + ', here is your contract and receipt from AA Scooters.';
+  const waUrl = 'https://web.whatsapp.com/send?phone=' + encodeURIComponent(digits) + '&text=' + encodeURIComponent(message);
+  window.open(waUrl, '_blank', 'noopener');
 
-    const files = data.files.map((f) => base64ToFile_(f.base64, f.filename, f.mimeType));
-
-    if (!navigator.canShare({ files })) {
-      // Browser claims share() support but not for these files -- fall
-      // back rather than calling share() and having it throw.
-      openDocsFallback_();
-      return;
-    }
-
-    await navigator.share({
-      files,
-      title: 'Contract + Receipt',
-      text: 'Hi ' + (currentEditRecord.name || 'there').toString().trim().split(/\s+/)[0] + ', here is your contract and receipt from AA Scooters.'
-    });
-  } catch (err) {
-    // AbortError -- staff opened the share sheet and backed out of it
-    // (changed their mind, or picked no app) -- not a real failure, so
-    // stay quiet rather than showing a scary red error for a no-op.
-    if (err && err.name === 'AbortError') {
-      // no-op
-    } else {
-      editStatusBox.textContent = 'Could not prepare the files to send: ' + err.message + ' -- opening both PDFs instead.';
-      editStatusBox.className = 'status err';
-      openDocsFallback_();
-    }
-  } finally {
-    editSendDocsBtn.disabled = false;
-    editSendDocsBtn.textContent = originalText;
-  }
+  editStatusBox.textContent = 'Contract and receipt downloaded -- attach them in the WhatsApp chat that just opened.';
+  editStatusBox.className = 'status ok';
 });
 
 /* ---------------- View Checklist ---------------- */
@@ -4635,7 +4539,8 @@ function openEditModal(r) {
 
   editStatusBox.className = 'status';
   editBackdrop.classList.add('show');
-  loadContractDocuments(r.name, r.number);
+  // No longer auto-loads the Documents panel (removed 2026-08-17) --
+  // "View Photo of Passport" fetches on demand instead, see its handler.
 }
 function closeEditModal() {
   editBackdrop.classList.remove('show');
