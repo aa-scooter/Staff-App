@@ -19,10 +19,23 @@
 // uses (see api/data/[sheet].js) -- this route is deliberately NOT a new
 // pattern, just a new single ENDPOINT that happens to do more work per call
 // than a plain read/write-the-whole-sheet route does.
+//
+// ROUTING NOTE, added during the deposits.html port (see
+// lib/depositsWrites.js's own header comment for the full reasoning):
+// this endpoint ALSO serves deposits.html's 5 write actions (addDeposit,
+// editDeposit, deleteDeposit, deductDeposit, deductCashDeposit), routed to
+// a completely separate module (lib/depositsWrites.js) below, purely
+// because Vercel's Hobby-plan 12-serverless-function cap left no room for
+// a dedicated api/deposits/write.js. The two dispatch paths never mix --
+// accounts.html's own actions keep going through accountsWriteDispatch
+// exactly as before, untouched by this change.
 const { withDrive } = require('../../lib/apiAuth');
 const { ensureAppFolder, ConflictError } = require('../../lib/googleDrive');
 const { setSessionCookie } = require('../../lib/session');
 const { createAccountsWrites, createSheetIO } = require('../../lib/accountsWrites');
+const { createDepositsWrites } = require('../../lib/depositsWrites');
+
+const DEPOSITS_ACTIONS = new Set(['addDeposit', 'editDeposit', 'deleteDeposit', 'deductDeposit', 'deductCashDeposit']);
 
 function readJsonBody(req) {
   if (req.body !== undefined && req.body !== null) {
@@ -64,11 +77,12 @@ module.exports = withDrive(async function handler(req, res, { drive, folderId, s
 
     const effectiveFolderId = folderId || await ensureAppFolder(drive);
     const sheetIO = createSheetIO(drive, effectiveFolderId, session);
-    const writes = createAccountsWrites(sheetIO);
+    const isDepositsAction = DEPOSITS_ACTIONS.has(action);
+    const writes = isDepositsAction ? createDepositsWrites(sheetIO) : createAccountsWrites(sheetIO);
 
     let result;
     try {
-      result = await writes.accountsWriteDispatch(body);
+      result = isDepositsAction ? await writes.depositsWriteDispatch(body) : await writes.accountsWriteDispatch(body);
     } catch (err) {
       if (err instanceof ConflictError || err.isConflict) {
         if (session && !res.headersSent) setSessionCookie(res, session);
