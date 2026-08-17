@@ -6,6 +6,121 @@ This exists because work on this project gets picked up across multiple
 Claude sessions/accounts with no shared memory between them — this file is
 the handoff.
 
+## 🔧 Phase 2, bikes.html write layer: FIRST ACTION ('swapBike') PORTED AND
+## TEST-GREEN, NOT YET DEPLOYED, NOT YET WIRED INTO THE FRONTEND (2026-08-17)
+
+**What this is:** the first real slice of the write-layer port the
+inventory entry just below this one mapped out. Per that entry's own
+recommendation, started with `swapBike` -- the most self-contained of
+bikes.html's 7 actions (a single request, no chained second call). New
+files only: `lib/bikesWrites.js` (`createSheetIO` + `createBikesWrites(sheetIO)`,
+mirroring `lib/accountsWrites.js`'s factory shape) and `api/bikes/write.js`
+(single-dispatch endpoint, mirrors `api/accounts/write.js` almost
+verbatim). **bikes.html's own client-side script is completely untouched**
+-- these files are net-new and unreferenced by anything else, so the live
+page's behavior hasn't changed at all yet. Wiring the frontend (optimistic
+UI + idempotency submission) is explicitly a later step, only once every
+action has its own tested backend port -- see the inventory entry's own
+"do not wire ANY optimistic-UI changes until every action is ported" rule.
+
+**What got ported:** `swapBikeFromJson` and its full call graph, byte-for-
+byte from bikes.html's own client-side copy -- `appendLedgerEntryFromJson`,
+`renameContractBikeOnSwapFromJson`, `syncContractReturnDateOnlyFromJson`,
+`addAmountToContractRowFromJson`, `addRentalAmountToBikesSheetForMonthFromJson`,
+`appendSwapUpgradeIncomeRowFromJson`, `appendCashSheetRowFromJson`,
+`processDepositForPaymentFromJson`, `shortenLastLedgerLineForSwapFromJson`,
+plus the whole recompute cascade (`recomputeCashSheetTotalsB`/
+`recomputeMonthlySummaryCascadeB`, same formulas as `lib/accountsWrites.js`'s
+copy, verified against the real workbook there already) and every small
+utility (`decodeSheetDate`, `pad2Json`, `formatDmyJson`, `bikeNamesMatchForTaxLookup`,
+etc.). SAME business rules, SAME edge cases, SAME warnings as the browser
+version -- this was a mechanical port, not a redesign. `logTransactionB`
+was ported as bikes.html's OWN simpler (non-queued) version rather than
+accounts.html's promise-queue version -- confirmed swap never calls it
+concurrently within one request, so accounts.html's later race-fix doesn't
+apply here (see the file's own comment on this).
+
+**The one genuinely NEW piece, not a mechanical copy -- an idempotency
+guard for swap:** bikes.html's own client-side `swapBikeFromJson` has no
+duplicate-submission protection at all (its own comment block says so
+explicitly -- "no equivalent shared-lock cache exists across stateless
+serverless function calls... low-risk enough to accept unported for now").
+Since this whole rollout's end goal IS a frontend that can safely retry a
+failed/uncertain save, added the guard now rather than porting-then-
+immediately-needing-a-second-pass: an optional `clientTxnId` on the
+request, checked via `findExistingSwapByTxnIdFromJson` (scans
+`customer_notes` for a row already tagged with that clientTxnId in a
+brand-new reserved column, `IDEMPOTENCY_NOTE_COL_B=3` -- doesn't collide
+with the existing ledger-note column, `LEDGER_CONTACT_COL_B=2`) BEFORE any
+validation or writes. A repeat request with the same clientTxnId short-
+circuits straight to the already-saved result (`{success:true,
+newRowNumber, idempotentReplay:true}`) instead of appending a second
+customer row. Marked via `markSwapTxnIdFromJson` right after the core
+write succeeds; if THAT specific write fails, it's surfaced as a warning
+(not a thrown error, so it never makes a successful swap look failed) --
+flagged honestly rather than silently swallowed, since a failed marker
+write means a retry under the same clientTxnId could still create a
+genuine duplicate.
+
+**Testing:** no real browser available in this sandbox (same Playwright/
+Chromium root-deps limitation as the read-cache pass) -- and this slice is
+backend-only anyway (nothing wired into bikes.html's frontend yet, so
+there's nothing to click-test). Built a fake-Drive Node harness instead
+(`/tmp/bikestest/` on the sandbox -- scratch, gone between sessions,
+rebuild if picked up again), testing `createBikesWrites(fakeSheetIO)`
+directly against an in-memory fake at the `sheetIO` boundary (same
+`fetchSheetWithMeta`/`writeSheetJson` shape `createSheetIO` produces from
+real Drive) rather than mocking Google Drive/OAuth itself -- equivalent
+coverage of the actual business logic, without needing the `googleapis`
+package installed (it isn't, in this sandbox; a stub was used purely to
+satisfy `lib/googleDrive.js`'s top-level `require('googleapis')`, never
+exercised). 25/25 green across 5 scenarios: (1) a basic swap with no
+upgrade -- old row closed out with the correct returnAmount/date/status,
+new row appended with the redistributed amount and the ORIGINAL return
+date carried forward, Contract row renamed, "bikes" sheet totals moved
+between the old and new bike for the original rental's start month, new
+row gets its own ledger note; (2) a swap WITH an upgrade charge paid by
+cash -- upgrade income row + cash-sheet row both written with the correct
+amount; (3) validation -- amounts that don't sum to the booking's current
+total price are rejected with a clear error and nothing is written; (4)
+idempotency -- the exact same `clientTxnId` submitted twice creates only
+ONE new row, the second call flagged `idempotentReplay:true`; (5) two
+DIFFERENT customers/clientTxnIds each get their own new row -- confirms
+the guard keys strictly on clientTxnId, not on source row number or
+similar-looking data, i.e. it doesn't over-suppress legitimate separate
+swaps. (Test 3's validation check, run against an already-swapped row
+during test authoring, incidentally also confirmed re-swapping a
+just-closed row is correctly rejected -- caught a test-authoring bug, not
+a product bug, but worth noting since it's exactly the kind of thing this
+suite exists to catch.)
+
+**Not yet done, in order:**
+1. Deliver via the workspace folder, get Anton's go-ahead, push (this
+   entry's files don't touch anything live, so this can happen anytime,
+   no rush/no risk).
+2. Port the remaining 6 actions the same way, one at a time, each with its
+   own fake-Drive test batch, in roughly this order (per the inventory
+   entry's suggested order, reassessed as each one turns out): return
+   (`markReturned` + `earlyReturnBike` + the `returnDeposit` follow-up --
+   these three are related enough to likely do as one slice), then
+   `updateReturnPickup` (small, standalone), then extend-short
+   (`extendBikeRowFromJson`), then the long-extension pair
+   (`closeBikeForExtendFromJson` + `customerIntakeFromJson` -- the one
+   with a genuine open design question flagged in the inventory entry:
+   how does a clientTxnId apply across TWO sequential dependent writes).
+3. Only once ALL 7 actions are ported and individually test-green: design
+   and build the frontend optimistic-UI + idempotency-submission layer in
+   bikes.html itself (mirroring accounts.html's `genClientTxnId`/
+   `optItems`/`optInFlight`/`queueMonthSave`-equivalent pattern), wire it
+   to `api/bikes/write.js`, and build the Playwright-equivalent frontend
+   test batch for it. This is the step that actually changes what staff
+   see when using bikes.html -- everything before it is invisible/inert.
+
+**Files changed:** `lib/bikesWrites.js` (new), `api/bikes/write.js` (new).
+`bikes.html` itself: untouched.
+
+---
+
 ## 🚧 Phase 2, bikes.html write layer: INVENTORY/DESIGN DONE, NO CODE
 ## WRITTEN YET (2026-08-16, later same evening) -- read this before starting
 ## the actual port
