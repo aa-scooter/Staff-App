@@ -2813,6 +2813,22 @@ const pendingBackdrop = document.getElementById('pendingBackdrop');
 const pendingListBox = document.getElementById('pendingListBox');
 const pendingCloseBtn = document.getElementById('pendingCloseBtn');
 
+// FIX 2026-08-17: declared here (rather than down near tabAdd/tabSearch
+// where it logically belongs, in the Search/autocomplete section) because
+// ctRefreshUi()/ctReloadAndRerender() below reference it, and those get
+// called synchronously at page load via restoreUnresolvedSaves() -- which
+// runs long before the script reaches the Search-section declarations
+// further down the file. A `const` is in the temporal dead zone until its
+// own declaration line actually executes, so referencing it earlier threw
+// "Uncaught ReferenceError: Cannot access 'searchView' before
+// initialization" on every page load, which killed the whole synchronous
+// init script before it ever reached loadBikeNames() -- that's what was
+// stuck behind the permanent "Loading bikes from the spreadsheet…" gate.
+// The element itself already exists in the DOM by the time this inline
+// <script> runs (it's a plain <div id="searchView"> in the body markup
+// above), so hoisting just this one lookup earlier is safe.
+const searchView = document.getElementById('searchView');
+
 // Click-outside-to-close, guarded against mid-drag closes: only close if
 // BOTH the mousedown and the click landed on the backdrop itself (not just
 // the click), so e.g. selecting text inside the card and releasing the
@@ -4950,7 +4966,8 @@ setDefaultsToNow();
 
 const tabAdd = document.getElementById('tabAdd');
 const tabSearch = document.getElementById('tabSearch');
-const searchView = document.getElementById('searchView');
+// searchView is declared earlier in the file now -- see the FIX 2026-08-17
+// comment near pendingBackdrop above for why.
 
 let sheetRows = null;      // cached rows from the sheet
 let rowsPromise = null;    // in-flight fetch
