@@ -6,6 +6,159 @@ This exists because work on this project gets picked up across multiple
 Claude sessions/accounts with no shared memory between them — this file is
 the handoff.
 
+## ✅ deposits.html: ported to the save-pipeline engine (5 actions) —
+## CODED, UNIT-TESTED (27/27), NOT YET DEPLOYED (2026-08-17)
+
+**What changed:** deposits.html's write layer replaced with the same
+optimistic-UI "save-pipeline engine" pattern already shipped on bikes.html
+(`bk`-prefixed) and contract.html (`ct`-prefixed) this project — here as
+`dp`-prefixed. All 5 deposits actions (`addDeposit`, `editDeposit`,
+`deleteDeposit`, `deductDeposit`, `deductCashDeposit`) now route through
+`dpEnqueue` → POST to `/api/accounts/write` (the existing endpoint —
+deposits actions are dispatched there via `lib/depositsWrites.js`'s
+`depositsWriteDispatch`, NOT a new dedicated endpoint, to stay under
+Vercel Hobby's 12-serverless-function cap) instead of the old client-side
+read-modify-write-the-whole-sheet flow.
+
+**Row identity, deposits-specific:** unlike bikes.html/contract.html
+(single sheet-row number as the map key), a deposit entry is only unique
+by (category, row) together, so `pendingRowSaves` here is keyed by a
+composite `"category:row"` string (e.g. `"bank:5"`). Actions with no
+existing row to badge (`addDeposit`, `deductCashDeposit`) pass `rows: []`,
+same pattern as contract.html's `addContract`.
+
+**Two bugs pre-empted, both citing precedent from earlier this session:**
+- Stale in-memory cache after write (the exact bug that hit contract.html
+  earlier this session, where only the localStorage cache was cleared on
+  reload-after-write and writes looked like they silently did nothing):
+  `dpReloadAndRerender()` clears BOTH `clearDepositsCache()` (localStorage)
+  AND empties the in-memory `depositsJsonCache` object.
+- TDZ crash (the exact bug that hit contract.html's `searchView` earlier
+  this session — a `const` referenced before its declaration executes):
+  `restoreUnresolvedSaves()` is defined inside the engine block (early in
+  the file) but its *call* is deferred to the very end of the script,
+  right before the final `loadDeposits()` — it transitively touches
+  `allDeposits`/`lastSummary`/`depositsLoadedOnce`, which aren't declared
+  until much further down the file.
+
+**Also added:** missing mousedown+click "click-outside-to-close" guard on
+`modalBackdrop` (per this project's CLAUDE.md modal convention — wasn't
+applied to this page's modal before); per-row "Saving…/Queued…" badges in
+`render()` when a save is in flight for that row (skipped on click while
+pending); `MAX_QUEUE = 2` cap with an inline error if hit; dead progress-
+indicator functions removed (`setModalButtonsDisabled`,
+`start/stopModalProgress`, `start/stopCashDeductProgress` and their
+backing consts/timer).
+
+**Testing:** `node --check` on the single inline `<script>` block (OK,
+55277 chars) and on `nav.js` (OK). Grep confirmed no dangling references
+to any of the removed old write functions
+(`addDepositEntryJson`/`editDepositEntryJson`/`deleteDepositEntryJson`/
+`deductDepositEntryFromJson`/`deductCashDepositFromJson`/
+`fetchSheetWithMeta`/`writeSheetJson(`). 27/27 unit tests against the real
+sliced engine + render source, covering: unique client-txn-id generation;
+basic enqueue/run/resolve with `rows:[]`; `"category:row"` keying for
+edit/delete/deduct; the `MAX_QUEUE=2` cap; 409-conflict retry-then-succeed;
+a real failure landing in `dpFailedItems` + banner (not silently dropped)
+with the row released either way; `dpReloadAndRerender` clearing both
+caches; `restoreUnresolvedSaves` recovering a leftover pending save with
+the same `clientTxnId`; and a dedicated TDZ-safety test confirming
+`restoreUnresolvedSaves()` doesn't throw or touch `render` when called
+before `allDeposits`/`lastSummary` exist.
+
+**Verification:** both `deposits.html` and `nav.js` writes confirmed held
+(grepped for distinctive new content immediately after writing and again
+15s later — unchanged both times), per this project's file-revert
+caution.
+
+**Files changed:** `vercel-site/deposits.html`, `vercel-site/nav.js`.
+(`vercel-site/lib/depositsWrites.js` and the `api/accounts/write.js`
+routing change were built/wired earlier this same session, prior to this
+PROGRESS.md entry.)
+
+**Not done in this delivery (deliberately deferred, same "small chunks"
+convention as the rest of this project):** add-bikes.html (4 actions) and
+customers.html (1 action) are next in the page-by-page rollout, each to be
+its own separate tested/documented delivery.
+
+---
+
+## 🐛 Fixed contracts Google Drive folder-location mismatch — "View Photo
+## of Passport" 404ing (and likely other document links) — CODED,
+## UNIT-TESTED (13/13), NOT YET DEPLOYED (2026-08-17)
+
+**Bug report (Anton, live):** Clicking "View Photo of Passport" on a real
+contract 404'd (`/api/contracts/file/<id>` → 404), even though the photo
+file demonstrably exists in the customer's Google Drive folder. Not
+isolated to one contract — "a lot of the other ones" too.
+
+**Root cause:** two separate, same-named Drive folder trees existed.
+Code.gs (`getOrCreateContractsFolder()`) has always used
+`DriveApp.getFoldersByName('AA Scooters Contracts')` — unscoped by parent,
+Drive-wide — which resolves to the real, actively-used, TOP-LEVEL
+"My Drive > AA Scooters Contracts" folder; every receipt regenerate and
+every new contract's passport-photo upload still writes there today via
+the reconnected `scriptUrl`. The Vercel backend's own
+`ensureContractsRootFolder(drive, appFolderId)`, by contrast, searched only
+NESTED inside the app's own "AA Scooters App Data" root folder — a
+structurally different folder that only ever got populated by a one-time
+manual copy Anton did on 2026-08-15 (hand-copying the legacy folder tree
+into the app's Drive folder via the Drive web UI). Any contract touched by
+Code.gs after that copy (a regenerated receipt, a newly uploaded passport
+photo) landed only in the real top-level folder, so the nested copy went
+stale immediately — the app was looking in the wrong place. This differs
+from Bike Photos, where an equivalent one-time-copy fix already stuck,
+because nothing writes to the legacy bike-photos location anymore.
+
+Considered and rejected: copying the top-level folder's contents into the
+nested app folder (like Bike Photos). Rejected because Code.gs is still
+actively writing new content to the top-level folder — a copy-once fix
+would go stale again the moment anyone touched a contract. Anton approved
+repointing the code at the real folder instead, confirming it's fine to
+leave the old, now-unused nested copy sitting there rather than clean it
+up: "Having three folders there is not a problem."
+
+**Fix, `lib/googleDrive.js` only:**
+- Added `findNamedFolderAnywhere(drive, name)` — same as the existing
+  `findNamedFolder`, but with no parent-scoping in its query, matching
+  Code.gs's own unscoped `DriveApp.getFoldersByName` behavior exactly.
+- Rewrote `ensureContractsRootFolder(drive, appFolderId)` to call
+  `findNamedFolderAnywhere` instead of the old nested
+  `ensureNamedFolder(drive, appFolderId, CONTRACTS_FOLDER_NAME)`. If truly
+  nothing is found anywhere (shouldn't happen in practice — Code.gs would
+  already have created it), falls back to creating a folder at the TOP
+  level of Drive (no `parents` in the create call), not nested under
+  `appFolderId`, so a from-scratch run stays pointed at the same place
+  Code.gs uses. `appFolderId` param kept in the signature, now unused, for
+  call-site compatibility with `api/contracts/[...path].js`'s three
+  callers (handleDocuments, handleConfirmMatch, handleUpload) — none of
+  which needed changes themselves.
+
+**Testing:** `node --check` on `lib/googleDrive.js` (OK). 13/13 unit tests
+against a fake Drive client (`drive.files.list`/`drive.files.create`
+mocked) covering: `findNamedFolderAnywhere`'s query has no `in parents`
+clause and correctly filters by name/non-trashed; returns null on no
+match; takes the first result on multiple matches (mirrors Code.gs's
+`.next()`); `ensureContractsRootFolder` returns an existing folder's id
+without creating a duplicate; creates a new folder with no `parents` field
+when nothing is found anywhere; behavior is unaffected by whatever
+`appFolderId` value is passed in.
+
+**Verification:** write confirmed held (grepped for the new function call
+site both immediately after writing and again 15s later — unchanged both
+times), per this project's file-revert caution.
+
+**Files changed:** `vercel-site/lib/googleDrive.js` only.
+
+**Open question:** the theory that this is specifically tied to contracts
+"imported by the old app" (Anton's hypothesis) isn't confirmed either way
+— the fix corrects the folder-lookup mismatch regardless of how any given
+contract's folder came to exist, so it should resolve the 404s across the
+board, not just for imported records. Worth spot-checking a few different
+contracts (old-app-imported and newly created) after deploy to confirm.
+
+---
+
 ## 🐛 Fixed 3 contract.html bugs: receipt regenerate failing, broken
 ## Documents-panel links, "Send Contract + Receipt" not reaching WhatsApp —
 ## CODED, UNIT-TESTED (19/19), NOT YET DEPLOYED (2026-08-17)
