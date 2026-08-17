@@ -6,6 +6,96 @@ This exists because work on this project gets picked up across multiple
 Claude sessions/accounts with no shared memory between them — this file is
 the handoff.
 
+## 🔧 Phase 2, contract.html write layer: ALL 4 IN-SCOPE ACTIONS PORTED
+## AND TEST-GREEN, NOT YET DEPLOYED, NOT YET WIRED INTO THE FRONTEND
+## (2026-08-17, later same day as the inventory entry just below)
+
+**What this is:** the backend port for contract.html, following directly
+from the inventory entry below -- `lib/contractWrites.js` (new) +
+`api/contract/write.js` (new), covering all 4 in-scope actions in one
+slice rather than several (unlike bikes.html's multi-slice rollout) since
+the inventory pass already showed this page's REAL write surface is much
+smaller than first thought -- 4 actions, not 16. **contract.html's own
+frontend is completely untouched** -- same "nothing live changes yet"
+guarantee as every bikes.html backend-porting entry.
+
+**What got ported, byte-for-byte from contract.html's own copies:**
+`cancelContractFromJson`, `addContractFromJson` (minus the passport-photo
+upload, which stays a client-side follow-up step -- see the inventory
+entry below), `editContractFromJson`, and `customerIntakeFromJson` (the
+NEWER, combined-transaction-log version specific to contract.html -- see
+inventory entry). Every shared helper (`createSheetIO`, the recompute
+cascade, ledger-note helpers, name/bike matchers, `DEPOSIT_CATEGORIES_B`,
+etc.) was cross-checked byte-for-byte against contract.html's own copy
+before reuse -- confirmed identical to `lib/bikesWrites.js`'s versions in
+every case checked, but verified rather than assumed given the "16 vs 4"
+scope correction already taught not to assume too much between pages.
+
+**Idempotency, decided per-action (full reasoning in the file's own header
+comment):**
+- `customerIntake` -- clientTxnId guard, same new-row-marker technique as
+  bikes.html's swap/customerIntake (customer_notes, column 3). This is the
+  one `doRent()`'s own client-side comment explicitly ties to a REAL
+  double-booking Anton hit from a dropped-connection retry -- the clearest
+  case for a guard of anything ported this slice.
+- `addContract` -- ALSO got a guard (a genuinely new judgment call, not a
+  mechanical copy): it always appends a new Contract row, same double-
+  submit risk class as `customerIntake`/`swapBike`, even though
+  contract.html's own client-side version has no such protection today.
+  Marker lives on a SEPARATE sidecar (`Contract_notes`, column 3) from
+  `customerIntake`'s (`customer_notes`, column 3) since they tag different
+  sheets' rows.
+- `editContract` -- no guard: unconditionally overwrites the same columns
+  with the same values every time, so a retry converges to the same end
+  state (same reasoning as bikes.html's `updateReturnPickup`).
+- `cancelContract` -- deliberately NO guard, flagged as a real but
+  low-stakes gap: this action throws if the contract isn't still Pending,
+  so a retry after a first attempt that actually succeeded would show a
+  confusing error instead of silently no-op'ing. Identical to
+  contract.html's own existing behavior today (not a regression) -- worst
+  case is a wrong error message, not a duplicate row or double-charge, so
+  a third marker sidecar wasn't judged worth it this pass.
+
+**Testing:** new fake-Drive Node test file (`contract-writes.test.js` in
+`/tmp/bikestest/`, same harness as every bikes.html test file). 47/47
+green across 14 scenarios: `cancelContract` basic success + rejecting a
+non-Pending retry; `addContract` basic success, Deal-flag note, the
+money-critical idempotency case (a retried add creates exactly ONE row,
+not two, and a replay reports the original row number back), two
+DIFFERENT clientTxnIds both applying independently, blank-name validation;
+`editContract` basic success (confirms column A/date is left untouched,
+matching contract.html's own comment), the deposit-method-changed warning,
+invalid-row rejection; `customerIntake` basic success (customer row
+correct, matching Pending Contract row flipped to Rented, income/cash/
+bikes-sheet writes all correct), idempotency (retry does NOT create a
+second booking), and -- specific to this page's newer design -- a direct
+check that the COMBINED transaction-log entry actually covers every sheet
+a rental touches (customer, Contract, bikes, the monthly income sheet, and
+cash), confirming the 15/08/2026 bug fix (Contract status flip previously
+un-logged, so un-reversible) survived the port intact. **All 5 backend
+test files together: 176/176 assertions green** (bikes.html's 4 files:
+129, contract.html: 47).
+
+**Not yet done, in order:**
+1. Deliver via the workspace folder, push (zero risk, nothing live changed).
+2. Frontend wiring -- add a `contractWriteDispatch(payload)` +
+   `genClientTxnId()` pair to contract.html (mirrors bikes.html's own
+   pass), rewire `doRent()`/`doCancel()`/the Add form's submit handler/the
+   Edit modal's submit handler to call it instead of the local functions,
+   mark the old client-side write block as DEAD CODE (same banner as
+   bikes.html got). Same scope decision as bikes.html: keep the existing
+   blocking UX (Connecting/Saving stages), don't build the full
+   accounts.html-style optimistic-UI layer in this pass.
+3. Repeat this whole Phase 2 process for deposits.html, add-bikes.html,
+   customers.html, per the rollout plan's suggested order -- re-verify
+   each page's actual write-surface size first, the way this page's
+   inventory pass corrected an over-estimate, rather than trusting the
+   old 2026-08-16 counts.
+4. Phase 3 (make nav.js's failure badge page-aware) is still untouched.
+
+**Files changed this slice:** `lib/contractWrites.js` (NEW),
+`api/contract/write.js` (NEW). `contract.html` itself untouched.
+
 ## 🚧 Phase 2, contract.html write layer: INVENTORY/DESIGN DONE, NO CODE
 ## WRITTEN YET (2026-08-17)
 
