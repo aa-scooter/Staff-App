@@ -155,6 +155,40 @@
     '    white-space:nowrap;\n' +
     '  }\n' +
     '  .topbar .sync-badge:hover{ background:#A82828; }\n' +
+    // Shared "Saving..." strip (17/08/2026) -- sits right under the topbar
+    // on EVERY page, not just bikes.html. bikes.html has its own in-page
+    // save-pipeline engine (queue/keepalive/retry-on-409, see that file's
+    // own comments) which is the real, live-accurate source of truth while
+    // you're actually standing on that page -- but a normal multi-page
+    // site tears the whole page's script down the moment you navigate
+    // anywhere else, so a save that's still genuinely in flight (kept
+    // alive server-side by fetch's keepalive flag) would otherwise become
+    // invisible the instant you left. This strip is the fix: it just polls
+    // the same localStorage key that engine already writes to
+    // (aaBikesPendingSaves) the instant something is queued, from
+    // whichever page happens to be open. Same "read shared localStorage,
+    // fail quiet" approach as the sync-badge above, just polled instead of
+    // read once, and rendered as a full-width strip instead of a pill,
+    // to match bikes.html's own original design almost exactly.
+    '  .save-strip{\n' +
+    '    display:none;\n' +
+    '    align-items:center;\n' +
+    '    justify-content:center;\n' +
+    '    gap:8px;\n' +
+    '    padding:9px 14px;\n' +
+    '    background:#FFF3E6;\n' +
+    '    color:#B36A2E;\n' +
+    '    border-bottom:1px solid #F3D9B8;\n' +
+    "    font-family:'Barlow Condensed',sans-serif;\n" +
+    '    font-weight:700;\n' +
+    '    font-size:13.5px;\n' +
+    '    letter-spacing:.02em;\n' +
+    '    text-align:center;\n' +
+    '    text-decoration:none;\n' +
+    '    cursor:pointer;\n' +
+    '  }\n' +
+    '  .save-strip.show{ display:flex; }\n' +
+    '  .save-strip:active{ opacity:.85; }\n' +
     '  .topbar .bug-link{\n' +
     '    all:unset;\n' + // several pages define a bare `button{...}` reset for their
                          // own form buttons (customers.html, contract.html, parts.html,
@@ -468,6 +502,40 @@
     } catch (e) { return ''; } // corrupt/inaccessible storage -- fail quiet, same as everything else here
   }
 
+  // Reads bikes.html's save-pipeline engine state straight out of
+  // localStorage (aaBikesPendingSaves -- see that file's
+  // persistPendingSaves()/bkQueue) and returns how many saves are
+  // currently running/queued there, 0 if none or unreadable. Deliberately
+  // does NOT try to distinguish "running" vs "queued" here (that nuance
+  // only matters while actually on bikes.html, where the live in-memory
+  // bkQueue drives it precisely) -- from anywhere else, "something is
+  // still saving" is the whole story that matters.
+  function pendingBikesSaveCount() {
+    try {
+      var raw = localStorage.getItem('aaBikesPendingSaves');
+      if (!raw) return 0;
+      var arr = JSON.parse(raw);
+      return Array.isArray(arr) ? arr.length : 0;
+    } catch (e) { return 0; } // corrupt/inaccessible storage -- fail quiet, same as syncBadgeHtml above
+  }
+
+  // Keeps the shared "Saving..." strip in step with localStorage --
+  // called once at render time and then polled (see the setInterval in
+  // renderTopbar below), so it stays reasonably fresh while sitting on a
+  // DIFFERENT page from the one that queued the save, not just at the
+  // moment this page happened to load. Deliberately only updates this one
+  // element in place rather than re-running renderTopbar() on every tick
+  // -- re-injecting the whole topbar's outerHTML on a timer would reset
+  // any open dropdown/modal state for no reason.
+  function refreshSaveStrip() {
+    var el = document.getElementById('saveStrip');
+    if (!el) return;
+    var n = pendingBikesSaveCount();
+    if (!n) { el.classList.remove('show'); return; }
+    el.textContent = n === 1 ? '● Saving…' : '● Saving… (' + (n - 1) + ' queued)';
+    el.classList.add('show');
+  }
+
   function renderTopbar() {
     var mount = document.getElementById('topbar-mount');
     if (!mount) return; // page opted out of the shared header
@@ -507,10 +575,26 @@
       '    ' + buildLinksHtml() + '\n' +
       '    ' + settingsHtml + '\n' +
       '  </nav>\n' +
-      '</div>';
+      '</div>\n' +
+      // Full-width strip, sibling of (not nested inside) .topbar -- see
+      // pendingBikesSaveCount()/refreshSaveStrip() above for what drives
+      // it. Links to bikes.html, the one place a save can currently be
+      // reviewed/retried if it ever needs a person's attention -- see
+      // bikes.html's own optOverlay review panel.
+      '<a class="save-strip" id="saveStrip" href="bikes.html" title="A bikes.html save is still in progress -- tap to go there"></a>';
 
     initBugsWidget();
     initNavDropdowns();
+
+    refreshSaveStrip();
+    // Polled (not just read once, unlike syncBadgeHtml's failed-save pill
+    // above) so the strip stays reasonably fresh while sitting on a
+    // DIFFERENT page from whichever one queued the save -- that page's own
+    // script (the only thing that would otherwise resolve/clear it) is
+    // gone the moment you navigate away. 2.5s is frequent enough to feel
+    // live without hammering localStorage. Cleared and restarted is never
+    // needed -- renderTopbar() only ever runs once per page load.
+    setInterval(refreshSaveStrip, 2500);
   }
 
   // =====================================================================

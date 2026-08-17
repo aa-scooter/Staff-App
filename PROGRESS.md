@@ -6,6 +6,86 @@ This exists because work on this project gets picked up across multiple
 Claude sessions/accounts with no shared memory between them — this file is
 the handoff.
 
+## 🔧 nav.js: "Saving..." strip moved into the SHARED header, visible from
+## any page -- CODED AND TEST-GREEN, NOT YET DEPLOYED (2026-08-17, later
+## same day as the bikes.html save-pipeline engine entry just below)
+
+**Why:** the bikes.html save-pipeline engine entry below originally put its
+"Saving…" strip directly in bikes.html's own page markup (`#optStrip`).
+Anton flagged this after seeing it live: it only helped while actually
+standing on bikes.html -- navigate to accounts.html mid-save (a completely
+normal thing to do, since the save now runs in the background) and the
+indicator just vanished, even though the save was often still genuinely in
+flight server-side. Fix: moved the strip into nav.js's shared topbar
+(`.save-strip`/`#saveStrip`, mirroring the existing `.sync-badge` pattern
+already there for accounts.html's failed-save pill) so it shows on EVERY
+page, reading the same `aaBikesPendingSaves` localStorage key bikes.html's
+engine already writes to (see that entry's own `persistPendingSaves()`).
+Polled every 2.5s (`setInterval`) rather than read once, so it stays
+reasonably fresh even while sitting on a totally different page from the
+one that queued the save -- that page's own script (the only thing that
+would otherwise resolve/clear the indicator) is gone the moment you
+navigate away. Clicking it links to bikes.html, the only page with an
+actual review/retry panel today.
+
+bikes.html's own page-local `#optStrip`/`.opt-strip` (element, CSS,
+`bkRefreshUi()`'s DOM manipulation of it) was removed rather than kept
+alongside the new shared one -- keeping both would have shown two "Saving…"
+strips stacked on top of each other on bikes.html specifically. The
+per-row "Saving…" badges and the failure banner/review overlay stay
+exactly where they were (page-local, live/in-memory-accurate) -- only the
+header progress indicator moved.
+
+**Also confirmed with Anton (a question he asked, not a bug found):**
+whether accounts.html would reflect a bikes.html transaction (e.g. an
+extend, which logs income) while that save is still in the queue. Answer,
+traced through the actual code rather than assumed: the write to Drive is
+fully synchronous within bikes.html's single `POST /api/bikes/write`
+request (`keepalive:true` only keeps the *client-side* network request
+alive across navigation -- it has no bearing on server-side ordering,
+which was already fully sequential/awaited). accounts.html's own
+stale-while-revalidate read cache (Phase 1) has NO TTL/skip logic -- every
+page load always fires a fresh network fetch and re-renders immediately
+when it resolves. So the only real risk window is landing on accounts.html
+while the bikes.html write is still actively processing server-side (can
+take several seconds for a multi-step action) and accounts.html's own
+fetch happening to resolve first -- not stuck, just needs a reload/revisit
+a few seconds later, since nothing caches around it. No live cross-page
+push exists (accounts.html only reflects reality whenever IT happens to
+load/reload) -- that's the honest limitation, not a bug. Anton's call:
+leave as-is for now, not worth solving today.
+
+**Testing:** new `frontend/nav-save-strip.test.js`, 15 assertions. Unlike
+`dispatch.test.js`/`save-queue.test.js` (which extract and call individual
+functions), nav.js is one un-exported IIFE with no globals to grab, so this
+loads the whole real file into jsdom and drives it through its actual
+public surface -- the DOM it produces -- with `fetch` mocked (nav.js's own
+auth-gate fires one on load) and `setInterval` intercepted so the poll can
+be advanced manually rather than the test actually waiting 2.5s. Covers:
+hidden with nothing pending, correct text for 1 vs 2 pending (the "(1
+queued)" suffix), the `href="bikes.html"` link, picking up a NEWLY queued
+save on the next poll tick without a reload, clearing itself on the next
+tick once the save resolves, and failing quiet (no throw, stays hidden) on
+a corrupted localStorage value. Combined with every pre-existing suite:
+**269/269 assertions green** across 9 files (adds
+`frontend/nav-save-strip.test.js`'s 15 to the 254 from the entry below).
+
+**Not yet done:**
+1. Deliver via the workspace folder, push (zero risk -- this Vercel copy's
+   `scriptUrl`/API routes are intentionally disconnected in this sandbox,
+   see this file's header / project `CLAUDE.md`).
+2. When the SAME optimistic-UI treatment is built for contract.html/
+   deposits.html/add-bikes.html/customers.html (see the entry below), their
+   own pending-save keys should get added to nav.js's strip too (currently
+   it only checks `aaBikesPendingSaves`) -- Anton wants to talk through the
+   rollout to the other pages once this piece was confirmed working, which
+   this entry does.
+3. GLOBAL (cross-page) cap-of-2 write-button gray-out is still backlogged,
+   unchanged from the entry below.
+4. Phase 3 (nav.js's FAILURE badge, `.sync-badge`, being page-aware) is a
+   separate, still-untouched item -- not the same thing as this entry,
+   which only moved the IN-PROGRESS indicator.
+
 ## 🔧 bikes.html: FULL optimistic-UI save-pipeline engine (per-row saving
 ## state, header progress strip, 2-save cap, keepalive, auto-retry-on-409,
 ## localStorage crash/nav recovery) -- all 7 write actions rewired, CODED

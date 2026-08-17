@@ -315,14 +315,12 @@
   }
   @keyframes opt-spin{ to{ transform:rotate(360deg); } }
 
-  .opt-strip{
-    position:sticky; top:0; z-index:41; background:#FFF3E6; color:#B36A2E;
-    border-bottom:1px solid #F3D9B8; font-family:'Barlow Condensed',sans-serif; font-weight:700;
-    font-size:13.5px; letter-spacing:.02em; display:none; align-items:center; justify-content:center;
-    gap:8px; padding:9px 14px; cursor:pointer; text-align:center;
-  }
-  .opt-strip.show{ display:flex; }
-  .opt-strip:active{ opacity:.85; }
+  /* .opt-strip (the in-page "Saving..." header strip) moved to nav.js's
+  shared topbar on 17/08/2026 (.save-strip there) so it stays visible on
+  EVERY page, not just this one, while a save queued here is still in
+  flight -- see nav.js's own comment. Removed from here rather than kept
+  as a second, page-local copy to avoid showing two "Saving..." strips
+  stacked on top of each other on this page specifically. */
 
   .opt-banner{
     position:sticky; top:0; z-index:40; background:#FCEBEB; color:#C53030;
@@ -368,7 +366,6 @@
 
 <div id="topbar-mount"></div>
 
-<div class="opt-strip" id="optStrip"></div>
 <div class="opt-banner" id="optBanner"></div>
 <div class="opt-overlay" id="optOverlay"><div class="opt-panel">
   <h3>Changes that didn't save</h3>
@@ -3353,15 +3350,10 @@ function restoreUnresolvedSaves() {
 // accounts.html, but for the (non-error) in-progress state -- the actual
 // failure banner is updateFailBanner() below.
 function bkRefreshUi() {
-  const strip = document.getElementById('optStrip');
-  if (strip) {
-    if (bkQueue.length === 0) {
-      strip.classList.remove('show');
-    } else {
-      strip.classList.add('show');
-      strip.textContent = bkQueue.length === 1 ? '● Saving…' : '● Saving… (1 queued)';
-    }
-  }
+  // The header strip itself now lives in nav.js's shared topbar (polls
+  // aaBikesPendingSaves -- see persistPendingSaves() above -- so it works
+  // from any page, not just this one); nothing to update here directly
+  // anymore.
   render();
 }
 
@@ -3446,7 +3438,6 @@ function bkDiscardFailed(id) {
 document.getElementById('optOverlay').addEventListener('click', (e) => { if (e.target.id === 'optOverlay') closeSaveReview(); });
 document.getElementById('optPanelCloseBtn').addEventListener('click', closeSaveReview);
 document.getElementById('optBanner').addEventListener('click', () => openSaveReview());
-document.getElementById('optStrip').addEventListener('click', () => { if (bkFailedItems.size) openSaveReview(); });
 // ================== end save-pipeline engine ==================
 
 // ================== end JSON-backed data layer ==================
