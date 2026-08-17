@@ -6,6 +6,75 @@ This exists because work on this project gets picked up across multiple
 Claude sessions/accounts with no shared memory between them — this file is
 the handoff.
 
+## ↩️ contract.html: "Send Contract + Receipt" reverted back to Web Share —
+## CODED, NOT YET DEPLOYED (2026-08-17)
+
+**What happened:** the download+WhatsApp-Web rework of "Send Contract +
+Receipt" (see this file's "Fixed 3 contract.html bugs" entry above) was
+tested live and wasn't working reliably either -- passport photo still
+404'd (separate, still-open issue -- see below) and the new flow itself
+wasn't landing cleanly. Anton asked to revert this one piece back to how
+it was before ("it was sort of working... just switch it back to the old
+way... we'll deal with it later, it's not important") and deal with the
+passport-photo problem separately.
+
+**What changed, `contract.html` only:** `editSendDocsBtn`'s click handler
+reverted to the Web Share flow -- POSTs `action:'getFilesForShare'` to the
+(now-reconnected) `scriptUrl` with both PDF URLs, Code.gs reads each
+file's real bytes off Drive server-side and returns them as base64
+(`lib/googleDrive.js`/Code.gs's own `getFilesForShareEntry` was never
+touched by the earlier rework -- still fully intact), the browser converts
+each to a `File` via `base64ToFile_` and hands them to
+`navigator.share`/`canShare({files})` so staff can pick WhatsApp from the
+phone's native share sheet and send both as real attachments. Falls back
+to `openDocsFallback_` (open both PDFs as plain tabs) if Web Share isn't
+available/willing to share files on this device (most desktop browsers),
+or if a real share attempt fails for a reason other than the user simply
+cancelling it (AbortError -- not treated as an error). The
+`triggerDriveDownload_`/`extractDriveFileId_`/download-then-open-WhatsApp-
+Web code from the earlier rework is removed entirely, not left dead in
+the file.
+
+**Why this should behave better than it did before EITHER rework:** the
+original flakiness this button had is believed to trace back to
+`scriptUrl` being blank (see this file's own `scriptUrl` comment and the
+"Fixed 3 contract.html bugs" entry's root-cause writeup) -- with a real
+`scriptUrl` now wired up, `getFilesForShare` should actually succeed
+server-side, which it never got the chance to before. Not independently
+re-verified live as of this entry (Anton wants to move on to the passport-
+photo problem first) -- worth a real test on both a phone and desktop
+after this deploys.
+
+**Note, exact original code:** this revert is a faithful reconstruction of
+the described original behavior (Web Share primary path via
+`getFilesForShare` + `File` objects, tab-opening fallback), built by
+reading Code.gs's still-intact `getFilesForShareEntry` for the real
+request/response contract, NOT a byte-for-byte restore of the literal
+original source (git history wasn't consulted for this -- see this
+project's CLAUDE.md rule against running `git` through Claude's own tools).
+Functionally equivalent to the original per this file's own prior HTML
+comment describing it, with a couple of small added touches (button
+disabled + "Preparing…"/spinner while fetching, explicit AbortError
+handling for a cancelled share) that weren't called out as removed in the
+earlier rework's own PROGRESS.md entry, so shouldn't represent a real
+behavior change from before.
+
+**Testing:** `node --check` on both inline `<script>` blocks (both OK).
+Grep confirmed no dangling references to the removed
+`triggerDriveDownload_`/`extractDriveFileId_` functions. Not covered by a
+fresh unit-test harness this pass (no test infrastructure existed for the
+original Web Share version either) -- flagged above for a real live check
+after deploy instead.
+
+**Files changed:** `vercel-site/contract.html` only.
+
+**Still open, separate issue (not touched this pass):** "View Photo of
+Passport" still 404s for at least one contract even after the Drive
+folder-location fix above -- Anton flagged this live right after this
+revert. To investigate next.
+
+---
+
 ## ✅ deposits.html: ported to the save-pipeline engine (5 actions) —
 ## CODED, UNIT-TESTED (27/27), NOT YET DEPLOYED (2026-08-17)
 

@@ -465,19 +465,25 @@
       <button type="button" id="editReceiptBtn">Edit Receipt</button>
       <button type="button" id="editViewChecklistBtn">View Checklist</button>
     </div>
-    <!-- Send Contract + Receipt -- REWORKED 2026-08-17. Was a Web Share API
-         call (navigator.share/canShare with real File objects) so staff
-         could pick WhatsApp from the phone's native share sheet -- replaced
-         because desktop browsers generally don't register WhatsApp as a
-         share target at all, so on desktop this silently fell through to
-         its own fallback (opening both PDFs as plain tabs) every time,
-         which staff couldn't distinguish from a fully broken button. Now
-         does the SAME thing on every device: download both PDFs, then open
-         WhatsApp Web with the customer's chat pre-filled with a message --
-         staff attach the two just-downloaded PDFs themselves from
-         WhatsApp's own attach button. One extra manual tap, but it works
-         identically everywhere instead of depending on OS/browser share
-         support. See editSendDocsBtn's click handler below. -->
+    <!-- Send Contract + Receipt -- pulls both PDFs as real files (via the
+         backend, action:'getFilesForShare') and hands them to the phone's
+         native share sheet (Web Share API) so staff can pick WhatsApp
+         directly and send both as real attachments in one go. Falls back
+         to opening both PDFs as plain tabs when Web Share isn't available
+         or doesn't accept files -- true for most desktop browsers, since
+         WhatsApp generally isn't registered as a share target there even
+         when navigator.share itself exists -- see editSendDocsBtn's click
+         handler below for why: on desktop, staff attach the two opened
+         PDFs by hand from within WhatsApp instead.
+         REVERTED 2026-08-17 back to this Web Share approach (had briefly
+         been replaced with a download+WhatsApp-Web flow that wasn't
+         working reliably either -- see PROGRESS.md's "download+WhatsApp
+         Web" entry -- Anton asked to go back to this version, "it was
+         sort of working"). The original flakiness this button had is
+         believed to trace back to scriptUrl being blank (see this file's
+         own scriptUrl comment), not to Web Share itself -- that's fixed
+         separately now, so this should behave better than it did before
+         either rework. -->
     <div class="head-btn-row" id="editSendDocsRow" style="margin-bottom:14px;">
       <button type="button" id="editSendDocsBtn">Send Contract + Receipt</button>
     </div>
@@ -4207,50 +4213,49 @@ receiptConfirmBtn.addEventListener('click', async () => {
 });
 
 /* ---------------- Send Contract + Receipt ---------------- */
+// REVERTED 2026-08-17 back to the Web Share flow (see the HTML comment
+// above this button for the full "why" -- the download+WhatsApp-Web
+// rework that briefly replaced this wasn't working reliably either, and
+// Anton asked to go back to this version).
+//
 // Converts a base64 string (as returned by the backend's
 // action:'getFilesForShare') into a real File object the Web Share API
 // can attach.
-// Pulls the Drive file id out of a "view" link (the format
-// pdfFile.getUrl() produces in Code.gs, e.g.
-// https://drive.google.com/file/d/<id>/view?usp=drivesdk) so it can be
-// turned into a direct-download link instead. Returns null if the URL
-// doesn't match (defensive -- callers already check the url is present).
-function extractDriveFileId_(url) {
-  const m = /\/file\/d\/([a-zA-Z0-9_-]+)/.exec(url || '');
-  return m ? m[1] : null;
+function base64ToFile_(base64, filename, mimeType) {
+  const byteChars = atob(base64);
+  const byteNumbers = new Array(byteChars.length);
+  for (let i = 0; i < byteChars.length; i++) byteNumbers[i] = byteChars.charCodeAt(i);
+  const byteArray = new Uint8Array(byteNumbers);
+  return new File([byteArray], filename, { type: mimeType || 'application/pdf' });
 }
 
-// Triggers a real download (not a Drive preview tab) via a throwaway <a
-// download> click rather than window.open -- anchor clicks don't consume
-// a popup-blocker "slot" the way window.open does, which matters here
-// since editSendDocsBtn below fires two of these AND a window.open (for
-// WhatsApp) from one click. drive.google.com/uc?export=download forces a
-// Content-Disposition:attachment response as long as the file is shared
-// "Anyone with link" -- already true for every contract/receipt PDF (see
-// the setSharing(...VIEW) calls in Code.gs).
-function triggerDriveDownload_(url) {
-  const id = extractDriveFileId_(url);
-  if (!id) return;
-  const a = document.createElement('a');
-  a.href = 'https://drive.google.com/uc?export=download&id=' + id;
-  a.rel = 'noopener';
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
+// Fallback for whenever Web Share isn't usable here -- most desktop
+// browsers (navigator.share/canShare either don't exist, or canShare
+// returns false for a files-share on this device), or a real share
+// attempt that failed for some reason other than the user cancelling it.
+// Just opens both PDFs as plain tabs so staff can still get to them, even
+// though there's no way to hand them straight to WhatsApp from here.
+function openDocsFallback_(contractUrl, receiptUrl) {
+  if (contractUrl) window.open(contractUrl, '_blank', 'noopener');
+  if (receiptUrl) window.open(receiptUrl, '_blank', 'noopener');
 }
 
-// Click handler -- REWORKED 2026-08-17 (see the HTML comment above this
-// button for the full "why"). Downloads both PDFs, then opens WhatsApp Web
-// with the customer's chat pre-filled with a message -- staff attach the
-// two just-downloaded PDFs themselves via WhatsApp's own attach button.
-// Same flow on every device, unlike the old Web Share version. Still does
-// NOT try to generate either document on the fly if missing -- the
-// contract could be regenerated silently, but the receipt can't be (Edit
-// Receipt needs amounts typed in by hand), and having the same button
-// silently do one but not the other would be a confusing half-measure. So:
-// if either is missing, say exactly which one and stop.
+// Click handler. Pulls both PDFs as real bytes from the backend
+// (action:'getFilesForShare', which reads them straight off Drive
+// server-side -- see that action's own comment in Code.gs), converts them
+// to File objects, and hands them to navigator.share so staff can pick
+// WhatsApp from the phone's native share sheet and send both as real
+// attachments in one go. Falls back to openDocsFallback_ (open both PDFs
+// as tabs) if Web Share isn't available, isn't willing to share files on
+// this device, or the share itself fails for a reason other than the user
+// simply cancelling the share sheet (AbortError -- not treated as an
+// error). Still does NOT try to generate either document on the fly if
+// missing -- the contract could be regenerated silently, but the receipt
+// can't be (Edit Receipt needs amounts typed in by hand), and having the
+// same button silently do one but not the other would be a confusing
+// half-measure. So: if either is missing, say exactly which one and stop.
 const editSendDocsBtn = document.getElementById('editSendDocsBtn');
-editSendDocsBtn.addEventListener('click', () => {
+editSendDocsBtn.addEventListener('click', async () => {
   if (!currentEditRecord) return;
   editStatusBox.className = 'status';
   editStatusBox.textContent = '';
@@ -4264,23 +4269,58 @@ editSendDocsBtn.addEventListener('click', () => {
     return;
   }
 
-  const digits = (currentEditRecord.number || '').toString().replace(/\D/g, '');
-  if (!digits) {
-    editStatusBox.textContent = 'Cannot send yet -- this contract has no phone number on file.';
-    editStatusBox.className = 'status err';
-    return;
+  const contractUrl = currentEditRecord.contractPdfUrl;
+  const receiptUrl = currentEditRecord.receiptPdfUrl;
+  const originalText = editSendDocsBtn.textContent;
+  editSendDocsBtn.disabled = true;
+  editSendDocsBtn.textContent = 'Preparing…';
+  editStatusBox.innerHTML = '<span class="status-spinner"></span><span>Fetching files…</span>';
+  editStatusBox.className = 'status progress';
+
+  try {
+    const res = await fetch(scriptUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ action: 'getFilesForShare', fileUrls: [contractUrl, receiptUrl] })
+    });
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error || 'Unknown error');
+
+    const files = (data.files || []).map(f => base64ToFile_(f.base64, f.filename, f.mimeType));
+
+    if (navigator.canShare && navigator.canShare({ files })) {
+      try {
+        await navigator.share({
+          files,
+          title: 'Contract + Receipt',
+          text: 'Contract and receipt from AA Scooters.'
+        });
+        editStatusBox.textContent = 'Shared.';
+        editStatusBox.className = 'status ok';
+      } catch (shareErr) {
+        if (shareErr && shareErr.name === 'AbortError') {
+          // Staff cancelled the share sheet themselves -- not a failure.
+          editStatusBox.textContent = '';
+          editStatusBox.className = 'status';
+        } else {
+          openDocsFallback_(contractUrl, receiptUrl);
+          editStatusBox.textContent = 'Could not share directly, so opened both PDFs as tabs instead -- attach them from there.';
+          editStatusBox.className = 'status warn';
+        }
+      }
+    } else {
+      openDocsFallback_(contractUrl, receiptUrl);
+      editStatusBox.textContent = 'Opened both PDFs as tabs -- attach them from there (this device/browser can\'t share files directly).';
+      editStatusBox.className = 'status warn';
+    }
+  } catch (err) {
+    openDocsFallback_(contractUrl, receiptUrl);
+    editStatusBox.textContent = 'Could not fetch the files to share (' + err.message + ') -- opened both PDFs as tabs instead.';
+    editStatusBox.className = 'status warn';
+  } finally {
+    editSendDocsBtn.disabled = false;
+    editSendDocsBtn.textContent = originalText;
   }
-
-  triggerDriveDownload_(currentEditRecord.contractPdfUrl);
-  triggerDriveDownload_(currentEditRecord.receiptPdfUrl);
-
-  const firstName = (currentEditRecord.name || 'there').toString().trim().split(/\s+/)[0];
-  const message = 'Hi ' + firstName + ', here is your contract and receipt from AA Scooters.';
-  const waUrl = 'https://web.whatsapp.com/send?phone=' + encodeURIComponent(digits) + '&text=' + encodeURIComponent(message);
-  window.open(waUrl, '_blank', 'noopener');
-
-  editStatusBox.textContent = 'Contract and receipt downloaded -- attach them in the WhatsApp chat that just opened.';
-  editStatusBox.className = 'status ok';
 });
 
 /* ---------------- View Checklist ---------------- */
@@ -4884,8 +4924,18 @@ form.addEventListener('submit', (e) => {
   helmetNoneCheckbox.checked = false;
   rerenderHelmetLines();
   setDefaultsToNow();
-  statusBox.textContent = '';
-  statusBox.className = 'status';
+  // Show a "Saving…"/"Queued…" indicator immediately (mirrors the
+  // opt-row-badge convention used everywhere else in this file) instead of
+  // leaving statusBox blank -- previously it just went empty here and
+  // stayed that way until onAllSuccess overwrote it, so a slow save looked
+  // like nothing was happening. ctQueue.length === 0 (checked BEFORE
+  // ctEnqueue below) means this item starts running right away; otherwise
+  // it's sitting behind an already-in-flight save (MAX_QUEUE = 2).
+  const willRunImmediately = ctQueue.length === 0;
+  statusBox.className = 'status progress';
+  statusBox.innerHTML = willRunImmediately
+    ? '<span class="status-spinner"></span><span>Saving…</span>'
+    : '<span class="status-spinner"></span><span>Queued…</span>';
 
   ctEnqueue({
     label,
