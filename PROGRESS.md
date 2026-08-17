@@ -6,6 +6,122 @@ This exists because work on this project gets picked up across multiple
 Claude sessions/accounts with no shared memory between them — this file is
 the handoff.
 
+## 🚧 Phase 2, contract.html write layer: INVENTORY/DESIGN DONE, NO CODE
+## WRITTEN YET (2026-08-17)
+
+**What this is:** the write-action inventory pass for contract.html, the
+next page in the rollout's suggested order (bikes.html → **contract.html**
+→ deposits.html → add-bikes.html → customers.html). Same first step
+bikes.html's own rollout started with -- read the whole page's write
+surface before writing any server-side code, so the port that follows is
+a mechanical byte-for-byte translation, not a redesign.
+
+**Scope correction vs. the original 2026-08-16 count:** that entry counted
+contract.html at "16" write-shaped functions, the largest of any
+remaining page. Actually reading the page shows that count mixed two very
+different things together. Only **4 actions are genuinely JSON-backed
+Drive writes** -- the same `fetchSheetWithMeta`/`writeSheetJson` pattern
+every other ported page uses, and the only kind this rollout's server-side
+port applies to:
+- `addContractFromJson` -- the Add-contract form (action:'addContract').
+- `editContractFromJson` -- the Edit modal, Search tab (action:'editContract').
+- `cancelContractFromJson` -- "Yes, cancel it" on a Pending record
+  (action:'cancelContract').
+- `customerIntakeFromJson` -- "Yes, rent it" (`doRent()`), the SAME
+  customer-intake write bikes.html's long-extend and customers.html's Add
+  form use, duplicated here per the per-file convention.
+
+The other ~12 counted functions (`regenerateContract`,
+`findContractDocument`, `generateReceipt`, `getFilesForShare`,
+`findChecklistDocument`, `generateChecklist`, and their call sites) all
+hit `fetch(scriptUrl, ...)` where `scriptUrl` is a literal empty string
+(line 962: `const scriptUrl = ''; // DISCONNECTED: this Vercel copy is
+intentionally not wired to the live backend`). These are Google
+Docs/PDF-template document-generation features (contract PDFs, receipts,
+checklists, file-share links) that were never part of the Drive-JSON
+migration and are a fundamentally different kind of work (Apps Script
+DocumentApp templating, not sheet read-modify-write) -- **explicitly OUT
+OF SCOPE for this rollout**, same as bikes.html's calendar sync was ruled
+out of scope for that page. They're already broken today regardless of
+anything in this pass; porting them would be a separate project.
+
+**One wrinkle `addContractFromJson` has that no bikes.html action did:** a
+best-effort passport-photo upload, POSTed to `/api/contracts/upload` (a
+real, already-connected Vercel endpoint -- NOT a scriptUrl legacy path)
+after the Contract row itself saves successfully. This will need to stay
+a client-side follow-up step after the main `addContract` server
+dispatch succeeds (same shape as bikes.html's `returnDeposit` follow-up
+after `markReturned`), rather than being folded into the server-side
+write itself -- the upload takes a base64 image payload and returns a
+file URL, unrelated to the sheetIO/Drive-JSON write path.
+
+**Another difference from bikes.html worth flagging:** contract.html's
+`customerIntakeFromJson` is NOT the same version as bikes.html's copy --
+it's a NEWER design (dated 15/08/2026 in its own inline comments, fixing
+a real bug Anton hit: reversing a rental's income/cash entries left the
+bike showing "Rented" forever because the Contract-status-flip write was
+never logged at all). Every helper it calls
+(`appendMonthlyIncomeRowFromJson`, `appendCashSheetRowFromJson`,
+`addRentalAmountToBikesSheetFromJson`, `processDepositForPaymentFromJson`,
+`logSecurityDepositFromJson`, `markMatchingContractAsRentedFromJson`,
+`syncContractRowTotalsFromJson`) now returns a `{write: {...}}`
+descriptor instead of independently calling `logTransactionB` itself, and
+`customerIntakeFromJson` collects all of them into ONE combined,
+one-click-reversible transaction-log entry. **This version -- not
+bikes.html's -- is the one to port for contract.html.** Byte-for-byte,
+per the project's own convention (duplicate per page, no shared JS), but
+the two pages' copies have now diverged in a real, meaningful way and
+should not be assumed interchangeable going forward.
+
+**Everything else needed to port these 4 actions was already built once
+for `lib/bikesWrites.js` and can be reused as a direct, verified
+reference** (not copy-pasted blind -- cross-checked byte-for-byte against
+contract.html's own copy of each): `createSheetIO`, the recompute cascade
+(`recomputeCashSheetTotalsB`/`recomputeMonthlySummaryCascadeB`/
+`recomputeCurrentMonthSummaryCascadeB` -- confirmed identical, both
+explicitly "ported verbatim from accounts.html's own copy"),
+`DEPOSIT_CATEGORIES_B`/`DEPOSITS_MONTH_NAMES` (confirmed identical),
+`HEADER_ROWS_B`/`LEDGER_CONTACT_COL_B` (confirmed identical),
+`normalizeNameForContractMatch`/`bikeNamesMatchForTaxLookup` and the
+ledger-note helpers (`parseLedgerTotal`/`formatMoneyForLedgerB`/
+`stripLedgerTotalLineB`/`stripAllTrailingParensAndDealB`) -- all the same
+shape as bikes.html's copies, to be verified line-by-line during the
+actual port rather than assumed. Contract.html-SPECIFIC pieces with no
+bikes.html equivalent: `CONTRACT_KEYS_B` (36-column layout array),
+`buildContractCoreFieldsB`/`buildContractTailFieldsB` (shared field
+derivation between add/edit), `syncContractDealNoteB` (the Deal-flag
+sidecar note on `Contract_notes`, column B -- distinct from the
+ledger-note sidecar on `customer_notes`).
+
+**Planned slice order (smallest/most self-contained first, same strategy
+as bikes.html's rollout):**
+1. `cancelContractFromJson` -- simplest possible action: one status-flip
+   write, guarded by "must currently be Pending", no money/ledger math at
+   all. No clientTxnId guard needed (same reasoning as
+   `closeBikeForExtend` in bikes.html -- flipping to "Canceled" again on
+   a retry is harmless... **actually needs a closer look**: unlike
+   `closeBikeForExtend`, this one THROWS if the status isn't "Pending"
+   anymore, so a naive retry after a dropped connection where the first
+   attempt actually landed would incorrectly report failure instead of
+   succeeding silently -- worth deciding during implementation whether
+   that's acceptable (matches today's behavior exactly, not a regression)
+   or worth a small idempotency improvement.
+2. `addContractFromJson` -- the Add form, plus the passport-photo
+   follow-up wrinkle noted above.
+3. `editContractFromJson` -- similar shape to `addContractFromJson`,
+   reuses the same `buildContractCoreFieldsB`/`buildContractTailFieldsB`.
+4. `customerIntakeFromJson` (`doRent()`) -- the big one, last, same
+   reasoning as bikes.html doing its return-family before its
+   long-extension pair: get the simpler, more self-contained actions
+   proven first. This is also the one place a `clientTxnId` guard clearly
+   matters -- `doRent()`'s own comment describes a REAL double-booking
+   Anton hit from exactly this kind of dropped-connection retry.
+
+**Not yet done:** no code written yet -- `lib/contractWrites.js` and
+`api/contract/write.js` don't exist. This entry is the handoff if picked
+up in a fresh session: read this whole entry, then start with
+`cancelContractFromJson` per the slice order above.
+
 ## 🔧 Phase 2, bikes.html: FRONTEND NOW WIRED TO THE SINGLE-DISPATCH
 ## SERVER ENDPOINT FOR ALL 7 ACTIONS -- LIVE-BEHAVIOR CHANGE, NOT YET
 ## DEPLOYED (2026-08-17, later same day as the "all 7 actions ported"
