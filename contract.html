@@ -1920,10 +1920,16 @@ async function addContractFromJson(data) {
   return responsePayload;
 }
 
-// ---- action:'editContract' equivalent. data: see the Edit form's payload
-// (editForm.addEventListener('submit', ...) further down) -- includes
-// rowNumber, the Contract sheet's actual 1-indexed row number. ----
-async function editContractFromJson(data) {
+// DEAD CODE -- this was the local client-side write editForm's submit
+// handler used to call directly, before the 2026-08-17 rewiring onto the
+// save-pipeline engine (see that handler further down). The live path now
+// posts action:'editContract' to /api/contract/write instead. Kept only
+// for an easy side-by-side comparison or revert, unreferenced -- same
+// convention as this file's __deadCode_oldDoRent. Safe to delete once the
+// rewiring has been confirmed solid live. data: see the Edit form's
+// payload (editForm.addEventListener('submit', ...) further down) --
+// includes rowNumber, the Contract sheet's actual 1-indexed row number. ----
+async function __deadCode_oldEditContractFromJson(data) {
   const rowNumber = Math.round(Number(data.rowNumber));
   if (!rowNumber || rowNumber < 2) throw new Error('Invalid contract row number.');
   const { rows, modifiedTime } = await fetchSheetWithMeta('Contract');
@@ -3506,14 +3512,17 @@ async function __deadCode_oldDoRent() {
 // grep before deleting), and the Pending list shows a "Saving…" badge on
 // this row while it's in flight (see renderPendingList above).
 //
-// Deliberately NO clientTxnId here -- cancelContract has no idempotency
-// guard server-side either (see lib/contractWrites.js's header comment):
-// it throws if the record isn't still Pending, so a naive retry after an
-// attempt that actually already landed would show a confusing error
-// instead of silently no-op'ing. That's a real but low-stakes,
-// PRE-EXISTING gap (identical to what the old blocking version already
-// did on a genuine double-submit) -- carried forward unchanged by this
-// wiring, not introduced by it.
+// No clientTxnId here -- cancelContract still has no marker-sidecar
+// idempotency guard server-side (see lib/contractWrites.js's header
+// comment). It USED TO throw on any resubmit once the record was no
+// longer Pending, which -- combined with restoreUnresolvedSaves()
+// recovering a leftover localStorage entry after e.g. a page reload
+// mid-flight -- could land an already-succeeded cancel in the failed-saves
+// panel with a Retry button that could never succeed (real bug, hit live
+// 2026-08-17). FIXED server-side: cancelContractFromJson now treats
+// "already Canceled" as the idempotent no-op success it actually is, and
+// only still throws for a genuinely DIFFERENT non-Pending status (e.g.
+// "Rented" -- a real conflict worth surfacing).
 function doCancel() {
   if (!currentPendingRecord) return;
   if (ctQueueFull()) { alert('2 saves are already in progress — wait for one to finish before starting another.'); return; }
@@ -4600,18 +4609,28 @@ function closeEditModal() {
   currentEditRecord = null;
 }
 
-editForm.addEventListener('submit', async (e) => {
+// REWIRED 2026-08-17 onto the save-pipeline engine -- same pattern as
+// doCancel/doRent above: the modal closes IMMEDIATELY (optimistic), the
+// write runs in the background against the new single-dispatch
+// /api/contract/write endpoint (action:'editContract') instead of the old
+// local editContractFromJson (now dead code for this action, left in
+// place -- grep before deleting), and the Search-results list shows a
+// "Saving…"/"Queued…" badge on this row while it's in flight (see
+// renderResults below).
+//
+// No clientTxnId here -- editContract has no idempotency guard
+// server-side either, DELIBERATELY: it's an unconditional overwrite of
+// the same columns with the same values every time, so a retry converges
+// to the same end state on its own (see lib/contractWrites.js's file
+// header comment) -- no guard needed for that to be safe.
+editForm.addEventListener('submit', (e) => {
   e.preventDefault();
   if (!currentEditRecord) return;
-
-  editStatusBox.className = 'status';
-  editSubmitBtn.disabled = true;
-  editSubmitBtn.textContent = 'Saving…';
+  if (ctQueueFull()) { alert('2 saves are already in progress — wait for one to finish before starting another.'); return; }
 
   const baseContact = e_contact.value === 'other' ? e_contactOther.value.trim() : e_contact.value;
 
   const payload = {
-    action: 'editContract',
     rowNumber: currentEditRecord.rowNumber,
     name: document.getElementById('e_name').value.trim(),
     nationality: document.getElementById('e_nationality').value.trim(),
@@ -4651,24 +4670,20 @@ editForm.addEventListener('submit', async (e) => {
     helmetNone: editHelmetNoneCheckbox.checked
   };
 
-  try {
-    const data = await editContractFromJson(payload); // DISCONNECTED: writes to the static data/ JSON export instead of the live scriptUrl (see project CLAUDE.md)
-    if (!data.success) throw new Error(data.error || 'Unknown error');
-    editStatusBox.textContent = data.warning ? ('Saved, but: ' + data.warning) : 'Contract updated.';
-    editStatusBox.className = data.warning ? 'status warn' : 'status ok';
-    sheetRows = null;
-    rowsPromise = null;
-    clearContractRowsCache();
-    await loadRows();
-    renderResults();
-    setTimeout(closeEditModal, 700);
-  } catch (err) {
-    editStatusBox.textContent = 'Could not save: ' + err.message;
-    editStatusBox.className = 'status err';
-  } finally {
-    editSubmitBtn.disabled = false;
-    editSubmitBtn.textContent = 'Save changes';
-  }
+  const rowNumber = currentEditRecord.rowNumber;
+  const label = (payload.name ? payload.name + ' — ' : '') + 'Save changes';
+
+  closeEditModal();
+
+  ctEnqueue({
+    label,
+    rows: [rowNumber],
+    requests: [{ action: 'editContract', payload }],
+    onAllSuccess: (results) => {
+      if (results[0] && results[0].warning) alert('Saved, but: ' + results[0].warning);
+      ctReloadAndRerender();
+    }
+  });
 });
 
 // ---- Reads a File object (e.g. from a <input type="file">) as raw
@@ -6050,7 +6065,26 @@ function renderResults() {
 
   const pageMatches = matches.slice(0, 60);
 
-  box.innerHTML = pageMatches.map(r => `
+  box.innerHTML = pageMatches.map(r => {
+    // This row has an in-flight/queued background save (editContract, via
+    // the save-pipeline engine above) -- show a small badge instead of the
+    // normal card content, same treatment renderPendingList gives a
+    // mid-save row (and bikes.html's renterActionsHtml()/bikeCardHtml()
+    // before that). opt-row-pending also sets pointer-events:none, but the
+    // click-handler loop below skips attaching a handler to these rows
+    // too, belt-and-suspenders against reopening the Edit modal on a row
+    // that's already mid-write.
+    const pendingHere = pendingRowSaves.get(r.rowNumber);
+    if (pendingHere) {
+      const isRunning = pendingHere.status === 'running';
+      return `
+        <div class="result-card pending-item opt-row-pending">
+          <div class="rc-title">${r.name || '—'} — ${r.bikeModel || '—'}</div>
+          <span class="opt-row-badge${isRunning ? '' : ' queued'}">${isRunning ? '<span class="opt-spinner"></span> Saving…' : 'Queued…'}</span>
+        </div>
+      `;
+    }
+    return `
     <div class="result-card clickable">
       <div class="rc-title">${highlight(r.name, vals.name)} — ${highlight(r.bikeModel, vals.bikeModel)}</div>
       <div class="rc-row"><b>Status:</b> ${r.status || '—'}</div>
@@ -6063,11 +6097,14 @@ function renderResults() {
       <div class="rc-row"><b>Deposit:</b> ${r.deposit || '—'}${(r.deposit && r.deposit.toLowerCase() !== 'passport' && r.depositAmount) ? ' (' + (r.depositCurrency ? r.depositAmount + ' ' + r.depositCurrency : '฿' + r.depositAmount) + ')' : ''}</div>
       <div class="rc-row"><b>Delivery fee:</b> ${r.deliveryFee ? '฿' + r.deliveryFee : '—'}</div>
     </div>
-  `).join('');
+  `;
+  }).join('');
 
   // Click any result to edit it -- covers every Contract-sheet field,
   // including status. See openEditModal / the editForm submit handler.
+  // Skips rows that are already mid-save (badge shown above instead).
   Array.from(box.querySelectorAll('.result-card')).forEach((el, i) => {
+    if (pendingRowSaves.has(pageMatches[i].rowNumber)) return;
     el.addEventListener('click', () => openEditModal(pageMatches[i]));
   });
 }
