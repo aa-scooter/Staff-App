@@ -7,12 +7,13 @@
 // Same withDrive guard, same ConflictError -> 409 mapping, same
 // setSessionCookie-on-change pattern every other /api/* route here uses.
 //
-// STATUS (2026-08-17): only the 'swapBike' action is implemented in
-// lib/bikesWrites.js so far -- see that file's header comment and
-// PROGRESS.md for the full traced action inventory and rollout plan.
-// bikes.html's own frontend does NOT call this endpoint yet -- it is
-// net-new and unreferenced, so its mere existence changes nothing about
-// how bikes.html behaves today.
+// STATUS (2026-08-17): 4 of bikes.html's 7 actions are implemented in
+// lib/bikesWrites.js so far (swapBike, markReturned, earlyReturnBike,
+// returnDeposit) -- see that file's header comment and PROGRESS.md for
+// the full traced action inventory and rollout plan. bikes.html's own
+// frontend does NOT call this endpoint yet -- it is net-new and
+// unreferenced, so its mere existence changes nothing about how
+// bikes.html behaves today.
 const { withDrive } = require('../../lib/apiAuth');
 const { ensureAppFolder, ConflictError } = require('../../lib/googleDrive');
 const { setSessionCookie } = require('../../lib/session');

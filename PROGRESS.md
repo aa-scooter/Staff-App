@@ -6,6 +6,94 @@ This exists because work on this project gets picked up across multiple
 Claude sessions/accounts with no shared memory between them — this file is
 the handoff.
 
+## 🔧 Phase 2, bikes.html write layer: RETURN FAMILY ('markReturned',
+## 'earlyReturnBike', 'returnDeposit') PORTED AND TEST-GREEN, NOT YET
+## DEPLOYED, NOT YET WIRED INTO THE FRONTEND (2026-08-17, later same day
+## as the swapBike entry just below)
+
+**What this is:** the second slice of the write-layer port -- 3 more of
+bikes.html's 7 actions, added to the same `lib/bikesWrites.js` /
+`api/bikes/write.js` from the swap entry below (no new files this time).
+Grouped together deliberately rather than done as 3 separate slices:
+bikes.html's own `confirmReturn()` always fires exactly ONE of
+`markReturned`/`earlyReturnBike` (never both), then SEPARATELY fires
+`returnDeposit` as a best-effort follow-up whenever a security deposit was
+matched on the Return popup -- they're one user-facing flow (clicking
+"Confirm" on a return) even though they're 2-3 separate backend calls.
+**bikes.html's own frontend is still completely untouched** -- same as
+the swap entry, these are additions to files nothing else references yet.
+
+**What got ported, byte-for-byte from bikes.html's own copies:**
+`performMarkReturned` (+ `flipMatchingContractStatus`), `earlyReturnBikeFromJson`
+(+ `appendEarlyReturnRefundToLedgerFromJson`, `appendEarlyReturnRefundIncomeRowFromJson`,
+`addRentalAmountToBikesSheetFromJson` -- the current-month sibling of
+swap's month-parameterized version), and `returnDepositFromJson` (+
+`setBikeSplitsNoteFromJsonB`, `appendCashExpenseRowFromJson`,
+`writeDepositTransferIncomeRowFromJson`, `writeDepositTransferExpenseRowFromJson`,
+`releaseDepositIntoBucketFromJson`, `payDepositOutOfBucketFromJson`, the
+`DEPOSIT_CATEGORIES_B`/`DEPOSIT_CATEGORY_PAID_BY_B` constants, `todayIso`).
+`earlyReturnBikeFromJson`'s write ORDER was preserved exactly as bikes.html
+has it, not just its individual writes -- this matters: the Contract row's
+return-date sync and total-price subtraction both only match a row whose
+status is still "rented", so they run BEFORE the status flip to Returned
+(the fix for a real bug Anton hit 21/07/2026, per bikes.html's own
+comment -- see that file for the full story).
+
+**Idempotency -- ported for 2 of the 3, deliberately NOT for the third:**
+`markReturned` and `earlyReturnBike` both got the same `clientTxnId` guard
+swap did (see the swap entry below for the mechanism) -- for these two the
+marker tags the SAME row being modified rather than a new one, since
+neither action creates a row. This mattered enough to test explicitly for
+`earlyReturnBike` (Test 6 below): a refund is real money, so a retry must
+not double-subtract it. `returnDeposit` did NOT get the same guard -- its
+payload has no customer-row number in it at all (only a deposit-sheet row/
+category), so the same technique doesn't directly apply, and retrofitting
+a different mechanism felt like exactly the kind of "genuine design
+question, not a mechanical copy" the original inventory entry already
+flagged for the chained-call actions. Documented in the code (see
+`returnDepositFromJson`'s own comment) and here rather than silently
+shipped without protection -- bikes.html's own client version has the
+identical gap today, so this is a known pre-existing risk carried
+forward, not a new regression.
+
+**Testing:** same fake-Drive Node harness as the swap entry (`/tmp/bikestest/`
+on the sandbox, scratch, rebuild if picked up again), extended with a
+second test file. 32/32 green across 9 scenarios: markReturned's basic
+success + its idempotency guard (a replayed call doesn't re-touch the
+return date); earlyReturnBike with a 0 refund (behaves exactly like a
+plain return), with a genuine refund paid back by cash (booking total AND
+Contract total both reduced, ledger note gets a refund line, a NEGATIVE
+income row lands on the current month sheet, cash sheet also reduced),
+refund-bigger-than-the-booking validation, and -- the money-critical one
+-- idempotency (Test 6: the exact same refund request submitted twice
+reduces the total price ONCE, not twice, and produces exactly one refund
+income row and one cash entry, not two); returnDeposit clearing a matched
+deposit entry, logging a deduction as income with its bike-split note and
+"bikes" sheet bump, and a cross-method release+payout (deposit held under
+one method, handed back via a different one -- confirms both the release-
+income row and the payout-expense row land correctly, and that the
+release side correctly does NOT touch the cash sheet when released via a
+non-cash method).
+
+**Not yet done, in order (unchanged from the swap entry's list, just 2
+actions closer):**
+1. Deliver via the workspace folder, push (zero risk, nothing live changed).
+2. Port the remaining 3 actions: `updateReturnPickup` (small, standalone),
+   then extend-short (`extendBikeRowFromJson`), then the long-extension
+   pair (`closeBikeForExtendFromJson` + `customerIntakeFromJson` -- still
+   the one with the open "clientTxnId across two sequential dependent
+   writes" design question, now the ONLY remaining action with that
+   shape).
+3. Only once all 7 are ported and individually test-green: the frontend
+   optimistic-UI + idempotency-submission layer in bikes.html itself, THEN
+   its own Playwright-equivalent test batch. Still nothing user-visible
+   changes before this step.
+
+**Files changed:** `lib/bikesWrites.js`, `api/bikes/write.js` (both
+extended, not new this time). `bikes.html` itself: still untouched.
+
+---
+
 ## 🔧 Phase 2, bikes.html write layer: FIRST ACTION ('swapBike') PORTED AND
 ## TEST-GREEN, NOT YET DEPLOYED, NOT YET WIRED INTO THE FRONTEND (2026-08-17)
 
