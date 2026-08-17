@@ -293,11 +293,89 @@
     padding:3px 8px; white-space:nowrap; color:var(--ink);
   }
   .qv-available-year{ color:var(--muted); font-size:10.5px; margin-left:2px; }
+
+  /* ---- Optimistic save/queue UX (17/08/2026) --------------------------
+  Ported from accounts.html's "opt-" prefixed 16/08/2026 pass (banner/
+  overlay/spinner visual language), plus new pieces this page needed that
+  accounts.html didn't: a per-row badge (only the row(s) actually saving
+  gray out -- the rest of the page, including navigating away entirely,
+  stays fully usable) and a header progress strip. See the bkSaveEngine
+  block in the script below for the logic. Prefixed "opt-" for the same
+  reason accounts.html's are -- easy to find/remove as a unit, can't
+  collide with any existing class on this page. ---- */
+  .bike-card.opt-row-pending{ opacity:.58; }
+  .opt-row-badge{
+    display:inline-flex; align-items:center; gap:5px; font-size:11px; font-weight:700;
+    letter-spacing:.04em; text-transform:uppercase; color:#B36A2E;
+  }
+  .opt-row-badge.queued{ color:var(--muted); }
+  .opt-spinner{
+    width:9px; height:9px; border-radius:50%; border:1.5px solid #E7C596; border-top-color:#B36A2E;
+    animation:opt-spin .7s linear infinite; flex-shrink:0;
+  }
+  @keyframes opt-spin{ to{ transform:rotate(360deg); } }
+
+  .opt-strip{
+    position:sticky; top:0; z-index:41; background:#FFF3E6; color:#B36A2E;
+    border-bottom:1px solid #F3D9B8; font-family:'Barlow Condensed',sans-serif; font-weight:700;
+    font-size:13.5px; letter-spacing:.02em; display:none; align-items:center; justify-content:center;
+    gap:8px; padding:9px 14px; cursor:pointer; text-align:center;
+  }
+  .opt-strip.show{ display:flex; }
+  .opt-strip:active{ opacity:.85; }
+
+  .opt-banner{
+    position:sticky; top:0; z-index:40; background:#FCEBEB; color:#C53030;
+    border-bottom:1px solid #F3C6C6; font-family:'Barlow Condensed',sans-serif; font-weight:700;
+    font-size:14px; letter-spacing:.02em; display:none; align-items:center; justify-content:center;
+    gap:8px; padding:11px 14px; cursor:pointer; text-align:center;
+  }
+  .opt-banner.show{ display:flex; }
+  .opt-banner:active{ opacity:.85; }
+
+  .opt-overlay{
+    position:fixed; inset:0; background:rgba(15,61,62,.35); display:none; align-items:flex-end;
+    justify-content:center; z-index:50;
+  }
+  .opt-overlay.show{ display:flex; }
+  @media (min-width:640px){ .opt-overlay{ align-items:center; } }
+  .opt-panel{
+    background:var(--card); width:100%; max-width:480px; border-radius:16px 16px 0 0;
+    padding:20px; max-height:80vh; overflow-y:auto;
+  }
+  @media (min-width:640px){ .opt-panel{ border-radius:14px; } }
+  .opt-panel h3{ font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:19px; color:var(--petrol); margin:0 0 4px; }
+  .opt-panel .sub{ font-size:12.5px; color:var(--muted); margin-bottom:16px; }
+  .opt-item{ border:1px solid #F3C6C6; background:#FDF2F2; border-radius:10px; padding:12px; margin-bottom:10px; }
+  .opt-item .rt{ font-weight:500; font-size:13.5px; }
+  .opt-item .rm{ font-size:12px; color:var(--muted); margin-top:2px; }
+  .opt-item .why{ font-size:12px; color:#C53030; margin-top:6px; }
+  .opt-item .actions{ display:flex; gap:8px; margin-top:10px; }
+  .opt-item .actions button{
+    flex:1; padding:9px; border:none; border-radius:8px; font-family:'Barlow Condensed',sans-serif;
+    font-weight:700; font-size:12.5px; letter-spacing:.02em; text-transform:uppercase; cursor:pointer;
+  }
+  .opt-btn-retry{ background:var(--cone); color:#fff; }
+  .opt-btn-discard{ background:#E4E0D8; color:var(--petrol); }
+  .opt-panel-close{
+    width:100%; margin-top:6px; padding:12px; border:1px solid var(--line); background:#fff;
+    border-radius:9px; font-family:'Barlow Condensed',sans-serif; font-weight:700; color:var(--petrol);
+    cursor:pointer;
+  }
 </style>
 </head>
 <body>
 
 <div id="topbar-mount"></div>
+
+<div class="opt-strip" id="optStrip"></div>
+<div class="opt-banner" id="optBanner"></div>
+<div class="opt-overlay" id="optOverlay"><div class="opt-panel">
+  <h3>Changes that didn't save</h3>
+  <div class="sub" id="optPanelSub">These are only on this device -- Google Drive doesn't have them yet. Retry when you're ready, or discard.</div>
+  <div id="optPanelList"></div>
+  <button type="button" class="opt-panel-close" id="optPanelCloseBtn">Close</button>
+</div></div>
 
 <div class="page-head">
   <h1>Bikes Status</h1>
@@ -2957,6 +3035,14 @@ async function customerIntakeFromJson(data) {
 // ({success, warning?, row?/newRowNumber?} / {success:false, error} /
 // etc.), so every call site below needed no changes beyond swapping which
 // function they call. ----
+//
+// SUPERSEDED (2026-08-17): every call site that used to call this directly
+// now goes through bkEnqueue()/bkDispatchWithRetry() instead (see the
+// save-pipeline engine below) -- keepalive + auto-retry-on-409 + the
+// queue/cap/localStorage-recovery logic all wrap around a near-identical
+// fetch of the same endpoint. Left in place (unused) rather than deleted,
+// in case anything outside this file's own 7 rewired actions still
+// expects it -- grep for bikesWriteDispatch( before removing.
 async function bikesWriteDispatch(payload) {
   const r = await fetch('/api/bikes/write', {
     method: 'POST',
@@ -2985,6 +3071,383 @@ function genClientTxnId() {
   if (window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID();
   return 'ctx_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10);
 }
+
+// ================== Save-pipeline engine (2026-08-17) ==================
+// Anton (17/08/2026): doing something like Return/Extend used to lock the
+// ENTIRE page (setAllButtonsDisabled -- every button, everywhere) for the
+// full Drive round trip. What he actually wants: only the specific
+// row(s) being acted on show a grayed "Saving…" state; a small header
+// strip shows overall progress; the rest of the app stays fully
+// interactive -- click around, navigate to a different page entirely,
+// even close the tab -- while a save is still in flight. He also wants to
+// be able to queue a SECOND save (e.g. extend bike A, then immediately
+// extend bike B while A is still saving) but capped at exactly two total
+// (1 running + 1 waiting) -- not three or four -- with every write-
+// committing button on this page grayed out once both slots are full,
+// until one frees up.
+//
+// This engine is a bigger version of accounts.html's "opt-" prefixed
+// 16/08/2026 queueMonthSave pass (same visual language, reused below) --
+// that page's queue has no cap, no keepalive, and no retry-on-conflict,
+// none of which it needed yet. This one adds all three because saves here
+// now survive full page navigation:
+//   - fetch(..., {keepalive:true}) lets the actual network request finish
+//     even after this page's whole JS context is torn down by navigating
+//     away.
+//   - Every action this queue is used for is idempotency-guarded server-
+//     side by clientTxnId (see lib/bikesWrites.js -- as of today's
+//     returnDeposit fix, ALL 7 actions are covered). That's what makes it
+//     SAFE to (a) auto-retry a request that came back 409 (another page/
+//     tab -- e.g. accounts.html -- wrote the same underlying month sheet
+//     in the meantime; a genuinely different write, not a duplicate, so
+//     retrying is correct, not just harmless) and (b) blindly resubmit,
+//     on a fresh page load, anything left over in localStorage from a
+//     save that was still running/queued when the page was navigated away
+//     from or closed before ever hearing back.
+//
+// GLOBAL (cross-page, app-wide) cap-of-2 gray-out is explicitly on the
+// backlog per Anton -- "put it on the list, we'll do it later" -- this
+// engine only enforces the cap on bikes.html itself for now. Cross-page
+// data safety in the meantime is handled by the 409 retry above (a real
+// write from another page never gets silently lost or corrupted, it just
+// gets retried) plus the pre-existing expectedModifiedTime check server-
+// side that produces that 409 in the first place.
+const MAX_QUEUE = 2; // exactly 2 -- 1 running + 1 waiting, confirmed with Anton, not 3-4
+const bkQueue = []; // in-flight/waiting save items, length 0-2; index 0 (if present) is always 'running'
+let bkSeq = 0;
+const PENDING_SAVES_KEY = 'aaBikesPendingSaves'; // localStorage -- unresolved (still running/queued) saves, see persistPendingSaves
+const FAILED_SAVES_KEY = 'aaBikesFailedSaves';   // localStorage -- saves that got a definitive error back, see persistFailedSaves
+
+// rowNumber -> the queue item currently 'running' or 'queued' for that
+// row, read by renterActionsHtml()/bikeCardHtml() to decide which card(s)
+// show the grayed "Saving…"/"Queued…" treatment. Kept as a Map (not the
+// old single-scalar savingReturnRowNumber/savingExtendRowNumber/
+// savingEditTimeRowNumber pattern) specifically so two DIFFERENT rows can
+// be mid-save at once -- e.g. extending bike A and bike B at the same
+// time -- which the old scalars couldn't represent.
+const pendingRowSaves = new Map();
+// item.id -> { item, message } for saves that failed for real (got a
+// definitive error back, or exhausted their 409 retries) -- surfaced in
+// the header banner + review overlay, mirroring accounts.html's optItems.
+const bkFailedItems = new Map();
+
+// bkEnqueue({label, rows, requests}) is the one entry point every rewired
+// action below calls. `requests` is an ordered array of
+// {action, payload} -- most actions are a single request, but a couple
+// (a normal Return + its best-effort deposit follow-up; a long Extend's
+// close-out + new-booking pair) are two, run in strict sequence, and
+// treated as ONE queue slot -- exactly how they behaved before this pass,
+// just backgrounded. `payload` should already include a clientTxnId where
+// the corresponding lib/bikesWrites.js action checks for one.
+function bkQueueFull() { return bkQueue.length >= MAX_QUEUE; }
+
+function bkEnqueue({ label, rows, requests, onAllSuccess }) {
+  const item = {
+    id: ++bkSeq,
+    clientTxnId: (requests[0] && requests[0].payload && requests[0].payload.clientTxnId) || genClientTxnId(),
+    label, rows: (rows || []).slice(), requests, reqIndex: 0, results: [],
+    onAllSuccess: onAllSuccess || null,
+    status: bkQueue.length === 0 ? 'running' : 'queued'
+  };
+  bkQueue.push(item);
+  item.rows.forEach(r => pendingRowSaves.set(r, item));
+  persistPendingSaves();
+  bkRefreshUi();
+  if (item.status === 'running') bkRun(item);
+  return item;
+}
+
+// Runs (or resumes, on a page-load recovery -- see restoreUnresolvedSaves)
+// one queue item's remaining requests in order. Deliberately a `while`
+// over item.reqIndex rather than recursion/Promise.all -- a multi-request
+// item (Return+deposit, long Extend) must run its steps strictly one
+// after another, same order as the old blocking code did.
+async function bkRun(item) {
+  item.status = 'running';
+  bkRefreshUi();
+  try {
+    while (item.reqIndex < item.requests.length) {
+      const req = item.requests[item.reqIndex];
+      const res = await bkDispatchWithRetry(req.action, req.payload);
+      item.results.push(res);
+      item.reqIndex++;
+      persistPendingSaves(); // keep localStorage in step with how far this item has actually gotten
+      // Optional per-step hook (e.g. confirmReturn patches the row's
+      // returnDate/situation the moment markReturned succeeds, without
+      // waiting on the best-effort deposit follow-up step too) -- NOT
+      // restored on a page-load recovery (restoreUnresolvedSaves doesn't
+      // set this), same limitation as onAllSuccess there.
+      if (item.onStepSuccess) { try { item.onStepSuccess(item.reqIndex - 1, res); } catch (e) { console.error(e); } }
+    }
+    bkResolveItem(item, true, null);
+  } catch (err) {
+    bkResolveItem(item, false, err);
+  }
+}
+
+function bkResolveItem(item, success, err) {
+  const idx = bkQueue.indexOf(item);
+  if (idx > -1) bkQueue.splice(idx, 1);
+  item.rows.forEach(r => { if (pendingRowSaves.get(r) === item) pendingRowSaves.delete(r); });
+  persistPendingSaves();
+  if (success) {
+    if (item.onAllSuccess) { try { item.onAllSuccess(item.results); } catch (e) { console.error(e); } }
+  } else {
+    bkFailedItems.set(item.id, { item, message: err.message });
+    persistFailedSaves();
+    updateFailBanner();
+  }
+  const next = bkQueue.find(it => it.status === 'queued');
+  if (next) bkRun(next);
+  bkRefreshUi();
+}
+
+// keepalive:true is what lets this specific fetch finish even after the
+// user navigates to a different page (bikes.html has no SPA router --
+// navigating tears down this whole script and every in-flight promise
+// along with it; keepalive is a browser-level guarantee that survives
+// that, same as sendBeacon but with a real response... except this page's
+// JS is gone by the time the response arrives, which is exactly why the
+// localStorage pending-save tracking + restoreUnresolvedSaves() below
+// exist -- to notice and safely resubmit anything keepalive itself
+// couldn't hand a result back to).
+async function bkDispatch(body) {
+  const r = await fetch('/api/bikes/write', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    keepalive: true
+  });
+  if (r.status === 401) throw new Error('Signed out -- please refresh to sign in again.');
+  const res = await r.json().catch(() => ({}));
+  if (r.status === 409) {
+    const e = new Error(res.error || 'This record was changed by someone else in the meantime -- please reload and try again.');
+    e.isConflict = true;
+    throw e;
+  }
+  if (!r.ok || res.success === undefined) throw new Error(res.error || ('HTTP ' + r.status));
+  if (res.success === false) throw new Error(res.error || 'Could not save.');
+  return res;
+}
+
+// Auto-retry-on-409 (Anton, 17/08/2026): backgrounding saves widens the
+// window for two DIFFERENT pages/tabs to legitimately race on the same
+// shared Drive file (most commonly the current month's accounts sheet --
+// e.g. bikes.html finishing a Return at the same moment accounts.html
+// logs an expense). The server's expectedModifiedTime check already
+// catches this and returns 409 rather than silently corrupting anything;
+// this is what makes that self-healing instead of just surfacing as a
+// failure the first time it happens. Distinct from the clientTxnId
+// idempotency guard: that protects against the SAME logical write being
+// applied twice; this protects two DIFFERENT legitimate writes from
+// clobbering each other on the wire.
+async function bkDispatchWithRetry(action, payload) {
+  const body = Object.assign({ action }, payload);
+  const maxAttempts = 3;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await bkDispatch(body);
+    } catch (err) {
+      if (err.isConflict && attempt < maxAttempts) {
+        await new Promise(resolve => setTimeout(resolve, 700 * attempt));
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
+// Written the INSTANT a save is queued (both the running one and the
+// waiting one) -- not just on failure -- and updated as each step of a
+// multi-request item completes. This is what lets a FRESH page load (from
+// navigating away mid-save, or the tab being closed) notice something was
+// left unresolved and safely resubmit it -- safe purely because every
+// action here is idempotency-guarded server-side, so a blind resubmit of
+// something that actually already succeeded is a harmless no-op, not a
+// duplicate.
+function persistPendingSaves() {
+  try {
+    const arr = bkQueue.map(it => ({
+      clientTxnId: it.clientTxnId, label: it.label, rows: it.rows,
+      requests: it.requests.slice(it.reqIndex)
+    }));
+    if (arr.length) localStorage.setItem(PENDING_SAVES_KEY, JSON.stringify(arr));
+    else localStorage.removeItem(PENDING_SAVES_KEY);
+  } catch (e) { /* best-effort, same as accounts.html's persistFailedSaves */ }
+}
+
+// Failed items (a real error came back, or 409 retries were exhausted) --
+// persisted separately from the above so the nav badge / a reload can
+// show "N changes didn't save" even after this exact page load ends,
+// mirroring accounts.html's FAILED_SAVES_STORAGE_KEY. Deliberately NOT
+// auto-resubmitted on load (unlike PENDING_SAVES_KEY above) -- a failure
+// here means the server already gave a definitive answer, so retrying
+// needs a person's say-so via the review panel, not a blind background
+// resubmit.
+function persistFailedSaves() {
+  try {
+    const arr = Array.from(bkFailedItems.entries()).map(([id, f]) => ({
+      id, label: f.item.label, rows: f.item.rows,
+      requests: f.item.requests.slice(f.item.reqIndex), message: f.message
+    }));
+    if (arr.length) localStorage.setItem(FAILED_SAVES_KEY, JSON.stringify(arr));
+    else localStorage.removeItem(FAILED_SAVES_KEY);
+  } catch (e) { /* best-effort */ }
+}
+
+// Called once during page init (see loadData() below). Recovers BOTH
+// unresolved saves (resubmits them immediately, safe per the idempotency
+// guard) and previously-failed ones (just restores the banner/review
+// panel -- see persistFailedSaves' comment for why those don't auto-
+// resubmit). Recovered pending items use a generic onAllSuccess (a full
+// data reload) rather than the row-specific in-place patch the original
+// call site would have done -- that patch logic lived in a closure that's
+// gone once the page that created it was navigated away from/closed; a
+// reload is the safe, simple substitute.
+function restoreUnresolvedSaves() {
+  try {
+    const raw = localStorage.getItem(PENDING_SAVES_KEY);
+    if (raw) {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr) && arr.length) {
+        console.warn('[bikes] Recovering ' + arr.length + ' unfinished save(s) left over from before this page loaded (likely a navigation or closed tab mid-save) -- resubmitting in the background. Safe because every action here is idempotency-guarded server-side.');
+        arr.forEach(rec => {
+          if (!rec || !Array.isArray(rec.requests) || !rec.requests.length) return;
+          const item = {
+            id: ++bkSeq, clientTxnId: rec.clientTxnId, label: rec.label || 'Unfinished save',
+            rows: rec.rows || [], requests: rec.requests, reqIndex: 0, results: [],
+            onAllSuccess: () => { clearBikesCache(); loadData(); },
+            status: bkQueue.length === 0 ? 'running' : 'queued'
+          };
+          bkQueue.push(item);
+          item.rows.forEach(r => pendingRowSaves.set(r, item));
+        });
+        persistPendingSaves();
+        const first = bkQueue.find(it => it.status === 'running');
+        if (first) bkRun(first);
+      }
+    }
+  } catch (e) { localStorage.removeItem(PENDING_SAVES_KEY); }
+
+  try {
+    const raw2 = localStorage.getItem(FAILED_SAVES_KEY);
+    if (raw2) {
+      const arr2 = JSON.parse(raw2);
+      if (Array.isArray(arr2)) {
+        arr2.forEach(rec => {
+          if (!rec) return;
+          bkFailedItems.set(rec.id, {
+            item: { id: rec.id, label: rec.label, rows: rec.rows || [], requests: rec.requests || [], reqIndex: 0, results: [] },
+            message: rec.message
+          });
+        });
+        updateFailBanner();
+      }
+    }
+  } catch (e) { localStorage.removeItem(FAILED_SAVES_KEY); }
+  bkRefreshUi();
+}
+
+// One place that keeps the header strip and the row-level Map in step --
+// called every time bkQueue changes. Mirrors updateOptBanner()'s role in
+// accounts.html, but for the (non-error) in-progress state -- the actual
+// failure banner is updateFailBanner() below.
+function bkRefreshUi() {
+  const strip = document.getElementById('optStrip');
+  if (strip) {
+    if (bkQueue.length === 0) {
+      strip.classList.remove('show');
+    } else {
+      strip.classList.add('show');
+      strip.textContent = bkQueue.length === 1 ? '● Saving…' : '● Saving… (1 queued)';
+    }
+  }
+  render();
+}
+
+function updateFailBanner() {
+  const banner = document.getElementById('optBanner');
+  if (!banner) return;
+  const n = bkFailedItems.size;
+  if (!n) { banner.classList.remove('show'); return; }
+  banner.textContent = '⚠ ' + n + (n === 1 ? ' change' : ' changes') + ' didn’t save — tap to review';
+  banner.classList.add('show');
+}
+
+function openSaveReview() {
+  const listEl = document.getElementById('optPanelList');
+  const entries = Array.from(bkFailedItems.entries());
+  listEl.innerHTML = entries.map(([id, f]) => `
+    <div class="opt-item" data-id="${id}">
+      <div class="rt">${f.item.label}</div>
+      <div class="why">${f.message}</div>
+      <div class="actions">
+        <button type="button" class="opt-btn-retry" data-act="retry" data-id="${id}">Retry</button>
+        <button type="button" class="opt-btn-discard" data-act="discard" data-id="${id}">Discard</button>
+      </div>
+    </div>
+  `).join('') || '<div class="empty-hint">Nothing pending.</div>';
+  listEl.querySelectorAll('button[data-act]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = Number(btn.dataset.id);
+      if (btn.dataset.act === 'retry') bkRetryFailed(id); else bkDiscardFailed(id);
+    });
+  });
+  document.getElementById('optOverlay').classList.add('show');
+}
+function closeSaveReview() { document.getElementById('optOverlay').classList.remove('show'); }
+function refreshReviewPanelIfOpen() {
+  if (!document.getElementById('optOverlay').classList.contains('show')) return;
+  if (bkFailedItems.size === 0) closeSaveReview(); else openSaveReview();
+}
+
+// Re-queues a failed item from scratch (reqIndex back to 0 -- safe to
+// re-run every step, including one that actually already succeeded
+// before a later step in the same item failed, because every step is its
+// own idempotency-guarded action). Respects the same cap-of-2 as a brand
+// new save: if both slots are somehow already full, this waits its turn
+// just like any other queued item rather than forcing itself in.
+function bkRetryFailed(id) {
+  const f = bkFailedItems.get(id);
+  if (!f) return;
+  bkFailedItems.delete(id);
+  persistFailedSaves();
+  updateFailBanner();
+  refreshReviewPanelIfOpen();
+  const item = f.item;
+  item.reqIndex = 0;
+  item.results = [];
+  item.onAllSuccess = item.onAllSuccess || (() => { clearBikesCache(); loadData(); });
+  item.status = bkQueue.length === 0 ? 'running' : 'queued';
+  bkQueue.push(item);
+  item.rows.forEach(r => pendingRowSaves.set(r, item));
+  persistPendingSaves();
+  bkRefreshUi();
+  if (item.status === 'running') bkRun(item);
+}
+
+// Discarding a failed write this far along has no generic client-side
+// undo -- unlike accounts.html's simple add/edit/delete rows, every action
+// here is a multi-sheet server-side operation. If the row's on-screen
+// state doesn't reflect the real, unsaved-because-failed truth, a reload
+// clears that up; discard just means "stop trying, I'll deal with it by
+// hand if needed."
+function bkDiscardFailed(id) {
+  const f = bkFailedItems.get(id);
+  if (!f) return;
+  bkFailedItems.delete(id);
+  persistFailedSaves();
+  updateFailBanner();
+  refreshReviewPanelIfOpen();
+  clearBikesCache();
+  loadData();
+}
+
+document.getElementById('optOverlay').addEventListener('click', (e) => { if (e.target.id === 'optOverlay') closeSaveReview(); });
+document.getElementById('optPanelCloseBtn').addEventListener('click', closeSaveReview);
+document.getElementById('optBanner').addEventListener('click', () => openSaveReview());
+document.getElementById('optStrip').addEventListener('click', () => { if (bkFailedItems.size) openSaveReview(); });
+// ================== end save-pipeline engine ==================
 
 // ================== end JSON-backed data layer ==================
 
@@ -3804,8 +4267,31 @@ function todayIso() {
 function renterActionsHtml(renter) {
   const rowNumber = renter.rowNumber;
 
+  // This row has an in-flight or queued background save (see the
+  // save-pipeline engine above) -- show ONLY a small badge, no picker, no
+  // per-field disabling. This replaces the old savingReturnRowNumber/
+  // savingExtendRowNumber/savingEditTimeRowNumber single-scalar pattern
+  // (which could only ever track ONE row "saving" at a time, page-wide) --
+  // pendingRowSaves is a Map, so two different rows can independently be
+  // mid-save at once, e.g. extending bike A and bike B together.
+  const pendingHere = pendingRowSaves.get(rowNumber);
+  if (pendingHere) {
+    const isRunning = pendingHere.status === 'running';
+    return `
+      <div class="bc-actions">
+        <span class="opt-row-badge${isRunning ? '' : ' queued'}">${isRunning ? '<span class="opt-spinner"></span> Saving…' : 'Queued…'}</span>
+      </div>
+    `;
+  }
+  // True once both queue slots (1 running + 1 waiting) are taken by OTHER
+  // rows -- gates every write-committing button below (Confirm on any
+  // picker, plus the Return/Extend/Swap/Adjust Pickup trigger buttons
+  // further down) so a third write can't be started until one of the two
+  // in-progress ones finishes. Contact Customer is exempt -- it doesn't
+  // write anything.
+  const writeBlocked = bkQueueFull();
+
   if (openReturnRowNumber === rowNumber) {
-    const isSaving = savingReturnRowNumber === rowNumber;
     // Reads from returnDepositTypeDisplay (kept up to date by
     // initReturnDepositLookup) rather than recomputing straight from
     // renter.deposit -- that field is often blank even when a real deposit
@@ -3819,14 +4305,14 @@ function renterActionsHtml(renter) {
     const earlyReturnChecked = !!returnEarlyToggleOpen[rowNumber];
     return `
       <div class="bc-actions bc-actions-picker">
-        <input type="date" class="picker-input" id="returnDateInput-${rowNumber}" value="${todayIso()}" ${isSaving ? 'disabled' : ''}>
+        <input type="date" class="picker-input" id="returnDateInput-${rowNumber}" value="${todayIso()}">
         <div class="extend-month-row">
-          <input type="checkbox" id="returnEarlyToggle-${rowNumber}" ${earlyReturnChecked ? 'checked' : ''} ${isSaving ? 'disabled' : ''}>
+          <input type="checkbox" id="returnEarlyToggle-${rowNumber}" ${earlyReturnChecked ? 'checked' : ''}>
           <label for="returnEarlyToggle-${rowNumber}">Early return</label>
         </div>
         <div id="returnEarlyFields-${rowNumber}" style="${earlyReturnChecked ? '' : 'display:none;'}">
-          <input type="number" min="0" step="any" class="picker-input" id="returnRefundAmountInput-${rowNumber}" placeholder="Refund amount (฿) — leave at 0 for a normal return" ${isSaving ? 'disabled' : ''}>
-          <select class="picker-input" id="returnRefundPaidByInput-${rowNumber}" ${isSaving ? 'disabled' : ''}>
+          <input type="number" min="0" step="any" class="picker-input" id="returnRefundAmountInput-${rowNumber}" placeholder="Refund amount (฿) — leave at 0 for a normal return">
+          <select class="picker-input" id="returnRefundPaidByInput-${rowNumber}">
             <option value="">Refund paid via…</option>
             <option value="cash">Cash</option>
             <option value="scan">Scan / Bank Transfer</option>
@@ -3836,22 +4322,21 @@ function renterActionsHtml(renter) {
           <div class="extend-note">A refund above ฿0 reduces this booking's total price, the Contract page's total, and this bike's earnings for the CURRENT month — and logs a negative income entry for the current month, routed to Cash/Wise/Revolut same as any other income (Scan/Bank Transfer logs the entry but touches nothing further). Leave it at 0 to just return the bike as normal on the date above.</div>
         </div>
         <div class="extend-month-row">Deposit type: <strong id="returnDepositTypeLabel-${rowNumber}">${depositTypeText}</strong></div>
-        <input type="number" min="0" step="any" class="picker-input" id="returnDepositAmountInput-${rowNumber}" placeholder="Deposit amount to return (฿)" ${isSaving ? 'disabled' : ''}>
+        <input type="number" min="0" step="any" class="picker-input" id="returnDepositAmountInput-${rowNumber}" placeholder="Deposit amount to return (฿)">
         <div class="extend-note" id="returnDepositNote-${rowNumber}"></div>
         <div class="extend-month-row" id="returnCashToggleRow-${rowNumber}" style="display:none;">
-          <input type="checkbox" id="returnCashToggle-${rowNumber}" ${returnCashToggleOpen[rowNumber] ? 'checked' : ''} ${isSaving ? 'disabled' : ''}>
+          <input type="checkbox" id="returnCashToggle-${rowNumber}" ${returnCashToggleOpen[rowNumber] ? 'checked' : ''}>
           <label for="returnCashToggle-${rowNumber}">Return deposit in cash</label>
         </div>
-        <input type="number" min="0" step="any" class="picker-input" id="returnDeductionsInput-${rowNumber}" placeholder="Deductions (฿)" ${isSaving ? 'disabled' : ''}>
-        <input type="text" class="picker-input" id="returnDeductionReasonInput-${rowNumber}" placeholder="Reason for deduction (if any)" ${isSaving ? 'disabled' : ''}>
-        <button class="bc-btn confirm-return" data-row="${rowNumber}" ${isSaving ? 'disabled' : ''}>${isSaving ? (savingReturnStage === 'saving' ? 'Saving…' : 'Connecting…') : 'Confirm'}</button>
-        <button class="bc-btn cancel-return" data-row="${rowNumber}" ${isSaving ? 'disabled' : ''}>Cancel</button>
+        <input type="number" min="0" step="any" class="picker-input" id="returnDeductionsInput-${rowNumber}" placeholder="Deductions (฿)">
+        <input type="text" class="picker-input" id="returnDeductionReasonInput-${rowNumber}" placeholder="Reason for deduction (if any)">
+        <button class="bc-btn confirm-return" data-row="${rowNumber}" ${writeBlocked ? 'disabled title="2 saves already in progress — wait for one to finish"' : ''}>Confirm</button>
+        <button class="bc-btn cancel-return" data-row="${rowNumber}">Cancel</button>
       </div>
     `;
   }
 
   if (openExtendRowNumber === rowNumber) {
-    const isSaving = savingExtendRowNumber === rowNumber;
     // Deal checkbox (Anton, 20/07/2026) -- only ever applies to a LONG
     // extension (1-month checkbox, or 30+ days), which closes this booking
     // out and opens a brand-new customer-sheet row for the extension
@@ -3867,13 +4352,13 @@ function renterActionsHtml(renter) {
     return `
       <div class="bc-actions bc-actions-picker">
         <div class="extend-datedays-row">
-          <input type="date" class="picker-input" id="extendDateInput-${rowNumber}" ${isSaving ? 'disabled' : ''}>
+          <input type="date" class="picker-input" id="extendDateInput-${rowNumber}">
           <span class="or-label">or</span>
-          <input type="number" min="1" step="1" class="picker-input" id="extendDaysInput-${rowNumber}" placeholder="Days to extend" ${isSaving ? 'disabled' : ''}>
+          <input type="number" min="1" step="1" class="picker-input" id="extendDaysInput-${rowNumber}" placeholder="Days to extend">
         </div>
         <div class="extend-price-breakdown" id="extendPriceBreakdown-${rowNumber}"></div>
-        <input type="number" min="0" step="any" class="picker-input" id="extendAmountInput-${rowNumber}" placeholder="Amount paid (฿)" ${isSaving ? 'disabled' : ''}>
-        <select class="picker-input" id="extendPaidByInput-${rowNumber}" ${isSaving ? 'disabled' : ''}>
+        <input type="number" min="0" step="any" class="picker-input" id="extendAmountInput-${rowNumber}" placeholder="Amount paid (฿)">
+        <select class="picker-input" id="extendPaidByInput-${rowNumber}">
           <option value="">Paid by…</option>
           <option value="cash">Cash</option>
           <option value="scan">QR Scan</option>
@@ -3881,29 +4366,28 @@ function renterActionsHtml(renter) {
           <option value="revolut">Revolut</option>
         </select>
         <div class="extend-month-row" id="extendDepositToggleRow-${rowNumber}" style="display:none;">
-          <input type="checkbox" id="extendDepositToggle-${rowNumber}" ${isSaving ? 'disabled' : ''}>
+          <input type="checkbox" id="extendDepositToggle-${rowNumber}">
           <label for="extendDepositToggle-${rowNumber}">Paid from an existing deposit</label>
         </div>
-        <select class="picker-input" id="extendDepositSelect-${rowNumber}" style="display:none;" ${isSaving ? 'disabled' : ''}>
+        <select class="picker-input" id="extendDepositSelect-${rowNumber}" style="display:none;">
           <option value="">— Select —</option>
         </select>
         <div class="extend-month-row">
-          <input type="checkbox" id="extendMonthCheckbox-${rowNumber}" ${isSaving ? 'disabled' : ''}>
+          <input type="checkbox" id="extendMonthCheckbox-${rowNumber}">
           <label for="extendMonthCheckbox-${rowNumber}">Extend 1 month</label>
         </div>
         <div class="extend-month-row" id="extendDealToggleRow-${rowNumber}" style="display:none;">
-          <input type="checkbox" id="extendDealCheckbox-${rowNumber}" ${renterIsDeal ? 'checked' : ''} ${isSaving ? 'disabled' : ''}>
+          <input type="checkbox" id="extendDealCheckbox-${rowNumber}" ${renterIsDeal ? 'checked' : ''}>
           <label for="extendDealCheckbox-${rowNumber}">Deal</label>
         </div>
         <div class="extend-note">1 month, or 30+ days, closes this booking out and starts a fresh rental record for the new period — the amount paid becomes that new record's total price. ("Paid from an existing deposit" above still applies to this too.)</div>
-        <button class="bc-btn confirm-extend" data-row="${rowNumber}" ${isSaving ? 'disabled' : ''}>${isSaving ? (savingExtendStage === 'saving' ? 'Saving…' : 'Connecting…') : 'Confirm'}</button>
-        <button class="bc-btn cancel-extend" data-row="${rowNumber}" ${isSaving ? 'disabled' : ''}>Cancel</button>
+        <button class="bc-btn confirm-extend" data-row="${rowNumber}" ${writeBlocked ? 'disabled title="2 saves already in progress — wait for one to finish"' : ''}>Confirm</button>
+        <button class="bc-btn cancel-extend" data-row="${rowNumber}">Cancel</button>
       </div>
     `;
   }
 
   if (openEditTimeRowNumber === rowNumber) {
-    const isSaving = savingEditTimeRowNumber === rowNumber;
     // Defaults to whatever pickup date/time the calendar is currently
     // showing: the confirmed date if staff have already adjusted this
     // booking once, otherwise the original due date. Either way, this
@@ -3920,23 +4404,24 @@ function renterActionsHtml(renter) {
     return `
       <div class="bc-actions bc-actions-picker">
         <div class="extend-datedays-row">
-          <input type="date" class="picker-input" id="editDateInput-${rowNumber}" value="${editDateValue}" ${isSaving ? 'disabled' : ''}>
-          <input type="time" class="picker-input" id="editTimeInput-${rowNumber}" value="${renter.returnTime || ''}" ${isSaving ? 'disabled' : ''}>
+          <input type="date" class="picker-input" id="editDateInput-${rowNumber}" value="${editDateValue}">
+          <input type="time" class="picker-input" id="editTimeInput-${rowNumber}" value="${renter.returnTime || ''}">
         </div>
-        <input type="url" class="picker-input" id="editLinkInput-${rowNumber}" value="${quickviewEscapeAttr(editLinkValue)}" placeholder="Delivery/pickup link (Google Maps, optional)" ${isSaving ? 'disabled' : ''}>
+        <input type="url" class="picker-input" id="editLinkInput-${rowNumber}" value="${quickviewEscapeAttr(editLinkValue)}" placeholder="Delivery/pickup link (Google Maps, optional)">
         <div class="extend-note">Adjusts the pickup date &amp; time shown on the bike-returns calendar only — the booking's actual due date on this page is not changed. The link (if any) is added to the calendar event and mirrored onto the Contract.</div>
-        <button class="bc-btn confirm-edit-time" data-row="${rowNumber}" ${isSaving ? 'disabled' : ''}>${isSaving ? (savingEditTimeStage === 'saving' ? 'Saving…' : 'Connecting…') : 'Confirm'}</button>
-        <button class="bc-btn cancel-edit-time" data-row="${rowNumber}" ${isSaving ? 'disabled' : ''}>Cancel</button>
+        <button class="bc-btn confirm-edit-time" data-row="${rowNumber}" ${writeBlocked ? 'disabled title="2 saves already in progress — wait for one to finish"' : ''}>Confirm</button>
+        <button class="bc-btn cancel-edit-time" data-row="${rowNumber}">Cancel</button>
       </div>
     `;
   }
 
+  const wAttrs = writeBlocked ? 'disabled title="2 saves already in progress — wait for one to finish"' : '';
   return `
     <div class="bc-actions">
-      <button class="bc-btn return-btn" data-row="${rowNumber}">Return</button>
-      <button class="bc-btn extend-btn" data-row="${rowNumber}">Extend</button>
-      <button class="bc-btn swap-btn" data-row="${rowNumber}">Swap Bike</button>
-      <button class="bc-btn edit-time-btn" data-row="${rowNumber}">Adjust Pickup</button>
+      <button class="bc-btn return-btn" data-row="${rowNumber}" ${wAttrs}>Return</button>
+      <button class="bc-btn extend-btn" data-row="${rowNumber}" ${wAttrs}>Extend</button>
+      <button class="bc-btn swap-btn" data-row="${rowNumber}" ${wAttrs}>Swap Bike</button>
+      <button class="bc-btn edit-time-btn" data-row="${rowNumber}" ${wAttrs}>Adjust Pickup</button>
       <button class="bc-btn contact-btn" data-row="${rowNumber}">📩 Contact Customer</button>
     </div>
   `;
@@ -3945,6 +4430,7 @@ function renterActionsHtml(renter) {
 function bikeCardHtml(name, renter, query) {
   const rented = !!renter;
   const cls = rented ? 'rented' : 'not-rented';
+  const rowPendingCls = (rented && pendingRowSaves.has(renter.rowNumber)) ? ' opt-row-pending' : '';
   const dueLabel = rented ? getDueLabel(renter.returnDate) : null;
 
   // If we have both a chat name and a usable link for this renter's chat
@@ -3996,7 +4482,7 @@ function bikeCardHtml(name, renter, query) {
   const actions = rented ? renterActionsHtml(renter) : '';
 
   return `
-    <div class="bike-card ${cls}">
+    <div class="bike-card ${cls}${rowPendingCls}">
       <div class="bc-top">
         <div class="bc-name">${highlight(name, query)}</div>
         <div class="bc-tag ${cls}">${rented ? 'Rented' : 'Not rented'}</div>
@@ -4929,128 +5415,82 @@ function refreshExtendDealVisibility(rowNumber) {
   }
 }
 
+// REWIRED 2026-08-17 onto the save-pipeline engine above: the picker
+// closes immediately (optimistic), the actual write(s) run in the
+// background via bkEnqueue, and only THIS row shows the "Saving…" badge
+// while it's in flight -- see pendingRowSaves/renterActionsHtml. A normal
+// return (unticked) still sends 'markReturned'; an early return (ticked,
+// refund or not) sends 'earlyReturnBike' -- see earlyReturnBikeFromJson's
+// own comment in lib/bikesWrites.js for the full refund/ledger/Contract/
+// bikes-sheet cascade that runs server-side in one round trip. If a
+// deposit was matched, 'returnDeposit' runs as a SECOND request in the
+// same queue item, same order as before this pass -- a problem there
+// surfaces via the failure banner/review panel rather than rolling back
+// the return (which, by that point, already succeeded).
 function confirmReturn(rowNumber, isoDate, depositMatch, deductionAmount, reason, isEarlyReturn, refundAmount, refundPaidBy, returnDepositAsCash) {
-  savingReturnRowNumber = rowNumber;
-  savingReturnStage = 'connecting';
-  render();
-  setAllButtonsDisabled(true);
-  const stageTimer = setTimeout(() => { savingReturnStage = 'saving'; render(); setAllButtonsDisabled(true); }, 500);
+  if (bkQueueFull()) { alert('2 saves are already in progress — wait for one to finish before starting another.'); return; }
 
-  // A normal return (the "Early return" box left unticked) keeps using the
-  // exact same 'markReturned' action as always -- nothing about that path
-  // changes. 'earlyReturnBike' is only ever sent when the box is ticked,
-  // even if the refund amount itself is 0 -- earlyReturnBike() handles a
-  // 0 refund by doing exactly the same close-out markReturned does (see its
-  // own comment in Code.gs), so ticking the box and leaving it at 0 is
-  // still just a normal return, just routed through the one action that
-  // already knows how to handle either case.
-  // A normal return (unticked) still sends 'markReturned'; an early return
-  // (ticked, refund or not) sends 'earlyReturnBike' -- see
-  // lib/bikesWrites.js's earlyReturnBikeFromJson for the full refund/
-  // ledger/Contract/bikes-sheet cascade this now runs server-side in one
-  // round trip. clientTxnId generated once here so a dropped-connection
-  // retry of this same click can't double-apply a refund.
-  const writePromise = isEarlyReturn
-    ? bikesWriteDispatch({
-        action: 'earlyReturnBike', rowNumber: rowNumber, returnDate: isoDate,
-        refundAmount: refundAmount, refundPaidBy: refundPaidBy, clientTxnId: genClientTxnId()
-      })
-    : bikesWriteDispatch({ action: 'markReturned', rowNumber: rowNumber, returnDate: isoDate, clientTxnId: genClientTxnId() });
+  const row = (customerRows || []).find(r => r.rowNumber === rowNumber);
 
-  writePromise
-    .then(result => {
-      clearTimeout(stageTimer);
-      setAllButtonsDisabled(false);
-      if (!result.success) throw new Error(result.error || 'Could not save.');
+  const requests = [isEarlyReturn
+    ? { action: 'earlyReturnBike', payload: { rowNumber: rowNumber, returnDate: isoDate, refundAmount: refundAmount, refundPaidBy: refundPaidBy, clientTxnId: genClientTxnId() } }
+    : { action: 'markReturned', payload: { rowNumber: rowNumber, returnDate: isoDate, clientTxnId: genClientTxnId() } }];
+
+  // Fires after the return itself has already succeeded -- clears the
+  // matched security deposit entirely and, if a deduction was entered,
+  // logs it as its own normal income entry (see the 'returnDeposit' action
+  // in lib/bikesWrites.js for exactly what that does server-side). Only
+  // added when a deposit was actually matched on this popup.
+  if (depositMatch) {
+    const depositBody = {
+      category: depositMatch.category, row: depositMatch.row, deductionAmount: deductionAmount,
+      reason: reason, customerName: row ? row.name : '', bikeModel: row ? row.bikeModel : '',
+      clientTxnId: genClientTxnId()
+    };
+    // "Return deposit in cash" -- always the WHOLE matched deposit amount,
+    // never split with a deduction (mutually exclusive in the UI, and
+    // returnDepositAsCash is only ever true when deductionAmount is 0 --
+    // see the confirm-return click handler).
+    if (returnDepositAsCash && depositMatch.amount) {
+      depositBody.returnedVia = 'cash';
+      depositBody.returnedViaAmount = depositMatch.amount;
+    }
+    requests.push({ action: 'returnDeposit', payload: depositBody });
+  }
+
+  openReturnRowNumber = null;
+  delete returnDepositMatches[rowNumber];
+  delete returnDepositTypeDisplay[rowNumber];
+  delete returnEarlyToggleOpen[rowNumber];
+  delete returnCashToggleOpen[rowNumber];
+
+  bkEnqueue({
+    label: (row ? row.name + ' — ' : '') + (isEarlyReturn ? 'Early return' : 'Return'),
+    rows: [rowNumber],
+    requests,
+    onStepSuccess: (stepIndex, result) => {
+      if (stepIndex !== 0) return;
       // Post-write verification problems (the server re-reads what it
       // wrote and compares) come back as a warning -- the save DID go
       // through, but something should be checked by hand.
       if (result.warning) alert('Saved, but: ' + result.warning);
-      openReturnRowNumber = null;
-      savingReturnRowNumber = null;
-      delete returnDepositMatches[rowNumber];
-      delete returnDepositTypeDisplay[rowNumber];
-      delete returnEarlyToggleOpen[rowNumber];
-      delete returnCashToggleOpen[rowNumber];
-
       // Both markReturned and earlyReturnBike touch this one customer
-      // row's return date/time-color/situation the same way -- a refund
-      // (earlyReturnBike only) additionally changes this row's total price
-      // plus the Contract/ledger/bikes/accounts sheets, but none of those
-      // are reflected in the on-page bikes-status list anyway (it doesn't
-      // show total price once a bike drops off the "currently rented"
-      // list), so the same direct local update covers both cases without
-      // waiting on a full reload.
-      const row = (customerRows || []).find(r => r.rowNumber === rowNumber);
-      if (row) {
-        row.returnDate = isoToDmy(isoDate);
-        row.situation = 'Returned';
-        render();
-      } else {
-        // Shouldn't normally happen, but fall back to a full reload rather
-        // than leave the list looking out of date if it ever does.
-        clearBikesCache(); return loadData();
-      }
-
-      // The bike return itself is already saved by this point -- the
-      // deposit side (clearing the matched entry, logging any deduction as
-      // its own income) is a separate, best-effort follow-up call so a
-      // problem there never undoes or blocks the return that just
-      // succeeded. Only fires when a deposit was actually matched on this
-      // popup; a booking with no deposit on file skips this entirely.
-      if (depositMatch) {
-        submitReturnDeposit(depositMatch, deductionAmount, reason, row ? row.name : '', row ? row.bikeModel : '', returnDepositAsCash);
-      }
-    })
-    .catch(err => {
-      clearTimeout(stageTimer);
-      setAllButtonsDisabled(false);
-      savingReturnRowNumber = null;
-      render();
-      alert('Could not mark as returned: ' + err.message);
-    });
-}
-
-// Fires after confirmReturn()'s markReturned call has already succeeded --
-// the bike return itself is done and saved by this point, so this is a
-// separate best-effort step: clears the matched security deposit entirely
-// and, if a deduction was entered, logs it as its own normal income entry
-// (see the 'returnDeposit' action in Code.gs for exactly what that does
-// server-side). A problem here surfaces as its own alert rather than
-// rolling back the return that already succeeded.
-function submitReturnDeposit(depositMatch, deductionAmount, reason, customerName, bikeModel, returnDepositAsCash) {
-  const body = {
-    action: 'returnDeposit',
-    category: depositMatch.category,
-    row: depositMatch.row,
-    deductionAmount: deductionAmount,
-    reason: reason,
-    customerName: customerName,
-    bikeModel: bikeModel
-  };
-  // "Return deposit in cash" -- always the WHOLE matched deposit amount,
-  // never split with a deduction (the two are mutually exclusive in the
-  // UI, and returnDepositAsCash is only ever true when deductionAmount is
-  // 0 -- see the confirm-return click handler). Reuses returnDeposit()'s
-  // existing (and already-correct) cross-method release/payout handling in
-  // Code.gs -- see its design comment -- just always fixed to 'cash' here,
-  // rather than exposing the full any-to-any category switch that logic
-  // also supports.
-  if (returnDepositAsCash && depositMatch.amount) {
-    body.returnedVia = 'cash';
-    body.returnedViaAmount = depositMatch.amount;
-  }
-  bikesWriteDispatch(body)
-    .then(result => {
-      if (!result.success) {
-        alert('Bike marked returned, but the deposit could not be processed: ' + (result.error || 'unknown error'));
-        return;
-      }
-      if (result.warning) alert('Deposit processed, but: ' + result.warning);
-    })
-    .catch(err => {
-      alert('Bike marked returned, but the deposit could not be processed: ' + err.message);
-    });
+      // row's return date/time-color/situation the same way -- patched
+      // locally the moment this step succeeds (not waiting on the
+      // best-effort deposit follow-up, if any) so the underlying data is
+      // correct as soon as it can be, even though the card itself keeps
+      // showing "Saving…" until the whole item (including the deposit
+      // step) resolves.
+      const r2 = (customerRows || []).find(r => r.rowNumber === rowNumber);
+      if (r2) { r2.returnDate = isoToDmy(isoDate); r2.situation = 'Returned'; }
+    },
+    onAllSuccess: (results) => {
+      const depositWarning = results[1] && results[1].warning;
+      if (depositWarning) alert('Deposit processed, but: ' + depositWarning);
+      const r2 = (customerRows || []).find(r => r.rowNumber === rowNumber);
+      if (!r2) { clearBikesCache(); loadData(); }
+    }
+  });
 }
 
 // Lets staff record the actual agreed pickup DATE & TIME on an active
@@ -5059,22 +5499,23 @@ function submitReturnDeposit(depositMatch, deductionAmount, reason, customerName
 // returns calendar (moving/recoloring that one event); the booking's
 // actual due date shown elsewhere on this page (overdue badge, extend
 // math, etc.) is never touched.
+// REWIRED 2026-08-17 onto the save-pipeline engine -- picker closes
+// immediately, write runs in the background, only this row's card shows
+// "Saving…" while it's in flight. updateReturnPickup has no clientTxnId
+// (it's naturally idempotent already -- see genClientTxnId's own comment
+// for exactly which actions do/don't need one).
 function confirmEditTime(rowNumber, isoDate, hhmm, deliveryLink) {
-  savingEditTimeRowNumber = rowNumber;
-  savingEditTimeStage = 'connecting';
-  render();
-  setAllButtonsDisabled(true);
-  const stageTimer = setTimeout(() => { savingEditTimeStage = 'saving'; render(); setAllButtonsDisabled(true); }, 500);
+  if (bkQueueFull()) { alert('2 saves are already in progress — wait for one to finish before starting another.'); return; }
 
-  bikesWriteDispatch({ action: 'updateReturnPickup', rowNumber: rowNumber, returnDate: isoDate, returnTime: hhmm, deliveryLink: deliveryLink })
-    .then(result => {
-      clearTimeout(stageTimer);
-      setAllButtonsDisabled(false);
-      if (!result.success) throw new Error(result.error || 'Could not save.');
+  openEditTimeRowNumber = null;
+
+  bkEnqueue({
+    label: 'Adjust pickup',
+    rows: [rowNumber],
+    requests: [{ action: 'updateReturnPickup', payload: { rowNumber: rowNumber, returnDate: isoDate, returnTime: hhmm, deliveryLink: deliveryLink } }],
+    onAllSuccess: (results) => {
+      const result = results[0];
       if (result.warning) alert('Saved, but: ' + result.warning);
-      openEditTimeRowNumber = null;
-      savingEditTimeRowNumber = null;
-
       // updateReturnPickup touches this one customer row's return time,
       // confirmed-pickup-date, and (if a link was entered) pickupLink
       // columns -- plus, best-effort, the matching Contract row's own
@@ -5092,20 +5533,13 @@ function confirmEditTime(rowNumber, isoDate, hhmm, deliveryLink) {
         // confirmedReturnDate just above.
         row.pickupLink = deliveryLink;
         row.deliveryLink = deliveryLink;
-        render();
       } else {
         // Shouldn't normally happen, but fall back to a full reload rather
         // than leave the list looking out of date if it ever does.
-        clearBikesCache(); return loadData();
+        clearBikesCache(); loadData();
       }
-    })
-    .catch(err => {
-      clearTimeout(stageTimer);
-      setAllButtonsDisabled(false);
-      savingEditTimeRowNumber = null;
-      render();
-      alert('Could not update the return time: ' + err.message);
-    });
+    }
+  });
 }
 
 // Adds one calendar month to a date, clamping to the last day of the
@@ -5134,7 +5568,12 @@ function toIsoDate(d) {
 // off to the Customer Record form to start a brand-new rental record for
 // the extension period, prefilled from this booking's details. The
 // checkbox takes precedence over the days field if both are given.
+// REWIRED 2026-08-17 onto the save-pipeline engine -- picker closes
+// immediately, write(s) run in the background, only this row's card
+// shows "Saving…" while in flight.
 function confirmExtend(rowNumber, daysToExtend, amountPaid, extendMonth, paidBy, paidFromDeposit, depositCategory, depositRow, isDeal) {
+  if (bkQueueFull()) { alert('2 saves are already in progress — wait for one to finish before starting another.'); return; }
+
   const isLongExtension = extendMonth || (daysToExtend >= 30);
 
   if (isLongExtension) {
@@ -5155,10 +5594,7 @@ function confirmExtend(rowNumber, daysToExtend, amountPaid, extendMonth, paidBy,
     // Fallback in case the live auto-fill listeners didn't get a chance to
     // run (e.g. Confirm clicked immediately after ticking the checkbox):
     // price the extension period from the bike's category rate if nothing
-    // was entered. There's no follow-up screen to fix a missing price on
-    // anymore (this now submits directly), so if neither a typed amount
-    // nor an auto-price is available, this stops here rather than closing
-    // out the old booking and submitting a ฿0 extension.
+    // was entered.
     let finalAmount = amountPaid;
     if (!finalAmount) {
       const autoPrice = computeExtendPrice(renter.bikeModel, extendMonth, daysToExtend);
@@ -5170,140 +5606,96 @@ function confirmExtend(rowNumber, daysToExtend, amountPaid, extendMonth, paidBy,
       }
     }
 
-    savingExtendRowNumber = rowNumber;
-    savingExtendStage = 'connecting';
-    render();
-    setAllButtonsDisabled(true);
-    const closeStageTimer = setTimeout(() => { savingExtendStage = 'saving'; render(); setAllButtonsDisabled(true); }, 500);
-
     // Closes out the old booking, then submits the new period straight
     // through -- the same plain intake action customers.html's own Add
-    // form uses (action:'customerIntake', see lib/bikesWrites.js) --
-    // instead of routing through that page for a manual review + click.
-    // Uses this booking's data exactly as it sits on the sheet right now;
-    // there's currently no in-app edit for a customer-sheet row, so if
-    // anything here turns out wrong, fix it on the sheet directly. Two
-    // separate round trips, same as before this pass (see the DEAD CODE
-    // block comment above for why this wasn't collapsed into one combined
-    // action) -- just each one now hits the server in a single request
-    // instead of its own multi-step client-side chain.
-    bikesWriteDispatch({ action: 'closeBikeForExtend', rowNumber: rowNumber })
-      .then(closeResult => {
-        if (!closeResult.success) throw new Error(closeResult.error || 'Could not close out the old booking.');
-        // Post-write verification problems come back as a warning -- the
-        // close-out DID go through, but something should be checked by
-        // hand. Held onto and combined with any warning from the new row
-        // below, rather than surfaced separately.
-        const closeWarning = closeResult.warning || null;
+    // form uses (action:'customerIntake', see lib/bikesWrites.js) -- as
+    // TWO requests in one queue item, run in strict sequence (see bkRun),
+    // same order as before this pass, just backgrounded.
+    const payload = {
+      contact: renter.contact || '',
+      name: renter.name || '',
+      nationality: renter.nationality || '',
+      passport: renter.passport || '',
+      bikeModel: renter.bikeModel || '',
+      rentingDateFrom: toIsoDate(oldDue),
+      returnDate: toIsoDate(newReturn),
+      returnTime: renter.returnTime || '',
+      deliverToHotel: renter.deliverToHotel || '',
+      totalPrice: String(finalAmount),
+      paidBy: paidBy || renter.paidBy || '',
+      source: 'extend',
+      // Lets the new row's ledger note pick up this booking's full
+      // rental history (every prior leg) instead of starting blank --
+      // see appendLedgerEntry's isExtendSource branch in Code.gs.
+      previousRowNumber: String(rowNumber),
+      // Deal (Anton, 20/07/2026) -- only ever sent for a long extension.
+      isDeal: !!isDeal,
+      // clientTxnId generated once here so a dropped-connection retry (or
+      // a page-reload resubmit -- see restoreUnresolvedSaves) of this same
+      // request can't book the extension twice -- see customerIntakeFromJson's
+      // own comment in lib/bikesWrites.js.
+      clientTxnId: genClientTxnId()
+    };
+    // Cash (Anton, 13/08/2026) has no depositRow to select -- see
+    // refreshExtendPaidFromDepositUI -- so it's allowed through here
+    // without one; every other category still requires a picked row.
+    if (paidFromDeposit && depositCategory && (depositCategory === 'cash' || depositRow)) {
+      payload.paidFromDeposit = true;
+      payload.depositCategory = depositCategory;
+      payload.depositRow = depositCategory === 'cash' ? '' : Number(depositRow);
+    }
 
-        const payload = {
-          contact: renter.contact || '',
-          name: renter.name || '',
-          nationality: renter.nationality || '',
-          passport: renter.passport || '',
-          bikeModel: renter.bikeModel || '',
-          rentingDateFrom: toIsoDate(oldDue),
-          returnDate: toIsoDate(newReturn),
-          returnTime: renter.returnTime || '',
-          deliverToHotel: renter.deliverToHotel || '',
-          totalPrice: String(finalAmount),
-          paidBy: paidBy || renter.paidBy || '',
-          source: 'extend',
-          // Lets the new row's ledger note pick up this booking's full
-          // rental history (every prior leg) instead of starting blank --
-          // see appendLedgerEntry's isExtendSource branch in Code.gs.
-          previousRowNumber: String(rowNumber),
-          // Deal (Anton, 20/07/2026) -- only ever sent for a long extension
-          // (see the confirm-extend handler, which never sets isDeal=true
-          // outside that case). Code.gs's plain customer-intake branch
-          // (the one this payload hits, same as customers.html's Add form)
-          // already reads data.isDeal and appends the " Deal" tag onto this
-          // new row's Contact-cell running-total note -- no backend change
-          // needed for this to work.
-          isDeal: !!isDeal,
-          action: 'customerIntake',
-          // clientTxnId generated once here so a dropped-connection retry
-          // of this same click can't book the extension twice -- see
-          // customerIntakeFromJson's own comment in lib/bikesWrites.js.
-          clientTxnId: genClientTxnId()
-        };
-        // Cash (Anton, 13/08/2026) has no depositRow to select -- see
-        // refreshExtendPaidFromDepositUI -- so it's allowed through here
-        // without one; every other category still requires a picked row.
-        if (paidFromDeposit && depositCategory && (depositCategory === 'cash' || depositRow)) {
-          payload.paidFromDeposit = true;
-          payload.depositCategory = depositCategory;
-          payload.depositRow = depositCategory === 'cash' ? '' : Number(depositRow);
-        }
+    extendAmountManuallyEditedRows.delete(rowNumber);
+    openExtendRowNumber = null;
 
-        return bikesWriteDispatch(payload)
-          .then(addResult => {
-            if (!addResult.success) throw new Error(addResult.error || 'Could not save the extension.');
-            const warnings = [closeWarning, addResult.warning].filter(Boolean);
-            if (warnings.length) alert('Extended, but: ' + warnings.join(' '));
-          });
-      })
-      .then(() => {
-        clearTimeout(closeStageTimer);
-        setAllButtonsDisabled(false);
-        extendAmountManuallyEditedRows.delete(rowNumber);
-        openExtendRowNumber = null;
-        savingExtendRowNumber = null;
-        clearBikesCache(); return loadData();
-      })
-      .catch(err => {
-        clearTimeout(closeStageTimer);
-        setAllButtonsDisabled(false);
-        savingExtendRowNumber = null;
-        render();
-        alert('Could not extend: ' + err.message);
-      });
+    bkEnqueue({
+      label: (renter.name ? renter.name + ' — ' : '') + 'Extend (new period)',
+      rows: [rowNumber],
+      requests: [
+        { action: 'closeBikeForExtend', payload: { rowNumber: rowNumber } },
+        { action: 'customerIntake', payload }
+      ],
+      onAllSuccess: (results) => {
+        const warnings = [results[0] && results[0].warning, results[1] && results[1].warning].filter(Boolean);
+        if (warnings.length) alert('Extended, but: ' + warnings.join(' '));
+        // Closes out the old row and creates a brand-new one -- simplest
+        // to just reload rather than try to patch the list in place, same
+        // as before this pass.
+        clearBikesCache(); loadData();
+      }
+    });
     return;
   }
 
   // Short extension (under 30 days, checkbox not ticked): simple in-place
   // update, same as before.
-  savingExtendRowNumber = rowNumber;
-  savingExtendStage = 'connecting';
-  render();
-  setAllButtonsDisabled(true);
-  const stageTimer = setTimeout(() => { savingExtendStage = 'saving'; render(); setAllButtonsDisabled(true); }, 500);
+  const rr = (customerRows || []).find(r => r.rowNumber === rowNumber);
+  openExtendRowNumber = null;
 
-  bikesWriteDispatch({
+  bkEnqueue({
+    label: (rr && rr.name ? rr.name + ' — ' : '') + 'Extend',
+    rows: [rowNumber],
+    requests: [{
       action: 'extendBike',
-      rowNumber: rowNumber,
-      daysToExtend: daysToExtend,
-      amountPaid: amountPaid,
-      paidBy: paidBy,
-      paidFromDeposit: paidFromDeposit,
-      depositCategory: depositCategory,
-      depositRow: depositRow,
-      // clientTxnId generated once here so a dropped-connection retry of
-      // this same click can't double-charge -- see extendBikeRowFromJson's
-      // own comment in lib/bikesWrites.js.
-      clientTxnId: genClientTxnId()
-    })
-    .then(result => {
-      clearTimeout(stageTimer);
-      setAllButtonsDisabled(false);
-      if (!result.success) throw new Error(result.error || 'Could not save.');
+      payload: {
+        rowNumber: rowNumber, daysToExtend: daysToExtend, amountPaid: amountPaid, paidBy: paidBy,
+        paidFromDeposit: paidFromDeposit, depositCategory: depositCategory, depositRow: depositRow,
+        // clientTxnId generated once here so a dropped-connection retry (or
+        // a page-reload resubmit) of this same request can't double-charge
+        // -- see extendBikeRowFromJson's own comment in lib/bikesWrites.js.
+        clientTxnId: genClientTxnId()
+      }
+    }],
+    onAllSuccess: (results) => {
       // Post-write verification problems (the server re-reads everything
       // it wrote -- customer row, income row, cash row, bikes/deposit
       // totals -- and compares) come back as a warning: the extension DID
       // save, but something should be checked by hand.
-      if (result.warning) alert('Extended, but: ' + result.warning);
+      if (results[0].warning) alert('Extended, but: ' + results[0].warning);
       extendAmountManuallyEditedRows.delete(rowNumber);
-      openExtendRowNumber = null;
-      savingExtendRowNumber = null;
-      clearBikesCache(); return loadData();
-    })
-    .catch(err => {
-      clearTimeout(stageTimer);
-      setAllButtonsDisabled(false);
-      savingExtendRowNumber = null;
-      render();
-      alert('Could not extend: ' + err.message);
-    });
+      clearBikesCache(); loadData();
+    }
+  });
 }
 
 /* ---------------- Swap Bike ---------------- */
@@ -5936,8 +6328,8 @@ function swapModalHtml() {
             ${swapDraft.upgradeChecked && swapDraft.additionalAmount > 0 ? `<p>Plus an additional <b>฿${fmtMoney(swapDraft.additionalAmount)}</b> upgrade fee, paid by <b>${paidByDisplayName(swapDraft.additionalPaidBy)}</b> — logged as new income this month.</p>` : ''}
           </div>
           <div class="modal-actions">
-            <button class="bc-btn cancel-swap-confirm" type="button" ${swapSaving ? 'disabled' : ''}>Back</button>
-            <button class="bc-btn confirm-swap-final" type="button" ${swapSaving ? 'disabled' : ''}>${swapSaving ? 'Saving…' : 'Yes, confirm'}</button>
+            <button class="bc-btn cancel-swap-confirm" type="button">Back</button>
+            <button class="bc-btn confirm-swap-final" type="button" ${bkQueueFull() ? 'disabled title="2 saves already in progress — wait for one to finish"' : ''}>Yes, confirm</button>
           </div>
         </div>
       </div>
@@ -6150,44 +6542,47 @@ function attemptSwapSave() {
   renderSwapModal();
 }
 
+// REWIRED 2026-08-17 onto the save-pipeline engine -- the modal closes
+// immediately (optimistic) and the original row's card shows "Saving…"
+// while the swap runs in the background, same as every other action on
+// this page now.
 function submitSwap() {
   const renter = (customerRows || []).find(r => r.rowNumber === swapModalRowNumber);
   if (!renter) { closeSwapModal(); return; }
+  if (bkQueueFull()) { alert('2 saves are already in progress — wait for one to finish before starting another.'); return; }
 
-  swapSaving = true;
-  renderSwapModal();
-  setAllButtonsDisabled(true);
+  const rowNumber = swapModalRowNumber;
+  const draft = swapDraft;
+  closeSwapModal();
 
-  bikesWriteDispatch({
+  bkEnqueue({
+    label: (renter.name ? renter.name + ' — ' : '') + 'Swap bike',
+    rows: [rowNumber],
+    requests: [{
       action: 'swapBike',
-      rowNumber: swapModalRowNumber,
-      newBikeModel: swapDraft.newBike,
-      returnAmount: swapDraft.returnAmount,
-      newBikeAmount: swapDraft.newBikeAmount,
-      returnDate: todayIso(),
-      additionalAmount: swapDraft.upgradeChecked ? swapDraft.additionalAmount : 0,
-      additionalPaidBy: swapDraft.upgradeChecked ? swapDraft.additionalPaidBy : '',
-      // clientTxnId generated once here so a dropped-connection retry of
-      // this same click can't double-swap -- see swapBikeFromJson's own
-      // comment in lib/bikesWrites.js.
-      clientTxnId: genClientTxnId()
-    })
-    .then(result => {
-      setAllButtonsDisabled(false);
-      if (!result.success) throw new Error(result.error || 'Could not save.');
+      payload: {
+        rowNumber: rowNumber,
+        newBikeModel: draft.newBike,
+        returnAmount: draft.returnAmount,
+        newBikeAmount: draft.newBikeAmount,
+        returnDate: todayIso(),
+        additionalAmount: draft.upgradeChecked ? draft.additionalAmount : 0,
+        additionalPaidBy: draft.upgradeChecked ? draft.additionalPaidBy : '',
+        // clientTxnId generated once here so a dropped-connection retry
+        // (or a page-reload resubmit) of this same request can't
+        // double-swap -- see swapBikeFromJson's own comment in
+        // lib/bikesWrites.js.
+        clientTxnId: genClientTxnId()
+      }
+    }],
+    onAllSuccess: (results) => {
+      if (results[0].warning) alert('Swapped, but: ' + results[0].warning);
       // The swap touches two customer rows (this one closed out, plus a
       // brand-new one for the new bike) and the bikes sheet -- simplest to
       // just reload everything rather than try to patch the list in place.
-      if (result.warning) alert('Swapped, but: ' + result.warning);
-      closeSwapModal();
-      clearBikesCache(); return loadData();
-    })
-    .catch(err => {
-      setAllButtonsDisabled(false);
-      swapSaving = false;
-      renderSwapModal();
-      alert('Could not complete the swap: ' + err.message);
-    });
+      clearBikesCache(); loadData();
+    }
+  });
 }
 
 document.addEventListener('click', (e) => {
@@ -6317,6 +6712,7 @@ quickviewModalMount.addEventListener('click', (e) => {
 });
 
 loadData();
+restoreUnresolvedSaves(); // safe to run alongside loadData() -- see that function's own comment
 </script>
 
 

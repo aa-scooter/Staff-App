@@ -6,6 +6,158 @@ This exists because work on this project gets picked up across multiple
 Claude sessions/accounts with no shared memory between them — this file is
 the handoff.
 
+## 🔧 bikes.html: FULL optimistic-UI save-pipeline engine (per-row saving
+## state, header progress strip, 2-save cap, keepalive, auto-retry-on-409,
+## localStorage crash/nav recovery) -- all 7 write actions rewired, CODED
+## AND TEST-GREEN, NOT YET DEPLOYED (2026-08-17, later same day)
+
+**Why this exists:** the earlier same-day "frontend wired to the single-
+dispatch endpoint" entry (further below) shipped the perf win -- one round
+trip instead of several -- but kept the OLD UX: `setAllButtonsDisabled(true)`
+locked literally every button on the page for the whole save, and the
+picker stayed open showing "Connecting…/Saving…" text. Anton flagged this
+directly: "it still looks exactly the same... everything just locks up.
+You can't click anywhere or do anything." What he actually wanted: only the
+specific row being acted on grays out with a small "Saving…" badge, a
+header strip shows overall progress, the rest of the app (including
+navigating to a completely different page) stays fully usable, and up to 2
+saves can be in flight/queued at once -- exactly 2 (1 running + 1 waiting),
+not 3-4 -- with every write-committing button on the page grayed out once
+both slots are full. This entry is that full rebuild, agreed with Anton as
+an explicit 8-step plan before starting.
+
+**Step 1 (prerequisite): closed the last idempotency gap.** `returnDeposit`
+was the one bikes.html action with no `clientTxnId` guard (its payload has
+no consistent customer/contract row to anchor a row-keyed marker to, unlike
+every other action). Added a flat, non-row-keyed sidecar marker instead --
+`depositReturn_notes` holds a plain `[clientTxnId, timestamp]` list, checked/
+appended by two new functions in `lib/bikesWrites.js`
+(`findExistingDepositReturnTxnMarkerFromJson`/`markDepositReturnTxnIdFromJson`),
+wrapping the WHOLE function (not each of its 3 independent steps
+individually) since a replay must skip all of them together. 15 new
+scenarios in `return-deposit-idempotency.test.js`: no-clientTxnId backward
+compatibility, money-critical idempotency on both the deduction and the
+cross-method release+payout paths (retried request does NOT double-fire),
+two different clientTxnIds both apply independently, fails open (not
+throws) when the sidecar sheet doesn't exist yet. All 7 of bikes.html's
+actions are now idempotency-guarded server-side -- the precondition the
+rest of this engine relies on to safely auto-retry/blindly resubmit.
+
+**Step 2-5 (the engine itself, in bikes.html's main `<script>`, marked with
+`// ================== Save-pipeline engine (2026-08-17) ==================`
+/ `// ================== end save-pipeline engine ==================`
+comments so it's easy to find/remove as a unit, mirroring accounts.html's
+"opt-" class-prefix convention from 16/08):**
+- `bkQueue` (array, length 0-2) + `pendingRowSaves` (Map: rowNumber -> the
+  queue item currently saving/queued for that row) replace the OLD
+  single-scalar `savingReturnRowNumber`/`savingExtendRowNumber`/
+  `savingEditTimeRowNumber`/`swapSaving` pattern, which could only ever
+  track ONE row "saving" at a time, page-wide -- incompatible with two
+  genuinely concurrent saves (e.g. extending bike A and bike B together).
+- `bkEnqueue({label, rows, requests, onStepSuccess?, onAllSuccess})` is the
+  one entry point every rewired action calls. `requests` is an ordered
+  array of `{action, payload}` run in strict sequence as ONE queue slot --
+  most actions are a single request, but Return-with-matched-deposit and a
+  long Extend (close-out + new booking) are two, same order as before this
+  pass, just backgrounded.
+- `bkDispatch`/`bkDispatchWithRetry` wrap `fetch('/api/bikes/write', {...,
+  keepalive:true})` -- keepalive is what lets the actual network request
+  finish even after the user navigates to a different page (bikes.html has
+  no SPA router; navigating tears this whole script down). A 409 response
+  (another page/tab -- e.g. accounts.html -- legitimately wrote the same
+  underlying month sheet in the meantime) is auto-retried up to 3 attempts
+  with backoff before being treated as a real failure -- distinct from the
+  clientTxnId guard, which protects against the SAME write being applied
+  twice; this protects two DIFFERENT legitimate writes from clobbering each
+  other on the wire, which matters more now that backgrounding widens the
+  collision window.
+- `persistPendingSaves()`/`restoreUnresolvedSaves()`: every queued/running
+  save is written to `localStorage` (`aaBikesPendingSaves`) the INSTANT
+  it's queued, not just on failure. On a fresh page load, anything still
+  sitting there (from a navigation or closed tab mid-save) is safely
+  resubmitted in the background -- safe purely because of the idempotency
+  guard from step 1. A definitively FAILED save (`aaBikesFailedSaves`) is
+  restored to the review panel instead, and deliberately does NOT
+  auto-resubmit -- that needs a person's Retry click.
+- Header strip (`#optStrip`, "● Saving…" / "● Saving… (1 queued)") plus a
+  failure banner + Retry/Discard review overlay (`#optBanner`/`#optOverlay`),
+  new CSS block prefixed `opt-` for the same find/remove-as-a-unit reason
+  as accounts.html's.
+- `renterActionsHtml()` now checks `pendingRowSaves` FIRST and renders only
+  a small badge (no picker) when this row has an in-flight/queued save;
+  otherwise every write-committing button (Confirm on any picker, plus the
+  Return/Extend/Swap/Adjust Pickup trigger buttons) is disabled once
+  `bkQueueFull()` is true. `bikeCardHtml()` adds an `opt-row-pending` class
+  (dims the whole card) for the same row(s).
+
+**Step 6: all 7 actions rewired** -- `confirmReturn` (+ its `returnDeposit`
+follow-up, now request #2 of the same queue item instead of a separate
+fire-and-forget call), `confirmEditTime`, `confirmExtend` (both the short
+in-place path and the long close-out+intake pair), `submitSwap`. Every one
+now: builds its payload(s) synchronously, closes its picker/modal
+immediately (optimistic), and calls `bkEnqueue()` instead of
+`bikesWriteDispatch()` + `setAllButtonsDisabled()`. The old
+`bikesWriteDispatch`/`setAllButtonsDisabled` functions are left in place,
+unused, with a comment explaining the supersession (grep before deleting).
+
+**Step 7: failure review UI** -- built alongside the engine rather than as
+a separate pass, since the banner/overlay/Retry/Discard plumbing is shared
+infrastructure with the pending-save tracking. `bkRetryFailed` resets the
+item to `reqIndex:0` and re-queues it from scratch (safe -- every step is
+independently idempotency-guarded, so re-running a step that already
+secretly succeeded is a harmless no-op). `bkDiscardFailed` has no generic
+undo (unlike accounts.html's simple add/edit/delete rows, every action
+here is a multi-sheet server-side operation) -- it just stops retrying and
+reloads so the screen reflects whatever the real server-side state is.
+
+**Step 8: testing.** New `frontend/save-queue.test.js` (33 assertions, same
+jsdom-extraction technique as the existing `dispatch.test.js`, extracting
+the whole engine block by its start/end marker comments rather than one
+function at a time): queue-cap enforcement (0/1/2, `bkQueueFull()` exactly
+at 2, never blocks a 3rd purely because 2 rows can be tracked
+independently), `keepalive:true` present on every request + correct
+URL/method/body shape, 409-retry succeeding transparently within 3
+attempts, 409-retry exhausting after exactly 3 attempts and surfacing as a
+real failure with the server's own message, `aaBikesPendingSaves` written
+the instant a save is queued and cleared the instant it resolves, and
+`restoreUnresolvedSaves()` both correctly resubmitting a leftover pending
+save (and reloading once it resolves) AND correctly restoring a leftover
+FAILED save to the review panel WITHOUT auto-resubmitting it. Combined with
+all pre-existing backend suites: **239/239 assertions green** across 8
+files (`contract-writes.test.js` 47, `extend-and-pickup.test.js` 38,
+`long-extend.test.js` 34, `return-actions.test.js` 32,
+`return-deposit-idempotency.test.js` 15, `swap.test.js` 25,
+`frontend/dispatch.test.js` 15, `frontend/save-queue.test.js` 33). Whole
+file also syntax-checked clean (`new Function(...)` on both inline
+`<script>` blocks) after every edit.
+
+**Explicitly deferred to the backlog, per Anton (17/08/2026):** the
+cap-of-2 gray-out is currently PAGE-SCOPED (bikes.html only). A GLOBAL,
+cross-page version (any write-committing button anywhere in the app grays
+out once 2 saves are queued on ANY page) is wanted eventually but was
+explicitly deprioritized -- "we can probably do that later though, if it's
+a large scope... just put it on the list." Cross-page data safety in the
+meantime is handled by the 409 auto-retry above plus the pre-existing
+`expectedModifiedTime` conflict check server-side (a genuine collision
+between two pages self-heals via retry rather than either silently
+corrupting the other or just failing once).
+
+**Not yet done:**
+1. Deliver via the workspace folder, push (zero risk, nothing live changed
+   -- this Vercel copy's `scriptUrl` is intentionally disconnected, see
+   this file's own header / project `CLAUDE.md`).
+2. Once bikes.html's pattern is proven live, apply the SAME full
+   optimistic-UI treatment (not just backend-dispatch wiring) to
+   contract.html before/while doing its frontend wiring (task pending
+   below), and to deposits.html/add-bikes.html/customers.html after that,
+   per the rollout order -- this is a course correction vs. the "keep the
+   existing blocking UX" scope decision written into contract.html's own
+   entry below, which predates Anton's clarification that the FULL
+   real-time per-row background-save experience is what's wanted
+   everywhere, not just bikes.html.
+3. GLOBAL (cross-page) cap-of-2 gray-out -- backlogged, see above.
+4. Phase 3 (make nav.js's failure badge page-aware) is still untouched.
+
 ## 🔧 Phase 2, contract.html write layer: ALL 4 IN-SCOPE ACTIONS PORTED
 ## AND TEST-GREEN, NOT YET DEPLOYED, NOT YET WIRED INTO THE FRONTEND
 ## (2026-08-17, later same day as the inventory entry just below)
