@@ -502,17 +502,20 @@
     } catch (e) { return ''; } // corrupt/inaccessible storage -- fail quiet, same as everything else here
   }
 
-  // Reads bikes.html's save-pipeline engine state straight out of
-  // localStorage (aaBikesPendingSaves -- see that file's
-  // persistPendingSaves()/bkQueue) and returns how many saves are
-  // currently running/queued there, 0 if none or unreadable. Deliberately
-  // does NOT try to distinguish "running" vs "queued" here (that nuance
-  // only matters while actually on bikes.html, where the live in-memory
-  // bkQueue drives it precisely) -- from anywhere else, "something is
-  // still saving" is the whole story that matters.
-  function pendingBikesSaveCount() {
+  // Reads ONE page's save-pipeline engine state straight out of
+  // localStorage (see that page's own persistPendingSaves()) and returns
+  // how many saves are currently running/queued there, 0 if none or
+  // unreadable. Deliberately does NOT try to distinguish "running" vs
+  // "queued" here (that nuance only matters while actually standing on
+  // the owning page, where its own live in-memory queue drives it
+  // precisely) -- from anywhere else, "something is still saving" is the
+  // whole story that matters. Generic over PENDING_SAVE_SOURCES (defined
+  // below) rather than hardcoded to bikes.html, so this and
+  // refreshSaveStrip() automatically pick up contract.html's (and any
+  // future page's) own pending-save key with no further changes here.
+  function pendingSaveCount(source) {
     try {
-      var raw = localStorage.getItem('aaBikesPendingSaves');
+      var raw = localStorage.getItem(source.pendingKey);
       if (!raw) return 0;
       var arr = JSON.parse(raw);
       return Array.isArray(arr) ? arr.length : 0;
@@ -526,13 +529,25 @@
   // moment this page happened to load. Deliberately only updates this one
   // element in place rather than re-running renderTopbar() on every tick
   // -- re-injecting the whole topbar's outerHTML on a timer would reset
-  // any open dropdown/modal state for no reason.
+  // any open dropdown/modal state for no reason. Sums across EVERY
+  // registered source (bikes.html, contract.html, ...) -- "(N queued)"
+  // is the total waiting behind each source's own 1 "running" slot, not
+  // any single page's queue, since two different pages can each have
+  // their own save genuinely in flight at once.
   function refreshSaveStrip() {
     var el = document.getElementById('saveStrip');
     if (!el) return;
-    var n = pendingBikesSaveCount();
-    if (!n) { el.classList.remove('show'); return; }
-    el.textContent = n === 1 ? '● Saving…' : '● Saving… (' + (n - 1) + ' queued)';
+    var counts = PENDING_SAVE_SOURCES.map(function (s) { return { source: s, n: pendingSaveCount(s) }; });
+    var total = counts.reduce(function (sum, c) { return sum + c.n; }, 0);
+    if (!total) { el.classList.remove('show'); return; }
+    var queuedCount = counts.reduce(function (sum, c) { return sum + Math.max(0, c.n - 1); }, 0);
+    el.textContent = queuedCount ? ('● Saving… (' + queuedCount + ' queued)') : '● Saving…';
+    // Link to whichever source actually has the most pending right now
+    // (stable tie-break to the first entry, i.e. bikes.html, if equal) --
+    // that's the one worth reviewing/retrying from if something's stuck.
+    var withMost = counts.reduce(function (best, c) { return (c.n > best.n) ? c : best; }, counts[0]);
+    el.href = withMost.source.ownerPage;
+    el.title = 'A save is still in progress -- tap to go there';
     el.classList.add('show');
   }
 
@@ -567,7 +582,12 @@
   // (see PROGRESS.md's rollout plan) -- everything below is written
   // generically against this table, not hardcoded to bikes.html.
   var PENDING_SAVE_SOURCES = [
-    { ownerPage: 'bikes.html', pendingKey: 'aaBikesPendingSaves', failedKey: 'aaBikesFailedSaves', endpoint: '/api/bikes/write' }
+    { ownerPage: 'bikes.html', pendingKey: 'aaBikesPendingSaves', failedKey: 'aaBikesFailedSaves', endpoint: '/api/bikes/write' },
+    // Added 17/08/2026 the moment contract.html's own save-pipeline engine
+    // scaffold landed (see PROGRESS.md) -- this table was written
+    // generically specifically so this is a one-line addition, closing the
+    // loop on the orphan-recovery fix above for this page too.
+    { ownerPage: 'contract.html', pendingKey: 'aaContractPendingSaves', failedKey: 'aaContractFailedSaves', endpoint: '/api/contract/write' }
   ];
 
   // Only items queued at least this long ago are treated as possibly
@@ -745,11 +765,11 @@
       '  </nav>\n' +
       '</div>\n' +
       // Full-width strip, sibling of (not nested inside) .topbar -- see
-      // pendingBikesSaveCount()/refreshSaveStrip() above for what drives
-      // it. Links to bikes.html, the one place a save can currently be
-      // reviewed/retried if it ever needs a person's attention -- see
-      // bikes.html's own optOverlay review panel.
-      '<a class="save-strip" id="saveStrip" href="bikes.html" title="A bikes.html save is still in progress -- tap to go there"></a>';
+      // pendingSaveCount()/refreshSaveStrip() above for what drives it.
+      // href/title are placeholders here -- refreshSaveStrip() sets both
+      // dynamically to whichever registered page actually has something
+      // pending, the moment it first runs.
+      '<a class="save-strip" id="saveStrip" href="bikes.html" title="A save is still in progress -- tap to go there"></a>';
 
     initBugsWidget();
     initNavDropdowns();

@@ -6,6 +6,93 @@ This exists because work on this project gets picked up across multiple
 Claude sessions/accounts with no shared memory between them — this file is
 the handoff.
 
+## 🔧 Phase 2, contract.html: save-pipeline engine SCAFFOLDING landed
+## (unwired), + nav.js registers contract.html's pending-save key --
+## CODED AND TEST-GREEN, NOT YET DEPLOYED (2026-08-17, small delivery,
+## more to follow -- Anton's running low on usage this session and wants
+## this pushed in small pieces rather than one big batch)
+
+**What this is:** step 1 of rolling bikes.html's full optimistic-UI
+save-pipeline engine out to contract.html (the actual next task per the
+rollout plan -- backend was already ported last session in
+`lib/contractWrites.js`/`api/contract/write.js`). This slice adds the
+engine itself (`ct`-prefixed, byte-for-byte structural port of bikes.html's
+`bk`-prefixed one -- queue-of-2, keepalive, 409-retry,
+localStorage crash/nav recovery, failure review overlay) plus the
+`opt-banner`/`opt-overlay` markup+CSS, but **wires it to NOTHING yet** --
+`doRent()`/`doCancel()`/the Edit form/the Add form still call their OLD
+local client-side functions, completely untouched. Same "nothing live
+changes yet" guarantee every earlier step of this whole rollout has used.
+
+**Also done this slice:** registered contract.html in nav.js's
+`PENDING_SAVE_SOURCES` table (`aaContractPendingSaves`/
+`aaContractFailedSaves` / `/api/contract/write`) -- this closes the loop
+on the SAME-DAY orphan-save-recovery fix above, which was deliberately
+written generically against that table specifically so this would be a
+one-line addition. Also generalized `pendingBikesSaveCount()` ->
+`pendingSaveCount(source)` and `refreshSaveStrip()` to sum across EVERY
+registered source (not just bikes.html) and link to whichever one
+actually has the most pending -- so once contract.html's actions are
+wired (next slice), the shared header strip picks it up with no further
+nav.js changes needed. Harmless today since `aaContractPendingSaves` is
+never written yet.
+
+**Testing:** two fresh Node harnesses in `/tmp/contracttest/` and
+`/tmp/navtest/` (scratch, gone between sessions -- rebuild from this
+description if picked up fresh, same as every other harness in this
+file).
+- `contracttest/run.js` (12/12 green): the sliced engine block loads and
+  runs `restoreUnresolvedSaves()` at page-init time without throwing
+  (nothing-pending case); `ctEnqueue()` marks the row pending
+  synchronously and persists to `aaContractPendingSaves` immediately;
+  resubmit hits `/api/contract/write` with the right body shape; success
+  drains the queue, clears the row/localStorage, and calls
+  `onAllSuccess` with the real server response; a definitive (non-409)
+  failure lands in `ctFailedItems` and `aaContractFailedSaves` with the
+  server's message, not silently dropped.
+- `navtest/run.js`, re-run after the `pendingSaveCount`/`refreshSaveStrip`
+  rename+generalization (24/24 green, up from 22 -- all 7 prior orphan-
+  recovery scenarios still pass unchanged, plus a new scenario 8: with
+  both bikes.html(1) and contract.html(2) pending at once, the strip
+  correctly shows the SUMMED total ("(1 queued)" = 3 total minus the two
+  sources' own "running" slots) and links to contract.html since it has
+  more pending).
+- Both files' inline `<script>` blocks syntax-checked clean
+  (`new Function(...)`) and `node --check nav.js` clean, same discipline
+  as every other change in this project.
+
+**Not yet done, in order:**
+1. Deliver via the workspace folder, push (zero risk -- nothing live
+   changed, same guarantee as every prior "backend/engine only" slice in
+   this whole rollout).
+2. Wire the 4 actions to the engine, in small separate deliveries per
+   Anton's request this session (usage running low, wants frequent
+   pushable checkpoints): `cancelContract` (`doCancel()`) first --
+   simplest, single request, no idempotency guard to worry about --
+   then `customerIntake` (`doRent()`), then `editContract` (the Edit
+   modal), then `addContract` (the Add form -- most complex, needs the
+   passport-photo upload kept as a client-side follow-up AFTER the
+   queued write succeeds, since `addContractFromJson` server-side
+   deliberately doesn't do that part -- see that file's header comment).
+3. Per-row "Saving…" badges on the Pending list (`renderPendingList`)
+   and Search results (`renderResults`) -- both need a
+   `pendingRowSaves.get(rowNumber)` check added, mirroring bikes.html's
+   `renterActionsHtml()`/`bikeCardHtml()` treatment. Natural to do
+   alongside step 2's wiring rather than as a separate pass, since the
+   badge only means anything once something actually populates
+   `pendingRowSaves`.
+4. Once all 4 actions are wired and badged: full regression, then this
+   whole contract.html slice is done and the rollout moves to
+   deposits.html per the original order.
+
+**Files changed this slice:** `contract.html` (added `genClientTxnId()`
++ the save-pipeline engine block + `opt-banner`/`opt-overlay` markup/CSS
+-- nothing else touched, no existing function's body changed), `nav.js`
+(`PENDING_SAVE_SOURCES` gains contract.html's row;
+`pendingBikesSaveCount()` renamed+generalized to `pendingSaveCount(source)`;
+`refreshSaveStrip()` now sums across all registered sources and sets
+`href`/`title` dynamically instead of a static bikes.html-only link).
+
 ## 🐛 Fixed: shared "Saving…" strip could get stuck showing forever on
 ## pages OTHER than bikes.html -- CODED AND TEST-GREEN, NOT YET DEPLOYED
 ## (2026-08-17, reported live by Anton on parts.html, after the nav.js

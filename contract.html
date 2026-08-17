@@ -338,11 +338,78 @@
   .helmet-add-btn:hover{ border-color:var(--petrol-light); }
   .helmet-add-btn:active{ transform:none; }
   .helmet-empty-note{ font-size:12.5px; color:#8A948F; padding:2px 2px 0; }
+
+  /* ---- Optimistic save/queue UX (17/08/2026) -- ported verbatim from
+  bikes.html's own "opt-" prefixed pass (see that file's own comment for
+  the full visual-language reasoning). .opt-row-pending applies to this
+  page's own per-row elements (.pending-item, .result-card) instead of
+  bikes.html's .bike-card -- see the save-pipeline engine in the script
+  below for the logic. Prefixed "opt-" for the same reason every other
+  page's copy is -- easy to find/remove as a unit, can't collide with
+  anything already on this page. ---- */
+  .pending-item.opt-row-pending, .result-card.opt-row-pending{ opacity:.58; pointer-events:none; }
+  .opt-row-badge{
+    display:inline-flex; align-items:center; gap:5px; font-size:11px; font-weight:700;
+    letter-spacing:.04em; text-transform:uppercase; color:#B36A2E;
+  }
+  .opt-row-badge.queued{ color:var(--muted); }
+  .opt-spinner{
+    width:9px; height:9px; border-radius:50%; border:1.5px solid #E7C596; border-top-color:#B36A2E;
+    animation:opt-spin .7s linear infinite; flex-shrink:0;
+  }
+  @keyframes opt-spin{ to{ transform:rotate(360deg); } }
+
+  .opt-banner{
+    position:sticky; top:0; z-index:40; background:#FCEBEB; color:#C53030;
+    border-bottom:1px solid #F3C6C6; font-family:'Barlow Condensed',sans-serif; font-weight:700;
+    font-size:14px; letter-spacing:.02em; display:none; align-items:center; justify-content:center;
+    gap:8px; padding:11px 14px; cursor:pointer; text-align:center;
+  }
+  .opt-banner.show{ display:flex; }
+  .opt-banner:active{ opacity:.85; }
+
+  .opt-overlay{
+    position:fixed; inset:0; background:rgba(15,61,62,.35); display:none; align-items:flex-end;
+    justify-content:center; z-index:50;
+  }
+  .opt-overlay.show{ display:flex; }
+  @media (min-width:640px){ .opt-overlay{ align-items:center; } }
+  .opt-panel{
+    background:var(--card); width:100%; max-width:480px; border-radius:16px 16px 0 0;
+    padding:20px; max-height:80vh; overflow-y:auto;
+  }
+  @media (min-width:640px){ .opt-panel{ border-radius:14px; } }
+  .opt-panel h3{ font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:19px; color:var(--petrol); margin:0 0 4px; }
+  .opt-panel .sub{ font-size:12.5px; color:var(--muted); margin-bottom:16px; }
+  .opt-item{ border:1px solid #F3C6C6; background:#FDF2F2; border-radius:10px; padding:12px; margin-bottom:10px; }
+  .opt-item .rt{ font-weight:500; font-size:13.5px; }
+  .opt-item .rm{ font-size:12px; color:var(--muted); margin-top:2px; }
+  .opt-item .why{ font-size:12px; color:#C53030; margin-top:6px; }
+  .opt-item .actions{ display:flex; gap:8px; margin-top:10px; }
+  .opt-item .actions button{
+    flex:1; padding:9px; border:none; border-radius:8px; font-family:'Barlow Condensed',sans-serif;
+    font-weight:700; font-size:12.5px; letter-spacing:.02em; text-transform:uppercase; cursor:pointer;
+  }
+  .opt-btn-retry{ background:var(--cone); color:#fff; }
+  .opt-btn-discard{ background:#E4E0D8; color:var(--petrol); }
+  .opt-panel-close{
+    width:100%; margin-top:6px; padding:12px; border:1px solid var(--line); background:#fff;
+    border-radius:9px; font-family:'Barlow Condensed',sans-serif; font-weight:700; color:var(--petrol);
+    cursor:pointer;
+  }
 </style>
 </head>
 <body>
 
 <div id="topbar-mount"></div>
+
+<div class="opt-banner" id="optBanner"></div>
+<div class="opt-overlay" id="optOverlay"><div class="opt-panel">
+  <h3>Changes that didn't save</h3>
+  <div class="sub" id="optPanelSub">These are only on this device -- Google Drive doesn't have them yet. Retry when you're ready, or discard.</div>
+  <div id="optPanelList"></div>
+  <button type="button" class="opt-panel-close" id="optPanelCloseBtn">Close</button>
+</div></div>
 
 <div class="page-head">
   <h1>Contract</h1>
@@ -2925,6 +2992,323 @@ function toIsoDateForInput(str) {
   const pad = (n) => String(n).padStart(2, '0');
   return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
 }
+
+function genClientTxnId() {
+  if (window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID();
+  return 'ctx_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10);
+}
+
+// ================== Save-pipeline engine (2026-08-17) ==================
+// Byte-for-byte structural port of bikes.html's own save-pipeline engine
+// (see that file's own comment for the full "why" -- Anton wanted the
+// SAME full optimistic-UI treatment here, not just the single-dispatch
+// backend wiring: picker/modal closes immediately, the specific row(s)
+// affected show a "Saving…" badge, the rest of the app (including
+// navigating away entirely) stays fully usable, up to 2 saves can be in
+// flight/queued at once, and a real failure lands in a dismissable
+// review panel instead of a blocking alert()). "bk" -> "ct" prefix
+// throughout, /api/bikes/write -> /api/contract/write, and
+// aaBikesPendingSaves/aaBikesFailedSaves -> aaContractPendingSaves/
+// aaContractFailedSaves so this page's own queue is entirely independent
+// of bikes.html's (nav.js's shared header strip -- see that file's
+// PENDING_SAVE_SOURCES table -- reads both).
+//
+// THIS CHUNK IS SCAFFOLDING ONLY -- nothing below is called by any of
+// contract.html's 4 write actions yet (doRent/doCancel/the Edit form/the
+// Add form still call their OLD local client-side functions further
+// down, untouched). Landing this on its own first, unwired, same
+// "nothing live changes yet" guarantee every earlier step of this
+// rollout used -- the actual action-by-action rewiring is separate,
+// smaller, easier-to-review follow-up deliveries.
+const MAX_QUEUE = 2; // exactly 2 -- 1 running + 1 waiting, same cap bikes.html uses, not re-litigated here
+const ctQueue = [];
+let ctSeq = 0;
+const PENDING_SAVES_KEY = 'aaContractPendingSaves';
+const FAILED_SAVES_KEY = 'aaContractFailedSaves';
+
+// rowNumber (Contract sheet row) -> the queue item currently running/
+// queued for that row. Shared by BOTH the Pending list (Rent/Cancel) and
+// the Search results list (Edit) -- both index by the same Contract
+// sheet row number, so one Map covers both once they're wired.
+const pendingRowSaves = new Map();
+// item.id -> { item, message } for saves that failed for real -- surfaced
+// in the header banner + review overlay, same as bikes.html's bkFailedItems.
+const ctFailedItems = new Map();
+
+function ctQueueFull() { return ctQueue.length >= MAX_QUEUE; }
+
+function ctEnqueue({ label, rows, requests, onStepSuccess, onAllSuccess }) {
+  const item = {
+    id: ++ctSeq,
+    clientTxnId: (requests[0] && requests[0].payload && requests[0].payload.clientTxnId) || genClientTxnId(),
+    label, rows: (rows || []).slice(), requests, reqIndex: 0, results: [],
+    onStepSuccess: onStepSuccess || null,
+    onAllSuccess: onAllSuccess || null,
+    queuedAt: Date.now(), // see bikes.html's own comment -- lets nav.js's cross-page recoverOrphanedSaves() tell a stuck item from a genuinely in-flight one
+    status: ctQueue.length === 0 ? 'running' : 'queued'
+  };
+  ctQueue.push(item);
+  item.rows.forEach(r => pendingRowSaves.set(r, item));
+  persistPendingSaves();
+  ctRefreshUi();
+  if (item.status === 'running') ctRun(item);
+  return item;
+}
+
+async function ctRun(item) {
+  item.status = 'running';
+  ctRefreshUi();
+  try {
+    while (item.reqIndex < item.requests.length) {
+      const req = item.requests[item.reqIndex];
+      const res = await ctDispatchWithRetry(req.action, req.payload);
+      item.results.push(res);
+      item.reqIndex++;
+      persistPendingSaves();
+      if (item.onStepSuccess) { try { item.onStepSuccess(item.reqIndex - 1, res); } catch (e) { console.error(e); } }
+    }
+    ctResolveItem(item, true, null);
+  } catch (err) {
+    ctResolveItem(item, false, err);
+  }
+}
+
+function ctResolveItem(item, success, err) {
+  const idx = ctQueue.indexOf(item);
+  if (idx > -1) ctQueue.splice(idx, 1);
+  item.rows.forEach(r => { if (pendingRowSaves.get(r) === item) pendingRowSaves.delete(r); });
+  persistPendingSaves();
+  if (success) {
+    if (item.onAllSuccess) { try { item.onAllSuccess(item.results); } catch (e) { console.error(e); } }
+  } else {
+    ctFailedItems.set(item.id, { item, message: err.message });
+    persistFailedSaves();
+    updateFailBanner();
+  }
+  const next = ctQueue.find(it => it.status === 'queued');
+  if (next) ctRun(next);
+  ctRefreshUi();
+}
+
+// keepalive:true -- see bikes.html's own comment on bkDispatch for the
+// full "why" (lets the network request finish even after this page's JS
+// context is torn down by a navigation; the localStorage pending-save
+// tracking below is what notices and safely resubmits anything keepalive
+// itself couldn't hand a result back to).
+async function ctDispatch(body) {
+  const r = await fetch('/api/contract/write', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    keepalive: true
+  });
+  if (r.status === 401) throw new Error('Signed out -- please refresh to sign in again.');
+  const res = await r.json().catch(() => ({}));
+  if (r.status === 409) {
+    const e = new Error(res.error || 'This record was changed by someone else in the meantime -- please reload and try again.');
+    e.isConflict = true;
+    throw e;
+  }
+  if (!r.ok || res.success === undefined) throw new Error(res.error || ('HTTP ' + r.status));
+  if (res.success === false) throw new Error(res.error || 'Could not save.');
+  return res;
+}
+
+async function ctDispatchWithRetry(action, payload) {
+  const body = Object.assign({ action }, payload);
+  const maxAttempts = 3;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await ctDispatch(body);
+    } catch (err) {
+      if (err.isConflict && attempt < maxAttempts) {
+        await new Promise(resolve => setTimeout(resolve, 700 * attempt));
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
+function persistPendingSaves() {
+  try {
+    const arr = ctQueue.map(it => ({
+      clientTxnId: it.clientTxnId, label: it.label, rows: it.rows,
+      requests: it.requests.slice(it.reqIndex), queuedAt: it.queuedAt || Date.now()
+    }));
+    if (arr.length) localStorage.setItem(PENDING_SAVES_KEY, JSON.stringify(arr));
+    else localStorage.removeItem(PENDING_SAVES_KEY);
+  } catch (e) { /* best-effort, same posture as bikes.html/accounts.html */ }
+}
+
+function persistFailedSaves() {
+  try {
+    const arr = Array.from(ctFailedItems.entries()).map(([id, f]) => ({
+      id, label: f.item.label, rows: f.item.rows,
+      requests: f.item.requests.slice(f.item.reqIndex), message: f.message
+    }));
+    if (arr.length) localStorage.setItem(FAILED_SAVES_KEY, JSON.stringify(arr));
+    else localStorage.removeItem(FAILED_SAVES_KEY);
+  } catch (e) { /* best-effort */ }
+}
+
+// Reloads this page's own copy of the sheet data and re-renders whichever
+// view is actually visible right now (Pending list modal / Search
+// results) -- used as the generic onAllSuccess for recovered/retried
+// items (see restoreUnresolvedSaves/ctRetryFailed below), same reasoning
+// as bikes.html's own recovery using a full reload rather than trying to
+// replay a row-specific patch closure that's gone once the page that
+// created it was navigated away from/closed.
+function ctReloadAndRerender() {
+  sheetRows = null;
+  rowsPromise = null;
+  clearContractRowsCache();
+  loadRows().then(rows => {
+    if (pendingBackdrop.classList.contains('show')) renderPendingList(rows);
+    if (!searchView.classList.contains('hidden')) renderResults();
+  });
+}
+
+// Called once during page init. Recovers BOTH unresolved saves (resubmits
+// immediately, safe per the idempotency guard on customerIntake/
+// addContract -- see lib/contractWrites.js's header comment for which
+// actions have one) and previously-failed ones (just restores the
+// banner/review panel). See bikes.html's own restoreUnresolvedSaves for
+// the full reasoning -- this is a byte-for-byte structural port.
+function restoreUnresolvedSaves() {
+  try {
+    const raw = localStorage.getItem(PENDING_SAVES_KEY);
+    if (raw) {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr) && arr.length) {
+        console.warn('[contract] Recovering ' + arr.length + ' unfinished save(s) left over from before this page loaded (likely a navigation or closed tab mid-save) -- resubmitting in the background. Safe because every guarded action here is idempotency-guarded server-side.');
+        arr.forEach(rec => {
+          if (!rec || !Array.isArray(rec.requests) || !rec.requests.length) return;
+          const item = {
+            id: ++ctSeq, clientTxnId: rec.clientTxnId, label: rec.label || 'Unfinished save',
+            rows: rec.rows || [], requests: rec.requests, reqIndex: 0, results: [],
+            onAllSuccess: ctReloadAndRerender,
+            queuedAt: rec.queuedAt || 0, // preserve original age -- see bikes.html's own comment on why
+            status: ctQueue.length === 0 ? 'running' : 'queued'
+          };
+          ctQueue.push(item);
+          item.rows.forEach(r => pendingRowSaves.set(r, item));
+        });
+        persistPendingSaves();
+        const first = ctQueue.find(it => it.status === 'running');
+        if (first) ctRun(first);
+      }
+    }
+  } catch (e) { localStorage.removeItem(PENDING_SAVES_KEY); }
+
+  try {
+    const raw2 = localStorage.getItem(FAILED_SAVES_KEY);
+    if (raw2) {
+      const arr2 = JSON.parse(raw2);
+      if (Array.isArray(arr2)) {
+        arr2.forEach(rec => {
+          if (!rec) return;
+          ctFailedItems.set(rec.id, {
+            item: { id: rec.id, label: rec.label, rows: rec.rows || [], requests: rec.requests || [], reqIndex: 0, results: [] },
+            message: rec.message
+          });
+        });
+        updateFailBanner();
+      }
+    }
+  } catch (e) { localStorage.removeItem(FAILED_SAVES_KEY); }
+  ctRefreshUi();
+}
+
+// One place that keeps the header strip and the row-level Map in step.
+// The in-progress header strip itself lives in nav.js's shared topbar
+// (reads aaContractPendingSaves once that key is registered in nav.js's
+// PENDING_SAVE_SOURCES -- see that file) so there's nothing to update
+// here directly, same as bikes.html's own bkRefreshUi -- this just
+// re-renders whichever list view is visible so per-row badges stay
+// current. No-op right now since nothing sets pendingRowSaves yet
+// (unwired -- see this block's header comment).
+function ctRefreshUi() {
+  if (pendingBackdrop && pendingBackdrop.classList.contains('show') && sheetRows) renderPendingList(sheetRows);
+  if (typeof searchView !== 'undefined' && searchView && !searchView.classList.contains('hidden') && sheetRows) renderResults();
+}
+
+function updateFailBanner() {
+  const banner = document.getElementById('optBanner');
+  if (!banner) return;
+  const n = ctFailedItems.size;
+  if (!n) { banner.classList.remove('show'); return; }
+  banner.textContent = '⚠ ' + n + (n === 1 ? ' change' : ' changes') + ' didn’t save — tap to review';
+  banner.classList.add('show');
+}
+
+function openSaveReview() {
+  const listEl = document.getElementById('optPanelList');
+  const entries = Array.from(ctFailedItems.entries());
+  listEl.innerHTML = entries.map(([id, f]) => `
+    <div class="opt-item" data-id="${id}">
+      <div class="rt">${f.item.label}</div>
+      <div class="why">${f.message}</div>
+      <div class="actions">
+        <button type="button" class="opt-btn-retry" data-act="retry" data-id="${id}">Retry</button>
+        <button type="button" class="opt-btn-discard" data-act="discard" data-id="${id}">Discard</button>
+      </div>
+    </div>
+  `).join('') || '<div class="empty-hint">Nothing pending.</div>';
+  listEl.querySelectorAll('button[data-act]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = Number(btn.dataset.id);
+      if (btn.dataset.act === 'retry') ctRetryFailed(id); else ctDiscardFailed(id);
+    });
+  });
+  document.getElementById('optOverlay').classList.add('show');
+}
+function closeSaveReview() { document.getElementById('optOverlay').classList.remove('show'); }
+function refreshReviewPanelIfOpen() {
+  if (!document.getElementById('optOverlay').classList.contains('show')) return;
+  if (ctFailedItems.size === 0) closeSaveReview(); else openSaveReview();
+}
+
+function ctRetryFailed(id) {
+  const f = ctFailedItems.get(id);
+  if (!f) return;
+  ctFailedItems.delete(id);
+  persistFailedSaves();
+  updateFailBanner();
+  refreshReviewPanelIfOpen();
+  const item = f.item;
+  item.reqIndex = 0;
+  item.results = [];
+  item.onAllSuccess = item.onAllSuccess || ctReloadAndRerender;
+  item.status = ctQueue.length === 0 ? 'running' : 'queued';
+  ctQueue.push(item);
+  item.rows.forEach(r => pendingRowSaves.set(r, item));
+  persistPendingSaves();
+  ctRefreshUi();
+  if (item.status === 'running') ctRun(item);
+}
+
+function ctDiscardFailed(id) {
+  const f = ctFailedItems.get(id);
+  if (!f) return;
+  ctFailedItems.delete(id);
+  persistFailedSaves();
+  updateFailBanner();
+  refreshReviewPanelIfOpen();
+  ctReloadAndRerender();
+}
+
+document.getElementById('optOverlay').addEventListener('click', (e) => { if (e.target.id === 'optOverlay') closeSaveReview(); });
+document.getElementById('optPanelCloseBtn').addEventListener('click', closeSaveReview);
+document.getElementById('optBanner').addEventListener('click', () => openSaveReview());
+
+// Recover any leftover pending/failed saves from before this page load
+// (see restoreUnresolvedSaves' own comment). Harmless no-op today since
+// nothing writes to aaContractPendingSaves/aaContractFailedSaves yet --
+// added now so it's not forgotten once the actions below actually are
+// wired to this engine in a follow-up delivery.
+restoreUnresolvedSaves();
+// ================== end save-pipeline engine ==================
 
 // ---- "Yes, rent it" -- submits this pending record straight to the
 // server (the same plain intake call customers.html's own Add form makes,
