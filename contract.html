@@ -2847,14 +2847,34 @@ function renderPendingList(rows) {
     pendingListBox.innerHTML = '<div class="results-empty">No pending contracts.</div>';
     return;
   }
-  pendingListBox.innerHTML = pending.map((r, i) => `
+  pendingListBox.innerHTML = pending.map((r, i) => {
+    // This row has an in-flight/queued background save (see the save-
+    // pipeline engine above) -- show a small badge instead of the normal
+    // card content, same treatment bikes.html's renterActionsHtml() gives
+    // a mid-save row. opt-row-pending also sets pointer-events:none, but
+    // the click-handler loop below skips attaching a handler to these
+    // too, belt-and-suspenders against reopening the confirm modal on a
+    // row that's already mid-write.
+    const pendingHere = pendingRowSaves.get(r.rowNumber);
+    if (pendingHere) {
+      const isRunning = pendingHere.status === 'running';
+      return `
+        <div class="result-card pending-item opt-row-pending" data-index="${i}">
+          <div class="rc-title">${r.name || '—'} — ${r.bikeModel || '—'}</div>
+          <span class="opt-row-badge${isRunning ? '' : ' queued'}">${isRunning ? '<span class="opt-spinner"></span> Saving…' : 'Queued…'}</span>
+        </div>
+      `;
+    }
+    return `
     <div class="result-card pending-item" data-index="${i}">
       <div class="rc-title">${r.name || '—'} — ${r.bikeModel || '—'}</div>
       <div class="rc-row"><b>Rented:</b> ${formatDateDisplay(r.rentingDateFrom)} &nbsp; <b>Return:</b> ${formatDateDisplay(r.returnDate)}</div>
       <div class="rc-row"><b>Total:</b> ${r.totalPrice ? '฿' + r.totalPrice : '—'} &nbsp; <b>Deposit:</b> ${r.deposit || '—'}${String(r.isDeal).toUpperCase() === 'TRUE' ? ' &nbsp; <b style="color:var(--cone);">Deal</b>' : ''}</div>
     </div>
-  `).join('');
+  `;
+  }).join('');
   Array.from(pendingListBox.querySelectorAll('.pending-item')).forEach((el, i) => {
+    if (pendingRowSaves.has(pending[i].rowNumber)) return;
     el.addEventListener('click', () => {
       openConfirmModal(pending[i]);
     });
@@ -3409,32 +3429,35 @@ async function doRent() {
 
 // ---- "Yes, cancel it" -- sets this Contract row's status to Canceled via
 // the exact rowNumber (no name/bike guessing needed, the row came straight
-// from the sheet), then refreshes the pending list behind the confirm
-// modal so the canceled record disappears from it. ----
-async function doCancel() {
+// from the sheet). REWIRED 2026-08-17 onto the save-pipeline engine --
+// the confirm modal closes immediately (optimistic), the write runs in
+// the background against the new single-dispatch /api/contract/write
+// endpoint instead of the old local cancelContractFromJson (now dead
+// code for this action, left in place per the project's convention --
+// grep before deleting), and the Pending list shows a "Saving…" badge on
+// this row while it's in flight (see renderPendingList above).
+//
+// Deliberately NO clientTxnId here -- cancelContract has no idempotency
+// guard server-side either (see lib/contractWrites.js's header comment):
+// it throws if the record isn't still Pending, so a naive retry after an
+// attempt that actually already landed would show a confusing error
+// instead of silently no-op'ing. That's a real but low-stakes,
+// PRE-EXISTING gap (identical to what the old blocking version already
+// did on a genuine double-submit) -- carried forward unchanged by this
+// wiring, not introduced by it.
+function doCancel() {
   if (!currentPendingRecord) return;
+  if (ctQueueFull()) { alert('2 saves are already in progress — wait for one to finish before starting another.'); return; }
   const r = currentPendingRecord;
-  const yesBtn = document.getElementById('confirmYesBtn');
-  const backBtn = document.getElementById('confirmBackBtn');
-  if (yesBtn) { yesBtn.disabled = true; yesBtn.textContent = 'Canceling…'; }
-  if (backBtn) backBtn.disabled = true;
-  confirmStatusBox.className = 'status';
-  try {
-    const data = await cancelContractFromJson({ rowNumber: r.rowNumber }); // DISCONNECTED: writes to the static data/ JSON export instead of the live scriptUrl (see project CLAUDE.md)
-    if (!data.success) throw new Error(data.error || 'Unknown error');
-    confirmStatusBox.textContent = 'Contract canceled.';
-    confirmStatusBox.className = 'status ok';
-    sheetRows = null;
-    rowsPromise = null;
-    await loadRows();
-    renderPendingList(sheetRows);
-    setTimeout(closeConfirmModal, 700);
-  } catch (err) {
-    confirmStatusBox.textContent = 'Could not cancel: ' + err.message;
-    confirmStatusBox.className = 'status err';
-    if (yesBtn) { yesBtn.disabled = false; yesBtn.textContent = 'Yes, cancel it'; }
-    if (backBtn) backBtn.disabled = false;
-  }
+
+  closeConfirmModal();
+
+  ctEnqueue({
+    label: (r.name ? r.name + ' — ' : '') + 'Cancel contract',
+    rows: [r.rowNumber],
+    requests: [{ action: 'cancelContract', payload: { rowNumber: r.rowNumber } }],
+    onAllSuccess: ctReloadAndRerender
+  });
 }
 
 /* ---------------- Edit contract (Search tab, click any result) ----------------

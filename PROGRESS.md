@@ -6,6 +6,73 @@ This exists because work on this project gets picked up across multiple
 Claude sessions/accounts with no shared memory between them — this file is
 the handoff.
 
+## 🔧 Phase 2, contract.html: 'cancelContract' (doCancel) REWIRED onto
+## the save-pipeline engine -- LIVE-BEHAVIOR CHANGE, CODED AND
+## TEST-GREEN, NOT YET DEPLOYED (2026-08-17, small delivery #2 of the
+## action-by-action rollout -- see the scaffolding entry just below for
+## why this is landing in small pieces)
+
+**What this is:** the first of contract.html's 4 actions wired to the
+engine scaffolding from the entry below -- picked first because it's the
+simplest (single request, no clientTxnId/idempotency guard to reason
+about). **This IS a live-behavior change** -- same as bikes.html's own
+"first genuinely live-behavior-changing step" entry -- `doCancel()` now
+hits the new single-dispatch `/api/contract/write` endpoint instead of
+the old local `cancelContractFromJson` (~10 sequential-round-trip-capable
+client function, now dead code for this action, left in place per this
+project's convention -- grep before deleting). The confirm modal closes
+IMMEDIATELY instead of showing "Canceling…"/blocking; the write runs in
+the background; the Pending list shows a "Saving…"/"Queued…" badge on
+that one row while it's in flight (mirrors bikes.html's
+`renterActionsHtml()` treatment, badge suppresses the normal card
+details and skips attaching a re-open-the-modal click handler on that
+row).
+
+**No `clientTxnId` sent** -- `cancelContract` deliberately has no guard
+server-side either (see `lib/contractWrites.js`'s header comment: it
+throws if the record isn't still Pending, so a naive retry of an attempt
+that already landed would show a confusing error rather than silently
+no-op'ing). This is a real but low-stakes, PRE-EXISTING gap -- identical
+to what the OLD blocking version already did on a genuine double-submit
+-- carried forward unchanged by this wiring, not introduced by it.
+
+**Testing:** new Node harness in `/tmp/contracttest2/` (scratch, gone
+between sessions), combining real source slices of `renderPendingList`,
+the full save-pipeline engine, and `doCancel` from the actual file.
+14/14 green: `doCancel()` closes the confirm modal BEFORE the write
+resolves (proves it's genuinely optimistic, not just fast); row marked
+pending and persisted to `aaContractPendingSaves` synchronously; resubmit
+hits `/api/contract/write` with `{action:'cancelContract', rowNumber}`
+and confirmed NO `clientTxnId` in the payload; queue drains and
+`ctReloadAndRerender` (reload + re-render) fires on success;
+`renderPendingList` shows the Saving badge and suppresses normal card
+details for a pending row, and reverts to normal once it's no longer
+pending; `ctQueueFull()` correctly blocks a 3rd concurrent save with an
+alert and fires no new fetch. Contract.html's inline `<script>` blocks
+re-syntax-checked clean (`new Function(...)`) after the edit.
+
+**Not yet done, in order:**
+1. Deliver via the workspace folder, push. **Worth testing live once
+   deployed**, same recommendation as bikes.html's own single-dispatch-
+   wiring entry -- try canceling a real (or throwaway test) Pending
+   contract and confirm it still works exactly as before, just via the
+   new endpoint, with the modal closing instantly.
+2. Wire the next action in another small delivery: `customerIntake`
+   (`doRent()`) -- same Pending-list badge infrastructure already
+   applies, just needs its own `ctEnqueue()` call built with a
+   `clientTxnId` (this one DOES have a guard, per the file header --
+   see `doRent()`'s own comment on the real double-booking Anton hit).
+3. Then `editContract` (Edit modal, Search-results badge) and
+   `addContract` (Add form + passport-photo follow-up), per the order in
+   the scaffolding entry below.
+4. Full regression + PROGRESS.md wrap-up once all 4 actions are wired.
+
+**Files changed this slice:** `contract.html` only (`renderPendingList`
+gains the pending-row badge branch; `doCancel` rewired to
+`ctEnqueue`/closes the modal immediately/no longer `async`). No backend
+files touched -- `lib/contractWrites.js`/`api/contract/write.js` were
+already correct from last session.
+
 ## 🔧 Phase 2, contract.html: save-pipeline engine SCAFFOLDING landed
 ## (unwired), + nav.js registers contract.html's pending-save key --
 ## CODED AND TEST-GREEN, NOT YET DEPLOYED (2026-08-17, small delivery,
