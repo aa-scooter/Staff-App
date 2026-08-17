@@ -1840,9 +1840,18 @@ async function syncContractDealNoteB(rowNumber, wantDeal) {
   await writeSheetJson('Contract_notes', filtered, modifiedTime);
 }
 
-// ---- action:'addContract' equivalent. data: see the Add form's payload
-// (form.addEventListener('submit', ...) further down). ----
-async function addContractFromJson(data) {
+// DEAD CODE -- this was the local client-side write the Add form's submit
+// handler used to call directly (including bundling the passport photo
+// straight into the same request as base64), before the 2026-08-17
+// rewiring onto the save-pipeline engine (see that handler further down).
+// The live path now posts action:'addContract' to /api/contract/write
+// (which does NOT handle the photo -- that's now a separate client-side
+// follow-up, per lib/contractWrites.js's header comment). Kept only for an
+// easy side-by-side comparison or revert, unreferenced -- same convention
+// as this file's __deadCode_oldDoRent/__deadCode_oldEditContractFromJson.
+// data: see the Add form's payload (form.addEventListener('submit', ...)
+// further down). ----
+async function __deadCode_oldAddContractFromJson(data) {
   const name = (data.name || '').toString().trim();
   if (!name) throw new Error('Name is required.');
   const { rows, modifiedTime } = await fetchSheetWithMeta('Contract');
@@ -4834,19 +4843,38 @@ whatsappAiFillBtn.addEventListener('click', async () => {
   }
 });
 
-form.addEventListener('submit', async (e) => {
+// REWIRED 2026-08-17 onto the save-pipeline engine -- last of contract.html's
+// 4 actions. Same optimistic pattern as the other 3: the form resets
+// IMMEDIATELY (this is the "add" equivalent of closing a modal -- there's
+// no existing row to badge with "Saving…" since the row doesn't exist
+// until the write lands, but nav.js's shared header strip still shows the
+// save as pending/in-flight globally, same as every other queued item),
+// the write runs in the background against /api/contract/write
+// (action:'addContract') instead of the old local addContractFromJson (now
+// dead code, left in place -- grep before deleting), and a `clientTxnId`
+// is minted so a resubmit (crash/nav recovery, or a lost response after a
+// keepalive write actually landed) safely no-ops instead of creating a
+// duplicate Contract row (same class of real double-booking risk as
+// doRent's customerIntake -- addContract also appends a brand new row).
+//
+// The passport-photo upload is DELIBERATELY NOT part of the queued
+// request -- lib/contractWrites.js's addContractFromJson never touches it
+// (see that file's header comment); it's a separate client-side follow-up
+// step, POSTed to /api/contracts/upload only AFTER the queued Contract-row
+// write actually succeeds (mirrors the Edit modal's own "Upload photo"
+// button further up, same endpoint/payload shape). The chosen File object
+// is captured into a local variable BEFORE form.reset() runs (a plain File
+// reference stays valid even after the input it came from is cleared), so
+// the optimistic reset doesn't lose it.
+form.addEventListener('submit', (e) => {
   e.preventDefault();
   statusBox.className = 'status';
-  setAllButtonsDisabled(true);
-  submitBtn.textContent = 'Saving…';
 
   const totalPrice = document.getElementById('totalPrice').value;
 
   if (totalPrice === '' || totalPrice === null || isNaN(Number(totalPrice))) {
     statusBox.textContent = 'Please enter a total price before saving.';
     statusBox.className = 'status err';
-    setAllButtonsDisabled(false);
-    submitBtn.textContent = 'Create contract';
     document.getElementById('totalPrice').focus();
     return;
   }
@@ -4854,8 +4882,6 @@ form.addEventListener('submit', async (e) => {
   if (depositNeedsAmount() && (depositAmount.value === '' || isNaN(Number(depositAmount.value)))) {
     statusBox.textContent = 'Please enter a deposit amount, or switch the deposit to Passport.';
     statusBox.className = 'status err';
-    setAllButtonsDisabled(false);
-    submitBtn.textContent = 'Create contract';
     depositAmount.focus();
     return;
   }
@@ -4863,16 +4889,19 @@ form.addEventListener('submit', async (e) => {
   if (deliveryFeeAppliesCheckbox.checked && (deliveryFeeInput.value === '' || isNaN(Number(deliveryFeeInput.value)))) {
     statusBox.textContent = 'Please enter a delivery fee amount, or untick "Delivery fee applies".';
     statusBox.className = 'status err';
-    setAllButtonsDisabled(false);
-    submitBtn.textContent = 'Create contract';
     deliveryFeeInput.focus();
+    return;
+  }
+
+  if (ctQueueFull()) {
+    statusBox.textContent = '2 saves are already in progress — wait for one to finish before starting another.';
+    statusBox.className = 'status err';
     return;
   }
 
   const baseContact = contactSelect.value === 'other' ? contactOther.value.trim() : contactSelect.value;
 
   const payload = {
-    action: 'addContract',
     name: document.getElementById('name').value.trim(),
     nationality: document.getElementById('nationality').value.trim(),
     passport: document.getElementById('passport').value.trim(),
@@ -4899,80 +4928,73 @@ form.addEventListener('submit', async (e) => {
     deliveryFee: deliveryFeeAppliesCheckbox.checked ? deliveryFeeInput.value : '',
     // Helmets -- entirely optional, see the Helmets card's comment above.
     ...tallyHelmets(helmetLines),
-    helmetNone: helmetNoneCheckbox.checked
+    helmetNone: helmetNoneCheckbox.checked,
+    clientTxnId: genClientTxnId()
   };
 
-  // Bundle the chosen passport photo (if any) straight into the same
-  // addContract request. The customer's Drive folder is created/found
-  // exactly once, at this point, using this same submission's name/
-  // number/rentingDateFrom -- so the photo always lands in the same
-  // folder the contract Doc/PDF are saved into, with no separate/earlier
-  // upload step that could create a mismatched folder.
+  // Capture the File object itself (not yet read) BEFORE the optimistic
+  // reset below clears the input -- see this handler's header comment.
+  // Also capture name/phone/rentingDateFrom for the follow-up upload,
+  // since by the time it runs the form fields may already hold the NEXT
+  // entry's data.
   const passportPhotoFile = passportPhotoInput.files && passportPhotoInput.files[0];
-  if (passportPhotoFile) {
-    try {
-      payload.passportPhotoBase64 = await readFileAsBase64(passportPhotoFile);
-      payload.passportPhotoMimeType = passportPhotoFile.type || 'image/jpeg';
-    } catch (err) {
-      statusBox.textContent = 'Could not read the passport photo file: ' + err.message;
-      statusBox.className = 'status err';
-      setAllButtonsDisabled(false);
-      submitBtn.textContent = 'Create contract';
-      return;
-    }
-  }
+  const uploadName = payload.name;
+  const uploadPhone = payload.number;
+  const uploadDateStr = isoDateToDashDmy(payload.rentingDateFrom);
+  const label = (payload.name ? payload.name + ' — ' : '') + 'Add contract';
 
-  startSaveProgress();
-  try {
-    const data = await addContractFromJson(payload); // DISCONNECTED: writes to the static data/ JSON export instead of the live scriptUrl (see project CLAUDE.md)
-    stopSaveProgress();
-    if (data.success) {
-      const docLinkHtml = data.contractPdfUrl
-        ? ' <a href="' + data.contractPdfUrl + '" target="_blank" rel="noopener" style="color:inherit; text-decoration:underline; font-weight:600;">Open contract PDF</a>'
-        : (data.contractDocWarning ? ' (' + data.contractDocWarning + ')' : '');
-      const photoLinkHtml = data.passportPhotoUrl
-        ? ' · <a href="' + data.passportPhotoUrl + '" target="_blank" rel="noopener" style="color:inherit; text-decoration:underline; font-weight:600;">Open photo of passport</a>'
-        : '';
-      const receiptLinkHtml = data.receiptPdfUrl
-        ? ' · <a href="' + data.receiptPdfUrl + '" target="_blank" rel="noopener" style="color:inherit; text-decoration:underline; font-weight:600;">Open receipt PDF</a>' +
-          (data.receiptNo ? ' (No. ' + data.receiptNo + ')' : '')
-        : '';
-      if (data.warning) {
-        statusBox.innerHTML = 'Added — "' + payload.name + '" saved, but: ' + data.warning + docLinkHtml + photoLinkHtml + receiptLinkHtml;
-        statusBox.className = 'status warn';
-      } else {
-        const checksNote = data.checksTotal
-          ? ' ✓ Verified: ' + data.checksPassed + '/' + data.checksTotal + ' write-back checks passed.'
-          : '';
-        statusBox.innerHTML = 'Added — "' + payload.name + '" saved to the Contract sheet.' + checksNote + docLinkHtml + photoLinkHtml + receiptLinkHtml;
-        statusBox.className = data.contractPdfUrl ? 'status ok' : (data.contractDocWarning ? 'status warn' : 'status ok');
+  sessionCount++;
+  document.getElementById('sessionCount').textContent = sessionCount;
+  form.reset();
+  contactOther.classList.add('hidden');
+  contactOther.required = false;
+  refreshDepositAmountVisibility();
+  refreshDeliveryFeeVisibility();
+  refreshDeliveryLinkVisibility();
+  helmetLines = [];
+  helmetNoneCheckbox.checked = false;
+  rerenderHelmetLines();
+  setDefaultsToNow();
+  statusBox.textContent = '';
+  statusBox.className = 'status';
+
+  ctEnqueue({
+    label,
+    rows: [], // brand-new row -- doesn't exist yet, nothing to badge
+    requests: [{ action: 'addContract', payload }],
+    onAllSuccess: async (results) => {
+      const res = results[0];
+      let msg = 'Added — "' + uploadName + '" saved to the Contract sheet.';
+      if (res.warning) msg += ' (' + res.warning + ')';
+
+      // Follow-up passport-photo upload, per this handler's header comment
+      // -- deliberately AFTER the queued write above has already
+      // succeeded, and never part of that request's payload.
+      if (passportPhotoFile) {
+        try {
+          const base64 = await readFileAsBase64(passportPhotoFile);
+          const upRes = await fetch('/api/contracts/upload', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              name: uploadName, phone: uploadPhone, dateStr: uploadDateStr,
+              mimeType: passportPhotoFile.type || 'image/jpeg', base64
+            })
+          });
+          const upData = await upRes.json();
+          if (upData.success) msg += ' Photo uploaded.';
+          else if (upData.alreadyExists) msg += ' (' + (upData.error || 'A photo of passport is already on file for this contract.') + ')';
+          else msg += ' Photo upload failed: ' + (upData.error || 'unknown error') + '.';
+        } catch (photoErr) {
+          msg += ' Photo upload failed: ' + photoErr.message + '.';
+        }
       }
-      sessionCount++;
-      document.getElementById('sessionCount').textContent = sessionCount;
-      form.reset();
-      contactOther.classList.add('hidden');
-      contactOther.required = false;
-      refreshDepositAmountVisibility();
-      refreshDeliveryFeeVisibility();
-      refreshDeliveryLinkVisibility();
-      helmetLines = [];
-      helmetNoneCheckbox.checked = false;
-      rerenderHelmetLines();
-      setDefaultsToNow();
-      sheetRows = null;
-      rowsPromise = null;
-      clearContractRowsCache();
-    } else {
-      throw new Error(data.error || 'Unknown error');
+
+      statusBox.textContent = msg;
+      statusBox.className = res.warning ? 'status warn' : 'status ok';
+      ctReloadAndRerender();
     }
-  } catch (err) {
-    stopSaveProgress();
-    statusBox.textContent = 'Could not save: ' + err.message;
-    statusBox.className = 'status err';
-  } finally {
-    setAllButtonsDisabled(false);
-    submitBtn.textContent = 'Create contract';
-  }
+  });
 });
 
 setDefaultsToNow();

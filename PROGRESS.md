@@ -6,6 +6,286 @@ This exists because work on this project gets picked up across multiple
 Claude sessions/accounts with no shared memory between them — this file is
 the handoff.
 
+## ✅ Phase 2, contract.html: ALL 4 write actions now wired onto the
+## save-pipeline engine -- ROLLOUT COMPLETE for this page. CODED,
+## TEST-GREEN (80/80 across 3 harnesses), NOT YET DEPLOYED (2026-08-17,
+## `addContract` -- the last of the 4 -- landed + full regression pass run
+## while Anton was away from his computer for ~an hour; nothing here was
+## pushed without him, per standing instructions -- see the bottom of this
+## entry for exact commands)
+
+**What this is:** `addContract` (the Add form) is the last of contract.html's
+4 write actions rewired onto the `ct`-prefixed save-pipeline engine, same
+pattern as `cancelContract`/`customerIntake`/`editContract` above. The form
+now resets IMMEDIATELY on submit (the "add" equivalent of a modal closing
+instantly) instead of staying disabled/showing "Saving…" for the whole
+round trip; the write runs in the background against
+`/api/contract/write` (`action:'addContract'`) instead of the old local
+`addContractFromJson` (now `__deadCode_oldAddContractFromJson`, unreferenced,
+same convention as this file's other dead-code renames). A `clientTxnId` is
+minted per submission -- `addContract` always appends a brand-new row, same
+double-submit risk class as `customerIntake`, and already has a matching
+guard server-side (`lib/contractWrites.js`'s `Contract_notes`-column-3
+marker, ported in an earlier session).
+
+**The passport-photo upload is DELIBERATELY still a separate client-side
+step**, per the original rollout plan: `lib/contractWrites.js`'s
+`addContractFromJson` never touches it. The chosen `File` object is
+captured into a local variable BEFORE the optimistic `form.reset()` runs
+(a plain `File` reference stays valid even after the input that produced
+it is cleared -- confirmed by the harness below), and the actual
+`POST /api/contracts/upload` only fires from inside `onAllSuccess`, AFTER
+the queued Contract-row write has actually landed -- same endpoint/payload
+shape (`name`/`phone`/`dateStr`/`mimeType`/`base64`) as the Edit modal's
+own working "Upload photo" button. A photo-upload failure is reported in
+the status box but does NOT roll back or hide the fact that the contract
+itself saved successfully -- the two are independent outcomes now, not one
+atomic unit.
+
+**`rows: []`** in this action's `ctEnqueue()` call, deliberately -- unlike
+the other 3 actions, there's no existing row to badge with "Saving…" (the
+row doesn't exist until the write lands), so nothing in `pendingRowSaves`
+tracks it. The shared header strip (`nav.js`) still shows it as a globally
+pending/in-flight save regardless, since that's driven off
+`aaContractPendingSaves` existing at all, not off any specific row.
+
+**Testing:** three Node harnesses in outputs scratch (`/tmp`-equivalent,
+gone between sessions -- rebuild from this description if picked up
+fresh), all loading REAL sliced source verbatim out of `contract.html`
+into fake-DOM `vm` sandboxes:
+- `run.js` (`editContract`, carried over from the previous entry): 26/26.
+- `run2.js` (`addContract`, this slice): 33/33 -- covers: form resets
+  synchronously before the fetch resolves; `clientTxnId` present in the
+  request; no photo chosen -> exactly one fetch (no spurious upload call);
+  photo chosen -> exactly two fetches, upload strictly AFTER the write
+  resolves, with the correct `name`/`phone` (from the `number` field, not
+  `contact`)/`dateStr` (converted ISO -> dd-MM-yyyy)/`mimeType`/`base64`;
+  a server `warning` surfaces in the status box without blocking the photo
+  follow-up; a photo-upload failure is reported without erasing the
+  "contract saved" confirmation; the 3 pre-existing client-side validation
+  checks (total price / deposit amount / delivery fee) still block the
+  save entirely (no reset, no fetch) exactly as before; `ctQueueFull()`
+  blocks a 3rd concurrent Add with an inline error and never increments
+  `sessionCount` or resets the form for that blocked attempt.
+- `run3.js` (NEW -- full-rollout regression): 21/21, specifically
+  exercising what none of the single-action harnesses could: THREE
+  different action types (`cancelContract` + `editContract` + `addContract`)
+  sharing the SAME `ctQueue`/`pendingRowSaves`/`MAX_QUEUE=2` cap at once.
+  Confirms no cross-contamination between rows tracked under different
+  items, correct FIFO promotion from queued -> running as earlier items
+  resolve (regardless of which action type finishes first), an `addContract`
+  item's `rows:[]` correctly never touches `pendingRowSaves`, and the queue
+  + localStorage end up fully drained once all three resolve.
+- **Total: 80/80 green.** Both inline `<script>` blocks in `contract.html`
+  re-syntax-checked clean (`new Function(...)`), `lib/contractWrites.js`
+  and `nav.js` both `node --check` clean.
+
+**Old client-side `addContractFromJson`** renamed to
+`__deadCode_oldAddContractFromJson`, unreferenced, kept for an easy
+side-by-side comparison/revert -- matches `__deadCode_oldDoRent`/
+`__deadCode_oldEditContractFromJson`.
+
+**contract.html's 4-action rollout is now code-complete.** Nothing in this
+entry or the 3 below it (editContract wiring, the cancelContract fix, the
+searchView fix) has been pushed yet -- all landed in one working tree while
+Anton was away, per his instruction to keep going without pushing myself.
+Exact commands, once he's back and wants to review the diff first:
+
+```
+cd "/Users/anton/AA-Scooters-Project Database/vercel-site"
+git status                                  # review everything below first
+git add contract.html lib/contractWrites.js PROGRESS.md
+git commit -m "contract.html: wire editContract + addContract onto save-pipeline engine (rollout complete); fix cancelContract idempotent-replay bug; fix searchView TDZ crash"
+git push
+```
+(searchView fix + cancelContract fix were already pushed earlier this same
+session per the git ref check done then -- `git status` will show the true
+current state either way, worth trusting that over this note.)
+
+**Not yet done, in order:**
+1. Anton reviews + pushes (see above).
+2. **Live smoke test once deployed, all 4 actions**, same recommendation
+   as every prior entry -- Rent/Cancel a throwaway Pending contract, Edit
+   a field and Save, Add a brand-new test contract (with and without a
+   photo) -- confirm each closes/resets instantly, shows the right
+   Saving/Queued badge or header-strip indicator, and lands correctly on
+   the actual sheet. Also worth deliberately reloading mid-save once (the
+   same class of event that caused the `cancelContract` bug above) to
+   confirm recovery now behaves -- succeeds silently if the write already
+   landed, doesn't fall into the old retry-forever trap.
+3. Then the rollout moves to `deposits.html`, then `add-bikes.html`, then
+   `customers.html`, per the original plan -- NOT started yet this
+   session.
+
+**Files changed this slice:** `contract.html` only (`form`'s submit
+handler rewired; old `addContractFromJson` renamed to dead code).
+No backend files touched (`lib/contractWrites.js`'s `addContractFromJson`
+was already correct from an earlier session).
+
+## 🔧 Phase 2, contract.html: 'editContract' (Edit modal) REWIRED onto
+## the save-pipeline engine -- LIVE-BEHAVIOR CHANGE, CODED AND
+## TEST-GREEN, NOT YET DEPLOYED (2026-08-17, small delivery #4, third of
+## the 4 actions -- landed same session as the two bug fixes just below,
+## while Anton was away from his computer for ~an hour)
+
+**What this is:** the third of contract.html's 4 actions wired to the
+engine. The Edit modal's submit handler now hits the single-dispatch
+`/api/contract/write` endpoint (action `editContract`) instead of the old
+local `editContractFromJson` -- the modal closes IMMEDIATELY (optimistic),
+the write runs in the background, and the Search-results list shows a
+"Saving…"/"Queued…" badge on that one row while it's in flight (same
+`opt-row-pending` badge treatment `renderPendingList` already had for
+Rent/Cancel, now mirrored in `renderResults` for Edit -- click-handler
+attachment is skipped for a row that's mid-save, same belt-and-suspenders
+as the Pending list).
+
+**No `clientTxnId`** -- `editContract` has no idempotency guard server-side
+either, but for a genuinely benign reason this time (unlike the
+`cancelContract` gap fixed below): it's an unconditional overwrite of the
+same ~27 columns with the same values every time, so a naive retry
+converges to the exact same end state on its own. No guard needed for that
+to be safe -- see `lib/contractWrites.js`'s file header comment.
+
+**Testing:** new Node harness in `/tmp` (outputs scratch, gone between
+sessions -- rebuild from this description if picked up fresh), loading the
+REAL sliced source (engine block + the editForm submit handler + the new
+`renderResults` badge branch, sed'd verbatim out of `contract.html`) into a
+fake-DOM `vm` sandbox. 26/26 green: submit handler closes the modal and
+clears `currentEditRecord` SYNCHRONOUSLY, before the fetch it kicked off
+even resolves (proves genuinely optimistic, not just fast); row marked
+pending in `pendingRowSaves` and persisted to `aaContractPendingSaves`
+immediately; resubmit hits `/api/contract/write` with
+`{action:'editContract', rowNumber, ...fields}` and confirmed **NO**
+`clientTxnId` in the payload (deliberate, see above); edited field values
+carry through unchanged; a `warning` in the response (e.g. the
+deposit-method-changed ledger-mismatch case) triggers `alert()` with the
+server's own message, not silently swallowed; queue drains and
+`ctReloadAndRerender` re-renders the Search-results view on success;
+`ctQueueFull()` correctly blocks a 3rd concurrent edit save with an alert
+and fires no new fetch; `renderResults` shows the Saving/Queued badge for a
+pending row and skips attaching its click handler, while a non-pending row
+in the same list still gets its normal card + click handler. Both inline
+`<script>` blocks re-syntax-checked clean (`new Function(...)`) after the
+edit.
+
+**Old client-side `editContractFromJson`** renamed to
+`__deadCode_oldEditContractFromJson`, unreferenced, kept for an easy
+side-by-side comparison/revert -- same convention as this file's
+`__deadCode_oldDoRent`.
+
+**Not yet done, in order:**
+1. Deliver via the workspace folder, push (bundle with the two fixes
+   below -- all three are in the working tree together as of this
+   entry). Worth testing live once deployed: open Search, click a record,
+   change something, Save -- confirm the modal closes instantly and the
+   row shows the Saving badge, then updates correctly.
+2. `addContract` (Add form + passport-photo follow-up upload) -- the last
+   of the 4 actions.
+3. Full regression + PROGRESS.md wrap-up once all 4 are wired.
+
+**Files changed this slice:** `contract.html` only (`editForm`'s submit
+handler rewired; `renderResults` gains the pending-row badge branch; old
+`editContractFromJson` renamed to dead code). No backend files touched.
+
+## 🐛 Fixed: `cancelContract` resubmit of an ALREADY-canceled record threw
+## forever -- a Retry button that could never succeed -- CODED, UNIT-
+## TESTED, NOT YET DEPLOYED (2026-08-17, reported live by Anton on
+## staff-app-six-phi.vercel.app right after the `cancelContract`/`doCancel`
+## delivery further below went live)
+
+**Bug report (Anton, live):** canceled a Pending contract; it stayed
+showing "Pending"; the header's "1 change didn't save — tap to review"
+banner appeared with `cancelContract` for that row, error "This contract
+is no longer Pending (current status: "canceled")"; Retry produced the
+exact same error every time.
+
+**Root cause, traced through the actual code, not assumed:** the error
+message itself gives it away -- the record's current status WAS already
+"canceled", meaning the original cancel had genuinely succeeded
+server-side. A SECOND `cancelContract` request for the same row landed
+afterwards (most likely `restoreUnresolvedSaves()` recovering a leftover
+`aaContractPendingSaves` localStorage entry after a page reload mid-flight
+-- very plausible, given how much `contract.html` got reloaded during the
+DevTools session that found the `searchView` bug above) and hit
+`cancelContractFromJson`'s guard, which threw on ANY non-Pending status.
+Because that request failed (not succeeded), `ctReloadAndRerender` never
+ran, so the client's cached view kept showing the OLD "Pending" state even
+though the sheet itself already said "Canceled" -- and because the record
+really was already Canceled, every subsequent Retry re-threw the identical
+error forever. This exact gap was previously flagged, deliberately, as a
+known "real but low-stakes" limitation in `lib/contractWrites.js`'s file
+header comment when `cancelContract` was first ported -- this is that gap
+actually being hit live.
+
+**Fix, in `lib/contractWrites.js`'s `cancelContractFromJson`:** if the
+row's current status is already `"canceled"`, return
+`{success:true, row, idempotentReplay:true}` immediately -- a no-op,
+since that IS the outcome this action exists to produce -- instead of
+throwing. Still throws for any OTHER non-Pending status (e.g. "Rented"),
+since that's a genuine conflict (the record was actioned DIFFERENTLY than
+this cancel intended) worth surfacing, not silently swallowing.
+
+**Testing:** direct unit test against the real (copied) `contractWrites.js`
+via `createContractWrites()` with a fake `sheetIO`, in outputs scratch
+(gone between sessions). 3/3 scenarios green: already-"Canceled" row ->
+succeeds with `idempotentReplay:true`, zero `writeSheetJson` calls (true
+no-op, doesn't re-write anything unnecessarily); fresh "Pending" row ->
+real write happens, succeeds, no `idempotentReplay` flag; "Rented" row ->
+still correctly throws the conflict error. `node --check
+lib/contractWrites.js` clean.
+
+**Practical effect on Anton's currently-stuck failed-save panel:** once
+this deploys, clicking Retry on that already-failed "Cancel contract" item
+will now succeed and clear itself -- it's a genuine no-op, nothing gets
+double-canceled.
+
+**Files changed:** `lib/contractWrites.js` (`cancelContractFromJson` +
+file header comment), `contract.html` (`doCancel`'s own comment updated to
+match, no behavior change on the client side -- the fix is entirely
+server-side).
+
+## 🐛 Fixed: `contract.html` permanently stuck on "Loading bikes from the
+## spreadsheet…" on every load -- CODED, SYNTAX-VERIFIED, NOT YET DEPLOYED
+## (2026-08-17, reported live by Anton right after the save-pipeline
+## engine scaffolding + `cancelContract`/`customerIntake` wiring entries
+## below went live)
+
+**Bug report (Anton, live on staff-app-six-phi.vercel.app):** opened
+`contract.html`, stuck showing the red "Loading bikes from the
+spreadsheet…" gate card forever, 5+ minutes, never resolved.
+
+**Root cause, traced via the browser's own DevTools Console (not
+assumed):** `Uncaught ReferenceError: Cannot access 'searchView' before
+initialization`, thrown from `ctRefreshUi()` (called synchronously at page
+load via `restoreUnresolvedSaves()`, part of the save-pipeline engine
+scaffolding added earlier this session -- see that entry below).
+`searchView` was declared with `const searchView =
+document.getElementById('searchView')` much further down the file (in the
+Search/autocomplete section), but referenced earlier by the engine block.
+A `const`/`let` binding is in the temporal dead zone until its own
+declaration line actually executes, so touching it earlier throws --
+even the defensive `typeof searchView !== 'undefined'` guard already in
+`ctRefreshUi()` didn't help, since that check doesn't protect against TDZ
+(only against a genuinely undeclared identifier). Because this threw
+INSIDE the page's initial synchronous script execution, everything after
+it in that script block -- including the `loadBikeNames()` call that
+actually kicks off the fetch -- never ran. The spinner wasn't waiting on
+anything; the script had already died before it started.
+
+**Fix:** moved the `const searchView = document.getElementById(...)`
+declaration up to right after the `pendingBackdrop`/`pendingListBox` group
+(well before the engine block that references it), with a comment
+explaining why it's not declared in its more logical spot further down.
+Left the down-stream declaration site as a comment pointing up to the new
+one, rather than silently deleting it.
+
+**Testing:** both inline `<script>` blocks re-syntax-checked clean (`new
+Function(...)`) after the edit; confirmed only one `const searchView =
+document.getElementById` remains in the file.
+
+**Files changed:** `contract.html` only (`searchView`'s declaration
+relocated; no other logic touched). No backend files touched.
+
 ## 🔧 Phase 2, contract.html: 'customerIntake' (doRent) REWIRED onto
 ## the save-pipeline engine -- LIVE-BEHAVIOR CHANGE, CODED AND
 ## TEST-GREEN, NOT YET DEPLOYED (2026-08-17, small delivery #3 --
