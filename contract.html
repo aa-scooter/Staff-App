@@ -3331,16 +3331,86 @@ restoreUnresolvedSaves();
 // ================== end save-pipeline engine ==================
 
 // ---- "Yes, rent it" -- submits this pending record straight to the
-// server (the same plain intake call customers.html's own Add form makes,
-// with no `action` field -- Code.gs's doPost falls through to its default
-// customer-intake branch), instead of routing through that page for a
-// manual review + click. The Contract row itself only flips from Pending
-// to Rented once this submission lands (handled server-side, matching by
-// name + bike). This uses the Contract record's data exactly as it
-// currently sits on the sheet -- if anything's wrong, fix it first via
-// Search -> click the record -> edit -> save (action:'editContract'),
-// rather than during this step, since there's no review screen anymore.
-async function doRent() {
+// server (the same plain customer-intake write bikes.html's long-extend
+// and customers.html's Add form use). The Contract row itself only flips
+// from Pending to Rented once this submission lands (handled server-
+// side, matching by name + bike). This uses the Contract record's data
+// exactly as it currently sits on the sheet -- if anything's wrong, fix
+// it first via Search -> click the record -> edit -> save
+// (action:'editContract'), rather than during this step, since there's
+// no review screen anymore.
+//
+// REWIRED 2026-08-17 onto the save-pipeline engine -- the confirm modal
+// closes immediately (optimistic), the write runs in the background
+// against the new single-dispatch /api/contract/write endpoint instead
+// of the old local customerIntakeFromJson (now dead code for this
+// action, left in place -- grep before deleting), and the Pending list
+// shows a "Saving…"/"Queued…" badge on this row while it's in flight.
+//
+// clientTxnId generated ONCE here -- this is THE action a clientTxnId
+// guard was originally built for: the OLD version's comment (just above,
+// before this rewiring) describes a REAL double-booking Anton hit from a
+// dropped-connection retry. That old version's defensive workaround --
+// re-checking whether the record had already moved past Pending before
+// re-enabling the "Yes, rent it" button -- is REMOVED here, deliberately,
+// not by oversight. It was a client-side patch for exactly the failure
+// mode the server-side clientTxnId guard now handles directly and more
+// robustly: a same-clientTxnId resubmit safely no-ops (returns the
+// original row, `idempotentReplay:true`) even across a killed tab or a
+// response lost after the write actually landed -- not just a same-
+// session manual retry the old check could catch. See
+// customerIntakeFromJson's own guard in lib/contractWrites.js.
+function doRent() {
+  if (!currentPendingRecord) return;
+  if (ctQueueFull()) { alert('2 saves are already in progress — wait for one to finish before starting another.'); return; }
+  const r = currentPendingRecord;
+
+  const payload = {
+    name: r.name || '',
+    nationality: r.nationality || '',
+    passport: r.passport || '',
+    contact: r.contact || '',
+    bikeModel: r.bikeModel || '',
+    rentingDateFrom: toIsoDateForInput(r.rentingDateFrom),
+    returnDate: toIsoDateForInput(r.returnDate),
+    returnTime: r.returnTime || '',
+    deliverToHotel: r.deliverToHotel || '',
+    totalPrice: r.totalPrice || '',
+    paidBy: (r.paidBy || '').toString().toLowerCase(),
+    deposit: r.deposit || '',
+    depositAmount: r.depositAmount || '',
+    source: 'Direct',
+    // Carries this contract's Deal flag (stored as a note on the Contract
+    // sheet's contact column) through to the same customer-intake action
+    // customers.html's own Add form and bikes.html's long-extend flow
+    // use. That action's ledger-note write is what actually appends the
+    // visible "(price, days) Deal" tag onto the new customer row's
+    // contact cell -- same mechanism, just fed from here instead.
+    isDeal: String(r.isDeal).toUpperCase() === 'TRUE',
+    clientTxnId: genClientTxnId()
+  };
+
+  closeConfirmModal();
+
+  ctEnqueue({
+    label: (r.name ? r.name + ' — ' : '') + 'Rent out',
+    rows: [r.rowNumber],
+    requests: [{ action: 'customerIntake', payload }],
+    onAllSuccess: (results) => {
+      if (results[0] && results[0].warning) alert('Rented, but: ' + results[0].warning);
+      ctReloadAndRerender();
+    }
+  });
+}
+
+// DEAD CODE below this point -- kept only as the OLD (pre-17/08/2026)
+// version of doRent()'s failure-recovery path, for reference/an easy
+// revert if anything about the new engine needs fixing once this is
+// live. Nothing calls this anymore -- doRent() above is the one wired
+// to the "Yes, rent it" button. Safe to delete once the rewiring above
+// has been confirmed solid live (same convention as bikes.html's own
+// superseded bikesWriteDispatch-era code).
+async function __deadCode_oldDoRent() {
   if (!currentPendingRecord) return;
   const r = currentPendingRecord;
   const yesBtn = document.getElementById('confirmYesBtn');
@@ -3364,13 +3434,6 @@ async function doRent() {
       deposit: r.deposit || '',
       depositAmount: r.depositAmount || '',
       source: 'Direct',
-      // Carries this contract's Deal flag (stored as a note on the Contract
-      // sheet's contact column -- see getContractRows/addContractEntry/
-      // editContractEntry in Code.gs) through to the same customer-intake
-      // action customers.html's own Add form and bikes.html's long-extend
-      // flow use. That action's appendLedgerEntry call is what actually
-      // appends the visible "(price, days) Deal" tag onto the new customer
-      // row's contact cell -- same mechanism, just fed from here instead.
       isDeal: String(r.isDeal).toUpperCase() === 'TRUE'
     };
     const data = await customerIntakeFromJson(payload); // DISCONNECTED: writes to the static data/ JSON export instead of the live scriptUrl (see project CLAUDE.md)
@@ -3388,16 +3451,6 @@ async function doRent() {
     renderPendingList(sheetRows);
     setTimeout(closeConfirmModal, data.warning ? 2500 : 900);
   } catch (err) {
-    // A failed fetch here doesn't necessarily mean nothing happened --
-    // Apps Script can finish the write and still lose the response over a
-    // flaky connection, which is the confirmed cause of a real
-    // double-booking (see doRent's comment above; also fixed server-side
-    // via guardAgainstDuplicateSubmission_ in Code.gs, but that's a
-    // backstop, not a reason to skip checking here too). Before ever
-    // re-enabling "Yes, rent it" -- which would let a genuine double-submit
-    // happen again -- re-check this exact contract's live status. If it's
-    // moved on from Pending, the first attempt evidently landed; refuse to
-    // resubmit and warn instead, rather than trusting the button.
     sheetRows = null;
     rowsPromise = null;
     let freshRows = null;

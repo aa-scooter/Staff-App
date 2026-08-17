@@ -6,6 +6,68 @@ This exists because work on this project gets picked up across multiple
 Claude sessions/accounts with no shared memory between them — this file is
 the handoff.
 
+## 🔧 Phase 2, contract.html: 'customerIntake' (doRent) REWIRED onto
+## the save-pipeline engine -- LIVE-BEHAVIOR CHANGE, CODED AND
+## TEST-GREEN, NOT YET DEPLOYED (2026-08-17, small delivery #3 --
+## `doRent()` is THE action this project's clientTxnId guard was
+## originally built for, see below)
+
+**What this is:** the second of contract.html's 4 actions wired to the
+engine. `doRent()` ("Yes, rent it") now hits the new single-dispatch
+`/api/contract/write` endpoint (action `customerIntake`) instead of the
+old local `customerIntakeFromJson` -- confirm modal closes IMMEDIATELY,
+write runs in the background, Pending list shows the "Saving…" badge on
+that row (same infrastructure the `cancelContract` entry below added).
+
+**The one real judgment call this slice made:** the OLD `doRent()` had a
+defensive block in its `catch` -- after a failed request, before
+re-enabling "Yes, rent it", it re-fetched the record and checked whether
+its status had already moved past Pending, to catch the specific failure
+mode its own comment describes (a REAL double-booking Anton hit: Apps
+Script finishes the write, the response is lost over a flaky connection,
+and a naive retry books it twice). **That whole defensive check is
+REMOVED in the new `doRent()`, deliberately, not by oversight.** It was a
+same-session, client-side workaround for exactly the failure mode the
+server-side `clientTxnId` guard (already ported, already tested 47/47
+last session) now handles directly and strictly more robustly -- a
+same-`clientTxnId` resubmit safely no-ops and returns the original row
+(`idempotentReplay:true`) even across a killed tab or a response lost
+AFTER the write landed, not just a same-session manual retry the old
+check could catch. The old version is kept, renamed to
+`__deadCode_oldDoRent`, unreferenced, for an easy side-by-side
+comparison or revert -- same convention as bikes.html's own superseded
+code, grep before deleting.
+
+**Testing:** new Node harness in `/tmp/contracttest3/` (scratch). 10/10
+green: `doRent()` closes the confirm modal BEFORE the write resolves;
+row marked pending synchronously; resubmit hits `/api/contract/write`
+with `action:'customerIntake'`; **`clientTxnId` IS present in the sent
+payload this time** (explicitly checked, since the whole point of this
+slice was getting that guard wired correctly -- contrast with
+`cancelContract`'s entry below, which explicitly checks the OPPOSITE);
+every record field (name/bikeModel/totalPrice/etc.) carries through
+unchanged; `source` stays `'Direct'`; `isDeal` parses correctly from the
+sheet's `"TRUE"/"FALSE"` string; queue drains on success; a `warning` in
+the response triggers an `alert()` with the server's own message (not
+silently swallowed), matching every other guarded action's convention in
+this project. Whole file re-syntax-checked clean.
+
+**Not yet done, in order:**
+1. Deliver via the workspace folder, push. **Test live once deployed --
+   this one's the highest-stakes of the 4** (real money, real prior
+   double-booking history): rent out a real or throwaway test Pending
+   contract, confirm the modal closes instantly, the row shows
+   "Saving…" then disappears/updates correctly, and the customer/income/
+   cash rows all land right (same combined-transaction-log behavior
+   already verified server-side last session).
+2. `editContract` (Edit modal, Search-results badge) next.
+3. `addContract` (Add form + passport-photo follow-up) after that.
+4. Full regression + wrap-up once all 4 are wired.
+
+**Files changed this slice:** `contract.html` only (`doRent` rewired;
+old version renamed to `__deadCode_oldDoRent`, unreferenced). No backend
+files touched.
+
 ## 🔧 Phase 2, contract.html: 'cancelContract' (doCancel) REWIRED onto
 ## the save-pipeline engine -- LIVE-BEHAVIOR CHANGE, CODED AND
 ## TEST-GREEN, NOT YET DEPLOYED (2026-08-17, small delivery #2 of the
