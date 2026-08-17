@@ -587,7 +587,13 @@
     // scaffold landed (see PROGRESS.md) -- this table was written
     // generically specifically so this is a one-line addition, closing the
     // loop on the orphan-recovery fix above for this page too.
-    { ownerPage: 'contract.html', pendingKey: 'aaContractPendingSaves', failedKey: 'aaContractFailedSaves', endpoint: '/api/contract/write' }
+    { ownerPage: 'contract.html', pendingKey: 'aaContractPendingSaves', failedKey: 'aaContractFailedSaves', endpoint: '/api/contract/write' },
+    // Added 17/08/2026 the moment deposits.html's own save-pipeline engine
+    // landed (see PROGRESS.md). endpoint is /api/accounts/write, NOT a
+    // dedicated /api/deposits/write -- deposits.html's 5 actions are
+    // routed through the SAME endpoint accounts.html uses (see that file's
+    // own routing comment for why: Vercel's Hobby-plan 12-function cap).
+    { ownerPage: 'deposits.html', pendingKey: 'aaDepositsPendingSaves', failedKey: 'aaDepositsFailedSaves', endpoint: '/api/accounts/write' }
   ];
 
   // Only items queued at least this long ago are treated as possibly

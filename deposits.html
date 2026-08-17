@@ -192,11 +192,78 @@
   }
   .btn-cash-deduct:active{ transform:scale(.98); }
   .btn-cash-deduct:disabled{ opacity:.6; }
+
+  /* ---- Optimistic save/queue UX (17/08/2026) -- ported verbatim from
+  contract.html's own "opt-" prefixed pass (see that file's own comment for
+  the full visual-language reasoning). .opt-row-pending applies to this
+  page's own .row elements instead of contract.html's .result-card/
+  .pending-item -- see the save-pipeline engine in the script below for the
+  logic. Prefixed "opt-" for the same reason every other page's copy is --
+  easy to find/remove as a unit, can't collide with anything already on
+  this page. ---- */
+  .row.opt-row-pending{ opacity:.58; pointer-events:none; }
+  .opt-row-badge{
+    display:inline-flex; align-items:center; gap:5px; font-size:11px; font-weight:700;
+    letter-spacing:.04em; text-transform:uppercase; color:#B36A2E;
+  }
+  .opt-row-badge.queued{ color:var(--muted); }
+  .opt-spinner{
+    width:9px; height:9px; border-radius:50%; border:1.5px solid #E7C596; border-top-color:#B36A2E;
+    animation:opt-spin .7s linear infinite; flex-shrink:0;
+  }
+  @keyframes opt-spin{ to{ transform:rotate(360deg); } }
+
+  .opt-banner{
+    position:sticky; top:0; z-index:40; background:#FCEBEB; color:#C53030;
+    border-bottom:1px solid #F3C6C6; font-family:'Barlow Condensed',sans-serif; font-weight:700;
+    font-size:14px; letter-spacing:.02em; display:none; align-items:center; justify-content:center;
+    gap:8px; padding:11px 14px; cursor:pointer; text-align:center;
+  }
+  .opt-banner.show{ display:flex; }
+  .opt-banner:active{ opacity:.85; }
+
+  .opt-overlay{
+    position:fixed; inset:0; background:rgba(15,61,62,.35); display:none; align-items:flex-end;
+    justify-content:center; z-index:50;
+  }
+  .opt-overlay.show{ display:flex; }
+  @media (min-width:640px){ .opt-overlay{ align-items:center; } }
+  .opt-panel{
+    background:var(--card); width:100%; max-width:480px; border-radius:16px 16px 0 0;
+    padding:20px; max-height:80vh; overflow-y:auto;
+  }
+  @media (min-width:640px){ .opt-panel{ border-radius:14px; } }
+  .opt-panel h3{ font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:19px; color:var(--petrol); margin:0 0 4px; }
+  .opt-panel .sub{ font-size:12.5px; color:var(--muted); margin-bottom:16px; }
+  .opt-item{ border:1px solid #F3C6C6; background:#FDF2F2; border-radius:10px; padding:12px; margin-bottom:10px; }
+  .opt-item .rt{ font-weight:500; font-size:13.5px; }
+  .opt-item .rm{ font-size:12px; color:var(--muted); margin-top:2px; }
+  .opt-item .why{ font-size:12px; color:#C53030; margin-top:6px; }
+  .opt-item .actions{ display:flex; gap:8px; margin-top:10px; }
+  .opt-item .actions button{
+    flex:1; padding:9px; border:none; border-radius:8px; font-family:'Barlow Condensed',sans-serif;
+    font-weight:700; font-size:12.5px; letter-spacing:.02em; text-transform:uppercase; cursor:pointer;
+  }
+  .opt-btn-retry{ background:var(--cone); color:#fff; }
+  .opt-btn-discard{ background:#E4E0D8; color:var(--petrol); }
+  .opt-panel-close{
+    width:100%; margin-top:6px; padding:12px; border:1px solid var(--line); background:#fff;
+    border-radius:9px; font-family:'Barlow Condensed',sans-serif; font-weight:700; color:var(--petrol);
+    cursor:pointer;
+  }
 </style>
 </head>
 <body>
 
 <div id="topbar-mount"></div>
+
+<div class="opt-banner" id="optBanner"></div>
+<div class="opt-overlay" id="optOverlay"><div class="opt-panel">
+  <h3>Changes that didn't save</h3>
+  <div class="sub" id="optPanelSub">These are only on this device -- Google Drive doesn't have them yet. Retry when you're ready, or discard.</div>
+  <div id="optPanelList"></div>
+  <button type="button" class="opt-panel-close" id="optPanelCloseBtn">Close</button>
+</div></div>
 
 <div class="page-head">
   <div class="page-head-top">
@@ -580,884 +647,315 @@ async function getDepositsDataFromJson() {
   }
 }
 
-// ---- WRITE plumbing -- same read-modify-write-with-conflict-detection
-// pattern as bikes.html. ----
-async function fetchSheetWithMeta(sheetName, year) {
-  const url = year
-    ? `/api/data/${encodeURIComponent(sheetName)}?year=${encodeURIComponent(year)}`
-    : `/api/data/${encodeURIComponent(sheetName)}`;
-  const r = await fetch(url);
-  if (r.status === 401) throw new Error('Signed out -- please refresh to sign in again.');
-  if (!r.ok) throw new Error('HTTP ' + r.status);
-  const res = await r.json();
-  if (!res.success) throw new Error(res.error || 'Could not load data.');
-  return { rows: res.rows || [], modifiedTime: res.modifiedTime || null };
+// ================== WRITE layer REMOVED 2026-08-17, replaced by the
+// save-pipeline engine below ==================
+// Everything that used to live here (fetchSheetWithMeta/writeSheetJson,
+// logTransactionB, the whole Monthly summary recompute cascade,
+// addDepositEntryJson/editDepositEntryJson/deleteDepositEntryJson, and the
+// deductDeposit/deductCashDeposit cascade -- consumeDepositFromJson,
+// appendIncomeRowFromJson, addRentalAmountToBikesSheetFromJson,
+// applyDepositDeductionToContractFromJson, etc.) is now server-side in
+// lib/depositsWrites.js, dispatched through the SAME single endpoint
+// accounts.html already uses (/api/accounts/write -- see that file's
+// routing comment for why deposits.html doesn't get its own
+// api/deposits/write.js: Vercel's Hobby-plan 12-function cap). This page's
+// own read layer above (fetchSheetJson/getDepositsDataFromJson/
+// getCustomerRowsFromJson) is untouched -- only the WRITE path moved
+// server-side.
+
+function genClientTxnId() {
+  if (window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID();
+  return 'dpx_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10);
 }
-async function writeSheetJson(sheetName, rows, expectedModifiedTime, year) {
-  const url = year
-    ? `/api/data/${encodeURIComponent(sheetName)}?year=${encodeURIComponent(year)}`
-    : `/api/data/${encodeURIComponent(sheetName)}`;
-  const r = await fetch(url, {
+
+// ================== Save-pipeline engine (2026-08-17) ==================
+// Byte-for-byte structural port of contract.html's own save-pipeline
+// engine (itself ported from bikes.html's -- see that file's own comment
+// for the full "why"). "ct" -> "dp" prefix throughout, /api/contract/write
+// -> /api/accounts/write (deposits' actions are routed through that same
+// endpoint -- see api/accounts/write.js's routing comment), and
+// aaContractPendingSaves/aaContractFailedSaves -> aaDepositsPendingSaves/
+// aaDepositsFailedSaves so this page's own queue is entirely independent
+// of every other page's (nav.js's shared header strip -- see that file's
+// PENDING_SAVE_SOURCES table -- reads all of them).
+//
+// Row identity here is a "category:row" string (e.g. "bank:5") rather than
+// a bare Contract-sheet row number, since a deposit entry is uniquely
+// identified by (category, row) together -- there's no single sheet these
+// all live on. addDeposit/deductCashDeposit pass rows:[] (no existing row
+// to badge, same as contract.html's addContract/customerIntake), exactly
+// mirroring how those two actions are handled there.
+const MAX_QUEUE = 2; // exactly 2 -- 1 running + 1 waiting, same cap every other page's engine uses
+const dpQueue = [];
+let dpSeq = 0;
+const PENDING_SAVES_KEY = 'aaDepositsPendingSaves';
+const FAILED_SAVES_KEY = 'aaDepositsFailedSaves';
+
+// "category:row" -> the queue item currently running/queued for that row.
+const pendingRowSaves = new Map();
+// item.id -> { item, message } for saves that failed for real -- surfaced
+// in the header banner + review overlay, same as every other page's copy.
+const dpFailedItems = new Map();
+
+function dpQueueFull() { return dpQueue.length >= MAX_QUEUE; }
+
+function dpEnqueue({ label, rows, requests, onStepSuccess, onAllSuccess }) {
+  const item = {
+    id: ++dpSeq,
+    clientTxnId: (requests[0] && requests[0].payload && requests[0].payload.clientTxnId) || genClientTxnId(),
+    label, rows: (rows || []).slice(), requests, reqIndex: 0, results: [],
+    onStepSuccess: onStepSuccess || null,
+    onAllSuccess: onAllSuccess || null,
+    queuedAt: Date.now(), // lets nav.js's cross-page recoverOrphanedSaves() tell a stuck item from a genuinely in-flight one
+    status: dpQueue.length === 0 ? 'running' : 'queued'
+  };
+  dpQueue.push(item);
+  item.rows.forEach(r => pendingRowSaves.set(r, item));
+  persistPendingSaves();
+  dpRefreshUi();
+  if (item.status === 'running') dpRun(item);
+  return item;
+}
+
+async function dpRun(item) {
+  item.status = 'running';
+  dpRefreshUi();
+  try {
+    while (item.reqIndex < item.requests.length) {
+      const req = item.requests[item.reqIndex];
+      const res = await dpDispatchWithRetry(req.action, req.payload);
+      item.results.push(res);
+      item.reqIndex++;
+      persistPendingSaves();
+      if (item.onStepSuccess) { try { item.onStepSuccess(item.reqIndex - 1, res); } catch (e) { console.error(e); } }
+    }
+    dpResolveItem(item, true, null);
+  } catch (err) {
+    dpResolveItem(item, false, err);
+  }
+}
+
+function dpResolveItem(item, success, err) {
+  const idx = dpQueue.indexOf(item);
+  if (idx > -1) dpQueue.splice(idx, 1);
+  item.rows.forEach(r => { if (pendingRowSaves.get(r) === item) pendingRowSaves.delete(r); });
+  persistPendingSaves();
+  if (success) {
+    if (item.onAllSuccess) { try { item.onAllSuccess(item.results); } catch (e) { console.error(e); } }
+  } else {
+    dpFailedItems.set(item.id, { item, message: err.message });
+    persistFailedSaves();
+    updateFailBanner();
+  }
+  const next = dpQueue.find(it => it.status === 'queued');
+  if (next) dpRun(next);
+  dpRefreshUi();
+}
+
+// keepalive:true -- lets the network request finish even after this page's
+// JS context is torn down by a navigation; the localStorage pending-save
+// tracking below is what notices and safely resubmits anything keepalive
+// itself couldn't hand a result back to.
+async function dpDispatch(body) {
+  const r = await fetch('/api/accounts/write', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ rows, expectedModifiedTime })
+    body: JSON.stringify(body),
+    keepalive: true
   });
+  if (r.status === 401) throw new Error('Signed out -- please refresh to sign in again.');
   const res = await r.json().catch(() => ({}));
   if (r.status === 409) {
-    throw new Error(res.error || 'This record was changed by someone else in the meantime -- please reload and try again.');
+    const e = new Error(res.error || 'This record was changed by someone else in the meantime -- please reload and try again.');
+    e.isConflict = true;
+    throw e;
   }
-  if (!r.ok || !res.success) throw new Error(res.error || ('HTTP ' + r.status));
-  const cacheKey = year ? `${year}/${sheetName}` : sheetName;
-  delete depositsJsonCache[cacheKey];
+  if (!r.ok || res.success === undefined) throw new Error(res.error || ('HTTP ' + r.status));
+  if (res.success === false) throw new Error(res.error || 'Could not save.');
   return res;
 }
 
-// ---- Transaction log (added 14/08/2026, same per-file convention as the
-// recompute cascade below -- ported verbatim from accounts.html's copy).
-// Best-effort, additive-only -- see accounts.html's copy for the full
-// comment on why logging must never fail/delay the write it's describing.
-async function logTransactionB(entry) {
+async function dpDispatchWithRetry(action, payload) {
+  const body = Object.assign({ action }, payload);
+  const maxAttempts = 3;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await dpDispatch(body);
+    } catch (err) {
+      if (err.isConflict && attempt < maxAttempts) {
+        await new Promise(resolve => setTimeout(resolve, 700 * attempt));
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
+function persistPendingSaves() {
   try {
-    entry.id = 'txn_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
-    entry.ts = new Date().toISOString();
-    entry.reversed = false;
-    entry.reversedAt = null;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      let rows, modifiedTime;
-      try {
-        const res = await fetch('/api/data/transactionLog').then(r => r.json());
-        rows = Array.isArray(res.rows) ? res.rows : [];
-        modifiedTime = res.modifiedTime || null;
-      } catch (e) { rows = []; modifiedTime = null; }
-      const newRows = rows.concat([entry]);
-      const r = await fetch('/api/data/transactionLog', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rows: newRows, expectedModifiedTime: modifiedTime })
-      });
-      if (r.status === 409) continue;
-      return;
+    const arr = dpQueue.map(it => ({
+      clientTxnId: it.clientTxnId, label: it.label, rows: it.rows,
+      requests: it.requests.slice(it.reqIndex), queuedAt: it.queuedAt || Date.now()
+    }));
+    if (arr.length) localStorage.setItem(PENDING_SAVES_KEY, JSON.stringify(arr));
+    else localStorage.removeItem(PENDING_SAVES_KEY);
+  } catch (e) { /* best-effort, same posture as every other page's engine */ }
+}
+
+function persistFailedSaves() {
+  try {
+    const arr = Array.from(dpFailedItems.entries()).map(([id, f]) => ({
+      id, label: f.item.label, rows: f.item.rows,
+      requests: f.item.requests.slice(f.item.reqIndex), message: f.message
+    }));
+    if (arr.length) localStorage.setItem(FAILED_SAVES_KEY, JSON.stringify(arr));
+    else localStorage.removeItem(FAILED_SAVES_KEY);
+  } catch (e) { /* best-effort */ }
+}
+
+// Reloads this page's own copy of the deposits data and re-renders.
+// Clears BOTH the localStorage display cache (aaDepositsDataCache) AND the
+// in-memory depositsJsonCache (keyed by sheet name, declared next to
+// fetchSheetJson near the top of this script) -- contract.html hit a real
+// production bug (2026-08-17, see its own PROGRESS.md entry) where only
+// the localStorage cache was cleared on reload and the in-memory one was
+// left stale, making every write look like it silently did nothing. Both
+// are cleared here from the start so deposits.html never repeats that bug.
+function dpReloadAndRerender() {
+  clearDepositsCache();
+  Object.keys(depositsJsonCache).forEach(k => { delete depositsJsonCache[k]; });
+  loadDeposits();
+}
+
+// Called once during page init. Recovers BOTH unresolved saves (resubmits
+// immediately, safe per the idempotency guards on addDeposit/deductDeposit/
+// deductCashDeposit -- see lib/depositsWrites.js's header comment for
+// which actions have one) and previously-failed ones (just restores the
+// banner/review panel). Byte-for-byte structural port of contract.html's
+// own restoreUnresolvedSaves.
+function restoreUnresolvedSaves() {
+  try {
+    const raw = localStorage.getItem(PENDING_SAVES_KEY);
+    if (raw) {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr) && arr.length) {
+        console.warn('[deposits] Recovering ' + arr.length + ' unfinished save(s) left over from before this page loaded (likely a navigation or closed tab mid-save) -- resubmitting in the background. Safe because every guarded action here is idempotency-guarded server-side.');
+        arr.forEach(rec => {
+          if (!rec || !Array.isArray(rec.requests) || !rec.requests.length) return;
+          const item = {
+            id: ++dpSeq, clientTxnId: rec.clientTxnId, label: rec.label || 'Unfinished save',
+            rows: rec.rows || [], requests: rec.requests, reqIndex: 0, results: [],
+            onAllSuccess: dpReloadAndRerender,
+            queuedAt: rec.queuedAt || 0, // preserve original age -- see contract.html's own comment on why
+            status: dpQueue.length === 0 ? 'running' : 'queued'
+          };
+          dpQueue.push(item);
+          item.rows.forEach(r => pendingRowSaves.set(r, item));
+        });
+        persistPendingSaves();
+        const first = dpQueue.find(it => it.status === 'running');
+        if (first) dpRun(first);
+      }
     }
-  } catch (e) {
-    console.warn('Transaction log write failed (non-critical):', e && e.message);
-  }
-}
-function fmtMoneyB(n) {
-  const v = Number(n);
-  return '฿' + (isNaN(v) ? '0' : v.toLocaleString('en-US'));
-}
-
-// ==== Monthly "Bank" balance / cash / deposit-log recompute cascade ====
-// FIX (14/08/2026): ported verbatim from accounts.html's own copy (same
-// per-file convention as every other duplicated helper in this codebase).
-// See accounts.html's copy of this block for the full formula derivation
-// (pulled from the real workbook, not guessed) and which cells are
-// deliberately left alone (M11/M12, personal/wages subtotals, M2/M4/M10).
-// This page's own add/edit/delete deposit-entry functions are exactly
-// audit item #2 (deposit-log P15/S15/W15/S16/W16 totals) -- those feed
-// straight into M6 ("bank"), so this fix matters here even more directly
-// than on the other pages. Every write is always to the CURRENT month, so
-// recomputeMonthlySummaryCascadeB is always called via the
-// recomputeCurrentMonthSummaryCascadeB() convenience wrapper below.
-const ACCOUNTS_SUMMARY_ITEMS = {
-  expense: [
-    { row: 146, labelCol: 2, valueCol: 3, expectedLabel: 'total expenses', displayLabel: 'Total expenses' },
-    { row: 147, labelCol: 2, valueCol: 3, expectedLabel: 'bussiness expenses', displayLabel: 'Business expenses' },
-    { row: 148, labelCol: 2, valueCol: 3, expectedLabel: 'personal expenses total', displayLabel: 'Personal expenses' },
-    { row: 149, labelCol: 2, valueCol: 3, expectedLabel: 'wages and bike purchase', displayLabel: 'Wages & bike purchases' }
-  ],
-  income: [
-    { row: 146, labelCol: 7, valueCol: 9, expectedLabel: 'income for month', displayLabel: 'Income' },
-    { row: 147, labelCol: 7, valueCol: 9, expectedLabel: 'income less invesment', displayLabel: 'Income (less investment)' },
-    { row: 148, labelCol: 7, valueCol: 9, expectedLabel: '% of bussiness expenses vs income', displayLabel: 'Business exp. % of income', percent: true },
-    { row: 149, labelCol: 7, valueCol: 9, expectedLabel: '% of total busniness and personal vs income', displayLabel: 'Total exp. % of income', percent: true }
-  ],
-  profit: [
-    { row: 147, labelCol: 10, valueCol: 11, expectedLabel: 'net profit', displayLabel: 'Net profit' },
-    { row: 148, labelCol: 10, valueCol: 11, expectedLabel: 'actual profit', displayLabel: 'Actual profit' }
-  ],
-  deposit: [
-    { row: 3,  labelCol: 12, valueCol: 13, expectedLabel: 'cash', displayLabel: 'Cash' },
-    { row: 6,  labelCol: 12, valueCol: 13, expectedLabel: 'bank', displayLabel: 'Bank' },
-    { row: 11, labelCol: 12, valueCol: 13, expectedLabel: 'wise(less deposit)', displayLabel: 'Wise (less deposit)' },
-    { row: 12, labelCol: 12, valueCol: 13, expectedLabel: 'revolut(less deposit)', displayLabel: 'Revolut (less deposit)' },
-    { row: 9,  labelCol: 12, valueCol: 13, expectedLabel: 'total (cash + bank+wise)', displayLabel: 'Total (cash + bank + wise)' }
-  ]
-};
-function summaryNorm(s) { return (s || '').toString().trim().toLowerCase(); }
-function findSummaryRow(rows, item) {
-  const target = summaryNorm(item.expectedLabel);
-  const expectedRow = rows[item.row - 1];
-  if (expectedRow && summaryNorm(expectedRow[item.labelCol - 1]) === target) return item.row;
-  for (let r = 0; r < rows.length; r++) {
-    if (rows[r] && summaryNorm(rows[r][item.labelCol - 1]) === target) return r + 1;
-  }
-  return null;
-}
-function columnLetterToIndexJson(letters) {
-  let n = 0;
-  for (let i = 0; i < letters.length; i++) n = n * 26 + (letters.charCodeAt(i) - 64);
-  return n;
-}
-function evalSummaryFormulaJson(rows, formulaStr) {
-  const terms = formulaStr.slice(1).split('+').map(t => t.trim()).filter(Boolean);
-  let total = 0;
-  terms.forEach(t => {
-    const m = /^([A-Z]+)(\d+)$/.exec(t);
-    if (m) {
-      const col = columnLetterToIndexJson(m[1]);
-      const row = Number(m[2]);
-      const v = rows[row - 1] ? rows[row - 1][col - 1] : undefined;
-      const n = Number(v);
-      if (!isNaN(n)) total += n;
-      return;
-    }
-    const n = Number(t);
-    if (!isNaN(n)) total += n;
-  });
-  return total;
-}
-const EXPENSE_TYPE_TOTAL_LABELS_B = {
-  personal: { row: 149, label: 'personal expenses total' },
-  wages: { row: 150, label: 'wages and bike purchase' }
-};
-function locateExpenseTypeTotalRowFromJson(rows, type) {
-  const def = EXPENSE_TYPE_TOTAL_LABELS_B[type];
-  if (!def) return null;
-  const norm = s => (s || '').toString().trim().toLowerCase();
-  if (rows[def.row - 1] && norm(rows[def.row - 1][1]) === def.label) return def.row;
-  for (let r = 0; r < rows.length; r++) { if (rows[r] && norm(rows[r][1]) === def.label) return r + 1; }
-  return null;
-}
-const ACCOUNTS_CASCADE_EXTRA_ITEMS_B = {
-  depositsAll:   { row: 5,  labelCol: 12, valueCol: 13, expectedLabel: 'deposits all' },
-  bankLessDep:   { row: 7,  labelCol: 12, valueCol: 13, expectedLabel: 'bank less deposit' },
-  cashPrevious:  { row: 4,  labelCol: 12, valueCol: 13, expectedLabel: 'cash previous' },
-  bankPrevious:  { row: 2,  labelCol: 12, valueCol: 13, expectedLabel: 'bank previous less deposit + wise + rev' }
-};
-const DEPOSIT_LOG_TOTAL_ITEMS_B = [
-  { key: 'scan',    dataCol: 16, row: 15, labelCol: 15, valueCol: 16, expectedLabel: 'total' },
-  { key: 'wise',    dataCol: 19, row: 15, labelCol: 18, valueCol: 19, expectedLabel: 'total' },
-  { key: 'revolut', dataCol: 23, row: 15, labelCol: 22, valueCol: 23, expectedLabel: 'total' }
-];
-const DEPOSIT_LOG_SUBTOTAL_ITEMS_B = [
-  { key: 'wise',    row: 16, labelCol: 18, valueCol: 19, expectedLabel: 'total wise' },
-  { key: 'revolut', row: 16, labelCol: 22, valueCol: 23, expectedLabel: 'total revolut' }
-];
-function readCellNumB(rows, row, col) {
-  if (!row || !rows[row - 1]) return 0;
-  let v = rows[row - 1][col - 1];
-  if (typeof v === 'string' && v.charAt(0) === '=') v = evalSummaryFormulaJson(rows, v);
-  const n = Number(v);
-  return isNaN(n) ? 0 : n;
-}
-function writeCellB(rows, row, col, val) {
-  if (!row) return;
-  if (!rows[row - 1]) rows[row - 1] = [];
-  while (rows[row - 1].length < col) rows[row - 1].push('');
-  rows[row - 1][col - 1] = val;
-}
-function sumColumnRangeB(rows, col, fromRow, toRow) {
-  let total = 0;
-  for (let r = fromRow; r <= toRow; r++) {
-    const v = rows[r - 1] ? rows[r - 1][col - 1] : undefined;
-    if (v === '' || v === null || v === undefined) continue;
-    const n = Number(v);
-    if (!isNaN(n)) total += n;
-  }
-  return total;
-}
-async function recomputeCashSheetTotalsB() {
-  const { rows, modifiedTime } = await fetchSheetWithMeta('cash');
-  if (!rows || !rows.length) throw new Error('no tab named "cash" was found -- cash totals were NOT recomputed.');
-  const norm = s => (s || '').toString().trim().toLowerCase();
-  let incomeRow = -1;
-  for (let r = 1; r < rows.length; r++) {
-    if (rows[r] && norm(rows[r][1]) === 'income') { incomeRow = r + 1; break; }
-  }
-  if (incomeRow === -1) throw new Error('Could not find the "income" total row (column B) on "cash" -- cash totals were NOT recomputed.');
-  const expensesRow = incomeRow + 2;
-  const totalRow = incomeRow + 4;
-  if (!rows[totalRow - 1] || norm(rows[totalRow - 1][5]) !== 'total cash') {
-    throw new Error('"cash" sheet layout has drifted (expected "total cash" 4 rows below "income") -- cash totals were NOT recomputed.');
-  }
-  const newRows = rows.map(r => r.slice());
-  const incomeTotal = sumColumnRangeB(newRows, 3, 2, incomeRow - 1);
-  const expensesTotal = sumColumnRangeB(newRows, 7, 2, expensesRow - 1);
-  const totalCash = incomeTotal - expensesTotal;
-  writeCellB(newRows, incomeRow, 3, incomeTotal);
-  writeCellB(newRows, expensesRow, 7, expensesTotal);
-  writeCellB(newRows, totalRow, 7, totalCash);
-  await writeSheetJson('cash', newRows, modifiedTime);
-  return totalCash;
-}
-async function recomputeMonthlySummaryCascadeB(monthName, year) {
-  const cashTotal = await recomputeCashSheetTotalsB();
-  const { rows, modifiedTime } = await fetchSheetWithMeta(monthName, year);
-  if (!rows || !rows.length) throw new Error('No sheet found for "' + monthName + '" -- summary totals were NOT recomputed.');
-  const newRows = rows.map(r => r.slice());
-
-  const terRow = findSummaryRow(newRows, ACCOUNTS_SUMMARY_ITEMS.expense[0]);
-  const berRow = findSummaryRow(newRows, ACCOUNTS_SUMMARY_ITEMS.expense[1]);
-  const incRow = findSummaryRow(newRows, ACCOUNTS_SUMMARY_ITEMS.income[0]);
-  const iliRow = findSummaryRow(newRows, ACCOUNTS_SUMMARY_ITEMS.income[1]);
-  const pctBerRow = findSummaryRow(newRows, ACCOUNTS_SUMMARY_ITEMS.income[2]);
-  const pctTotRow = findSummaryRow(newRows, ACCOUNTS_SUMMARY_ITEMS.income[3]);
-  const netProfitRow = findSummaryRow(newRows, ACCOUNTS_SUMMARY_ITEMS.profit[0]);
-  const actProfitRow = findSummaryRow(newRows, ACCOUNTS_SUMMARY_ITEMS.profit[1]);
-  const cashRow = findSummaryRow(newRows, ACCOUNTS_SUMMARY_ITEMS.deposit[0]);
-  const bankRow = findSummaryRow(newRows, ACCOUNTS_SUMMARY_ITEMS.deposit[1]);
-  const wiseRow = findSummaryRow(newRows, ACCOUNTS_SUMMARY_ITEMS.deposit[2]);
-  const revolutRow = findSummaryRow(newRows, ACCOUNTS_SUMMARY_ITEMS.deposit[3]);
-  const totalRow = findSummaryRow(newRows, ACCOUNTS_SUMMARY_ITEMS.deposit[4]);
-  const personalRow = locateExpenseTypeTotalRowFromJson(newRows, 'personal');
-  const wagesRow = locateExpenseTypeTotalRowFromJson(newRows, 'wages');
-  const depositsAllRow = findSummaryRow(newRows, ACCOUNTS_CASCADE_EXTRA_ITEMS_B.depositsAll);
-  const bankLessDepRow = findSummaryRow(newRows, ACCOUNTS_CASCADE_EXTRA_ITEMS_B.bankLessDep);
-
-  const missing = [];
-  [['total expenses', terRow], ['bussiness expenses', berRow], ['income for month', incRow],
-   ['income less investment', iliRow], ['net profit', netProfitRow], ['actual profit', actProfitRow],
-   ['cash', cashRow], ['bank', bankRow], ['wise(less deposit)', wiseRow], ['revolut(less deposit)', revolutRow],
-   ['total (cash+bank+wise)', totalRow], ['personal expenses total', personalRow], ['wages and bike purchase', wagesRow]
-  ].forEach(([label, row]) => { if (!row) missing.push(label); });
-  if (missing.length) throw new Error('Could not find: ' + missing.join(', ') + ' on "' + monthName + '" -- summary totals were NOT recomputed.');
-
-  DEPOSIT_LOG_TOTAL_ITEMS_B.forEach(item => {
-    const row = findSummaryRow(newRows, item) || item.row;
-    const total = sumColumnRangeB(newRows, item.dataCol, 2, 14);
-    writeCellB(newRows, row, item.valueCol, total);
-  });
-  const p15 = readCellNumB(newRows, DEPOSIT_LOG_TOTAL_ITEMS_B[0].row, DEPOSIT_LOG_TOTAL_ITEMS_B[0].valueCol);
-  const s15 = readCellNumB(newRows, DEPOSIT_LOG_TOTAL_ITEMS_B[1].row, DEPOSIT_LOG_TOTAL_ITEMS_B[1].valueCol);
-  const w15 = readCellNumB(newRows, DEPOSIT_LOG_TOTAL_ITEMS_B[2].row, DEPOSIT_LOG_TOTAL_ITEMS_B[2].valueCol);
-  const m11 = readCellNumB(newRows, wiseRow, 13);
-  const m12 = readCellNumB(newRows, revolutRow, 13);
-  DEPOSIT_LOG_SUBTOTAL_ITEMS_B.forEach(item => {
-    const row = findSummaryRow(newRows, item) || item.row;
-    const base = item.key === 'wise' ? m11 : m12;
-    const colTotal = item.key === 'wise' ? s15 : w15;
-    writeCellB(newRows, row, item.valueCol, base + colTotal);
-  });
-
-  const incomeTotal = sumColumnRangeB(newRows, 9, 2, incRow - 1);
-  writeCellB(newRows, incRow, 9, incomeTotal);
-  const expenseTotal = sumColumnRangeB(newRows, 3, 2, terRow - 1);
-  writeCellB(newRows, terRow, 3, expenseTotal);
-  writeCellB(newRows, iliRow, 9, incomeTotal);
-  const netProfit = incomeTotal - expenseTotal;
-  writeCellB(newRows, netProfitRow, 11, netProfit);
-
-  const personalTotal = readCellNumB(newRows, personalRow, 3);
-  const wagesTotal = readCellNumB(newRows, wagesRow, 3);
-  const businessExpenses = expenseTotal - personalTotal - wagesTotal;
-  writeCellB(newRows, berRow, 3, businessExpenses);
-  if (pctBerRow) writeCellB(newRows, pctBerRow, 9, incomeTotal ? (businessExpenses / incomeTotal) : 0);
-  const actualProfit = incomeTotal - businessExpenses;
-  writeCellB(newRows, actProfitRow, 11, actualProfit);
-  if (pctTotRow) writeCellB(newRows, pctTotRow, 9, incomeTotal ? ((expenseTotal - wagesTotal) / incomeTotal) : 0);
-
-  writeCellB(newRows, cashRow, 13, cashTotal);
-  const m2 = readCellNumB(newRows, ACCOUNTS_CASCADE_EXTRA_ITEMS_B.bankPrevious.row, 13);
-  const m4 = readCellNumB(newRows, ACCOUNTS_CASCADE_EXTRA_ITEMS_B.cashPrevious.row, 13);
-  const bank = (netProfit + m2) - (cashTotal - m4) + p15 - m11 - m12;
-  writeCellB(newRows, bankRow, 13, bank);
-  if (depositsAllRow) writeCellB(newRows, depositsAllRow, 13, p15 + s15 + w15);
-  if (bankLessDepRow) writeCellB(newRows, bankLessDepRow, 13, bank - p15);
-  const totalCashBankWise = cashTotal + bank + m11 + m12;
-  writeCellB(newRows, totalRow, 13, totalCashBankWise);
-
-  await writeSheetJson(monthName, newRows, modifiedTime, year);
-}
-async function recomputeCurrentMonthSummaryCascadeB() {
-  const now = new Date();
-  const monthName = DEPOSITS_MONTH_NAMES[now.getMonth()];
-  const year = now.getFullYear();
-  try { await recomputeMonthlySummaryCascadeB(monthName, year); }
-  catch (e) { console.warn('Summary totals recompute failed:', e.message); }
-}
-
-function isoDateInputToSheetValue(isoDate) {
-  const m = String(isoDate || '').trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (!m) return null;
-  return `${m[1]}-${m[2]}-${m[3]}T00:00:00`;
-}
-function todaySheetDateValue() {
-  const now = new Date();
-  return `${now.getFullYear()}-${pad2Json(now.getMonth() + 1)}-${pad2Json(now.getDate())}T00:00:00`;
-}
-function currentDepositsMonthYear() {
-  const now = new Date();
-  return { monthName: DEPOSITS_MONTH_NAMES[now.getMonth()], year: now.getFullYear() };
-}
-// Validates row 1's label at cat.dateCol against cat.header, same check
-// locateDepositHeaderRow does server-side -- throws (writes nothing) if the
-// column's moved/been retyped, rather than silently writing into the wrong
-// place.
-function assertDepositHeader(rows2D, cat, monthName, failureNote) {
-  const raw = rows2D[0] ? rows2D[0][cat.dateCol - 1] : undefined;
-  const norm = (raw || '').toString().trim().toLowerCase();
-  if (norm !== cat.header) {
-    throw new Error('"' + monthName + '" sheet: expected "' + cat.header + '" in column ' + cat.dateCol +
-      ', row 1 but found "' + (raw || '(blank)') + '" -- ' + failureNote + '.');
-  }
-}
-
-// ---- Ports addDepositEntry(). data: { category, date (yyyy-mm-dd or ''),
-// name, amount }. Finds the first free gap row above the totals row and
-// writes date/amount/name there -- nothing else on the sheet is touched. ----
-async function addDepositEntryJson(data) {
-  const cat = DEPOSIT_CATEGORIES_B.find(c => c.key === data.category);
-  if (!cat) throw new Error('Unrecognized deposit category "' + data.category + '".');
-  const amount = (data.amount === '' || data.amount === undefined || data.amount === null) ? NaN : Number(data.amount);
-  if (isNaN(amount) || amount <= 0) throw new Error('Enter a valid deposit amount.');
-  const name = (data.name || '').toString().trim();
-
-  const { monthName, year } = currentDepositsMonthYear();
-  const { rows, modifiedTime } = await fetchSheetWithMeta(monthName, year);
-  assertDepositHeader(rows, cat, monthName, 'the deposit was NOT added');
-
-  let targetRow = null;
-  for (let i = 1; i < rows.length; i++) {
-    const dateRaw = rows[i][cat.dateCol - 1];
-    if ((dateRaw || '').toString().trim().toLowerCase() === 'total') break;
-    const dateEmpty = dateRaw === '' || dateRaw === null || dateRaw === undefined;
-    const amtRaw = rows[i][cat.amountCol - 1];
-    const amtEmpty = amtRaw === '' || amtRaw === null || amtRaw === undefined;
-    const nameRaw = rows[i][cat.nameCol - 1];
-    const nameEmpty = nameRaw === '' || nameRaw === null || nameRaw === undefined;
-    if (dateEmpty && amtEmpty && nameEmpty) { targetRow = i + 1; break; } // 1-indexed sheet row
-  }
-  if (!targetRow) {
-    throw new Error('Could not find a free row above the totals row in the ' + cat.label +
-      ' deposit section of "' + monthName + '" -- the deposit was NOT added.');
-  }
-
-  const newRows = rows.map(r => r.slice());
-  const rowIdx = targetRow - 1; // back to 0-indexed array position
-  while (newRows.length <= rowIdx) newRows.push([]);
-  newRows[rowIdx][cat.dateCol - 1] = data.date ? isoDateInputToSheetValue(data.date) : todaySheetDateValue();
-  newRows[rowIdx][cat.amountCol - 1] = amount;
-  newRows[rowIdx][cat.nameCol - 1] = name;
-
-  await writeSheetJson(monthName, newRows, modifiedTime, year);
-  await recomputeCurrentMonthSummaryCascadeB();
-  await logTransactionB({
-    page: 'deposits.html', action: 'addDepositEntryJson', reversible: true,
-    summary: cat.label + ' deposit ' + fmtMoneyB(amount) + (name ? (' — ' + name) : '') + ' (' + monthName + ' ' + year + ')',
-    writes: [{ sheet: monthName, year: year, row: targetRow, cols: [cat.dateCol, cat.amountCol, cat.nameCol], before: ['', '', ''], after: [newRows[rowIdx][cat.dateCol - 1], newRows[rowIdx][cat.amountCol - 1], newRows[rowIdx][cat.nameCol - 1]] }]
-  });
-  return { success: true, row: targetRow };
-}
-
-// ---- Ports editDepositEntry(). data: { category, row, date, name, amount }.
-// Overwrites ONLY those three cells on the given row -- a manual correction,
-// not a running-total transaction. ----
-async function editDepositEntryJson(data) {
-  const cat = DEPOSIT_CATEGORIES_B.find(c => c.key === data.category);
-  if (!cat) throw new Error('Unrecognized deposit category "' + data.category + '".');
-  const row = Math.round(Number(data.row));
-  if (!row || row < 2) throw new Error('Invalid deposit row.');
-
-  const { monthName, year } = currentDepositsMonthYear();
-  const { rows, modifiedTime } = await fetchSheetWithMeta(monthName, year);
-  assertDepositHeader(rows, cat, monthName, 'the deposit was NOT changed');
-
-  const rowIdx = row - 1;
-  const existingDate = rows[rowIdx] ? rows[rowIdx][cat.dateCol - 1] : undefined;
-  if ((existingDate || '').toString().trim().toLowerCase() === 'total') {
-    throw new Error('That row is the "' + cat.label + '" totals row, not a deposit -- it was NOT changed.');
-  }
-
-  const newAmount = (data.amount === '' || data.amount === undefined || data.amount === null) ? null : Number(data.amount);
-  if (newAmount !== null && isNaN(newAmount)) throw new Error('Invalid amount.');
-  const newName = (data.name || '').toString().trim();
-  const newDate = data.date ? isoDateInputToSheetValue(data.date) : null;
-
-  // Captured from the untouched `rows` (never mutated -- `newRows` below is
-  // a deep-enough copy via .slice() per row) so the transaction log gets a
-  // real before-snapshot, not just the post-edit values.
-  const beforeAmount = rows[rowIdx] ? rows[rowIdx][cat.amountCol - 1] : '';
-  const beforeName = rows[rowIdx] ? rows[rowIdx][cat.nameCol - 1] : '';
-
-  const newRows = rows.map(r => r.slice());
-  newRows[rowIdx][cat.dateCol - 1] = newDate;
-  newRows[rowIdx][cat.amountCol - 1] = newAmount;
-  newRows[rowIdx][cat.nameCol - 1] = newName;
-
-  await writeSheetJson(monthName, newRows, modifiedTime, year);
-  await recomputeCurrentMonthSummaryCascadeB();
-  await logTransactionB({
-    page: 'deposits.html', action: 'editDepositEntryJson', reversible: true,
-    summary: 'Edited ' + cat.label + ' deposit ' + fmtMoneyB(beforeAmount) + ' → ' + fmtMoneyB(newAmount) + (newName || beforeName ? (' — ' + (newName || beforeName)) : '') + ' (' + monthName + ' ' + year + ')',
-    writes: [{ sheet: monthName, year: year, row: row, cols: [cat.dateCol, cat.amountCol, cat.nameCol], before: [existingDate, beforeAmount, beforeName], after: [newDate, newAmount, newName] }]
-  });
-  return { success: true };
-}
-
-// ---- Ports deleteDepositEntry(). data: { category, row }. Clears the
-// date/amount/name cells back to blank -- same three cells editDepositEntry
-// touches, nothing else. ----
-async function deleteDepositEntryJson(data) {
-  const cat = DEPOSIT_CATEGORIES_B.find(c => c.key === data.category);
-  if (!cat) throw new Error('Unrecognized deposit category "' + data.category + '".');
-  const row = Math.round(Number(data.row));
-  if (!row || row < 2) throw new Error('Invalid deposit row.');
-
-  const { monthName, year } = currentDepositsMonthYear();
-  const { rows, modifiedTime } = await fetchSheetWithMeta(monthName, year);
-  assertDepositHeader(rows, cat, monthName, 'the deposit was NOT removed');
-
-  const rowIdx = row - 1;
-  const existingDate = rows[rowIdx] ? rows[rowIdx][cat.dateCol - 1] : undefined;
-  if ((existingDate || '').toString().trim().toLowerCase() === 'total') {
-    throw new Error('That row is the "' + cat.label + '" totals row, not a deposit -- it was NOT removed.');
-  }
-
-  // Captured from the untouched `rows` before clearing -- same reasoning
-  // as editDepositEntryJson's before-snapshot above.
-  const clearedAmount = rows[rowIdx] ? rows[rowIdx][cat.amountCol - 1] : '';
-  const clearedName = rows[rowIdx] ? rows[rowIdx][cat.nameCol - 1] : '';
-
-  const newRows = rows.map(r => r.slice());
-  newRows[rowIdx][cat.dateCol - 1] = null;
-  newRows[rowIdx][cat.amountCol - 1] = null;
-  newRows[rowIdx][cat.nameCol - 1] = null;
-
-  await writeSheetJson(monthName, newRows, modifiedTime, year);
-  await recomputeCurrentMonthSummaryCascadeB();
-  await logTransactionB({
-    page: 'deposits.html', action: 'deleteDepositEntryJson', reversible: true,
-    summary: 'Deleted ' + cat.label + ' deposit ' + fmtMoneyB(clearedAmount) + (clearedName ? (' — ' + clearedName) : '') + ' (' + monthName + ' ' + year + ')',
-    writes: [{ sheet: monthName, year: year, row: row, cols: [cat.dateCol, cat.amountCol, cat.nameCol], before: [existingDate, clearedAmount, clearedName], after: [null, null, null] }]
-  });
-  return { success: true };
-}
-// ================== end JSON-backed data layer ==================
-
-// ================== WRITE layer: deductDeposit / deductCashDeposit (ported 14/08/2026) ==================
-// Both mirror Code.gs's deductDepositEntry/deductCashDeposit exactly,
-// including their deliberately different write scopes: deductDeposit
-// touches the deposit tracking row, an Income row, the Wise/Revolut
-// running total, the bikes-sheet monthly earnings, AND best-effort mirrors
-// onto the matching Contract row's deposit amount; deductCashDeposit
-// writes ONLY the Contract row (per Anton: cash deposits are never logged
-// as their own row anywhere else, the Contract cell IS the record).
-
-const DEPOSIT_CATEGORY_PAID_BY_B = { bank: 'Scan', wise: 'Wise', revolut: 'Revolut' };
-
-// FIFTH bike-name matcher in this codebase (see add-bikes.html's comment
-// on the four others) -- mirrors Code.gs's bikeNamesMatchForRentalLog.
-// Used only for finding a bike's row on the "bikes" sheet for the
-// running-total bump below.
-function normalizeBikeNameForRentalLogB(s) {
-  return (s || '').toString().toLowerCase().replace(/[()]/g, ' ').replace(/[^a-z0-9]+/g, ' ').trim().replace(/\s+/g, ' ');
-}
-const RENTAL_LOG_DISTINGUISHING_SUFFIXES_B = {
-  one: 1, two: 1, three: 1, four: 1, five: 1, six: 1, seven: 1, eight: 1, nine: 1, ten: 1,
-  i: 1, ii: 1, iii: 1, iv: 1, v: 1, vi: 1, vii: 1, viii: 1, ix: 1, x: 1,
-  '1': 1, '2': 1, '3': 1, '4': 1, '5': 1, '6': 1, '7': 1, '8': 1, '9': 1, '10': 1
-};
-function bikeNamesMatchForRentalLogB(a, b) {
-  const na = normalizeBikeNameForRentalLogB(a), nb = normalizeBikeNameForRentalLogB(b);
-  if (!na || !nb) return false;
-  if (na === nb) return true;
-  const ta = na.split(' '), tb = nb.split(' ');
-  const shorter = ta.length <= tb.length ? ta : tb;
-  const longer = ta.length <= tb.length ? tb : ta;
-  let isPrefix = true;
-  for (let i = 0; i < shorter.length; i++) { if (shorter[i] !== longer[i]) { isPrefix = false; break; } }
-  if (isPrefix) {
-    const extra = longer.slice(shorter.length);
-    for (let j = 0; j < extra.length; j++) { if (RENTAL_LOG_DISTINGUISHING_SUFFIXES_B[extra[j]]) return false; }
-    return true;
-  }
-  // KNOWN QUIRK (inherited from Code.gs -- see customers.html's identical
-  // comment): a garbled bike name containing "total" as a raw prefix can
-  // wrongly match the income table's own "total" label row.
-  return na.indexOf(nb) !== -1 || nb.indexOf(na) !== -1;
-}
-function findBikesSheetMonthColIdxB(headerRow, monthName) {
-  const targetShort = monthName.toString().trim().toLowerCase().slice(0, 3);
-  for (let c = 0; c < headerRow.length; c++) {
-    const h = (headerRow[c] || '').toString().trim().toLowerCase();
-    if (h && h.slice(0, 3) === targetShort) return c;
-  }
-  return -1;
-}
-async function addRentalAmountToBikesSheetFromJson(bikeModel, rawAmount) {
-  const amount = Number(rawAmount);
-  if (rawAmount === '' || rawAmount === null || rawAmount === undefined || isNaN(amount) || amount === 0) return;
-  const bikeNameTrimmed = (bikeModel || '').toString().trim();
-  if (!bikeNameTrimmed) throw new Error('No bike name given -- bike monthly total was NOT updated.');
-  const { rows, modifiedTime } = await fetchSheetWithMeta('bikes');
-  const header = rows[0] || [];
-  let rowIdx = -1;
-  for (let i = 1; i < rows.length; i++) {
-    const name = (rows[i][0] || '').toString().trim();
-    if (name && bikeNamesMatchForRentalLogB(name, bikeNameTrimmed)) { rowIdx = i; break; }
-  }
-  if (rowIdx === -1) {
-    throw new Error('Could not find a row for "' + bikeNameTrimmed + '" on the "bikes" sheet -- its monthly total was NOT updated.');
-  }
-  const now = new Date();
-  const monthName = DEPOSITS_MONTH_NAMES[now.getMonth()];
-  const colIdx = findBikesSheetMonthColIdxB(header, monthName);
-  if (colIdx === -1) {
-    throw new Error('Could not find a "' + monthName + '" column on the "bikes" sheet -- "' + bikeNameTrimmed + '"\'s monthly total was NOT updated.');
-  }
-  const newRows = rows.map(r => r.slice());
-  const targetRow = newRows[rowIdx].slice();
-  while (targetRow.length <= colIdx) targetRow.push('');
-  const current = Number(targetRow[colIdx]);
-  targetRow[colIdx] = (isNaN(current) ? 0 : current) + amount;
-  newRows[rowIdx] = targetRow;
-  await writeSheetJson('bikes', newRows, modifiedTime);
-}
-async function processDepositForPaymentFromJson(paidByLower, rawAmount) {
-  const now = new Date();
-  const monthName = DEPOSITS_MONTH_NAMES[now.getMonth()];
-  const year = now.getFullYear();
-  const { rows, modifiedTime } = await fetchSheetWithMeta(monthName, year);
-  if (!rows || !rows.length) throw new Error('No sheet found for the current month -- could not update the ' + paidByLower + ' deposit total.');
-  const expectedRow = paidByLower === 'wise' ? 11 : 12;
-  const expectedLabel = paidByLower === 'wise' ? 'wise(less deposit)' : 'revolut(less deposit)';
-  const norm = s => (s || '').toString().trim().toLowerCase();
-  let rowIdx = -1;
-  if (rows[expectedRow - 1] && norm(rows[expectedRow - 1][11]) === expectedLabel) rowIdx = expectedRow - 1;
-  else { for (let i = 0; i < rows.length; i++) { if (rows[i] && norm(rows[i][11]) === expectedLabel) { rowIdx = i; break; } } }
-  if (rowIdx === -1) throw new Error('Could not find a "' + expectedLabel + '" row in column L of the "' + monthName + '" sheet -- the ' + paidByLower + ' deposit total was NOT updated.');
-  const newRows = rows.map(r => r.slice());
-  const targetRow = newRows[rowIdx].slice();
-  while (targetRow.length < 13) targetRow.push('');
-  const current = Number(targetRow[12]);
-  const delta = Number(rawAmount) || 0;
-  targetRow[12] = (isNaN(current) ? 0 : current) + delta;
-  newRows[rowIdx] = targetRow;
-  await writeSheetJson(monthName, newRows, modifiedTime, year);
-  await recomputeCurrentMonthSummaryCascadeB();
-  await logTransactionB({
-    page: 'deposits.html', action: 'processDepositForPaymentFromJson', reversible: true,
-    summary: (delta >= 0 ? 'Deposit total +' : 'Deposit total ') + fmtMoneyB(delta) + ' — ' + paidByLower + ' (' + monthName + ' ' + year + ')',
-    writes: [{ sheet: monthName, year: year, row: rowIdx + 1, cols: [13], before: [isNaN(current) ? 0 : current], after: [targetRow[12]] }]
-  });
-}
-
-// ---- JSON port of consumeDeposit -- reduces (or, if fully spent, clears)
-// a single deposit tracking row. Growing-formula cells ("=1000-100") are
-// deliberately replaced with a plain numeric write here -- the flat-JSON
-// model has no live formula engine, and this project's established
-// simplification is a plain add/subtract in its place (see bikes.html's
-// extendBikeRow port). Throws (writes nothing) if the deduction is more
-// than what's left, same as the live version. ----
-async function consumeDepositFromJson(cat, depositRow, deductAmount, monthName, year) {
-  const { rows, modifiedTime } = await fetchSheetWithMeta(monthName, year);
-  assertDepositHeader(rows, cat, monthName, 'the deposit was NOT updated');
-
-  const rowIdx = depositRow - 1;
-  const row = rows[rowIdx] || [];
-  const norm = s => (s || '').toString().trim().toLowerCase();
-  const dateVal = row[cat.dateCol - 1];
-  const amtVal = row[cat.amountCol - 1];
-  const nameVal = row[cat.nameCol - 1];
-  if (norm(dateVal) === 'total') {
-    throw new Error('That row is the "' + cat.label + '" totals row, not a deposit -- the deposit was NOT updated.');
-  }
-  const rowEmpty = (dateVal === '' || dateVal === null || dateVal === undefined) &&
-    (amtVal === '' || amtVal === null || amtVal === undefined) &&
-    (nameVal === '' || nameVal === null || nameVal === undefined);
-  if (rowEmpty) {
-    throw new Error('That ' + cat.label + ' deposit no longer exists (it may have already been used) -- please refresh the deposit list and pick again.');
-  }
-
-  const currentAmount = (amtVal === '' || amtVal === null || amtVal === undefined || isNaN(Number(amtVal))) ? 0 : Number(amtVal);
-  const EPSILON = 0.005; // tolerate float rounding noise around an exact-zero result
-  const remaining = currentAmount - deductAmount;
-  if (remaining < -EPSILON) {
-    throw new Error('This income (' + deductAmount.toFixed(2) + ') is more than what\'s left in this ' + cat.label +
-      ' deposit (' + currentAmount.toFixed(2) + ') -- the deposit was NOT updated. Pick a different deposit or fix the amount.');
-  }
-
-  const newRows = rows.map(r => r.slice());
-  const newRow = (newRows[rowIdx] || []).slice();
-  while (newRow.length < cat.nameCol) newRow.push('');
-  if (remaining <= EPSILON) {
-    newRow[cat.dateCol - 1] = '';
-    newRow[cat.amountCol - 1] = '';
-    newRow[cat.nameCol - 1] = '';
-  } else {
-    newRow[cat.amountCol - 1] = remaining;
-  }
-  newRows[rowIdx] = newRow;
-  await writeSheetJson(monthName, newRows, modifiedTime, year);
-  await recomputeCurrentMonthSummaryCascadeB();
-  await logTransactionB({
-    page: 'deposits.html', action: 'consumeDepositFromJson', reversible: true,
-    summary: 'Spent ' + fmtMoneyB(deductAmount) + ' of ' + cat.label + ' deposit' + (nameVal ? (' — ' + nameVal) : '') + ' (' + monthName + ' ' + year + ')',
-    writes: [{ sheet: monthName, year: year, row: rowIdx + 1, cols: [cat.dateCol, cat.amountCol, cat.nameCol], before: [dateVal, amtVal, nameVal], after: [newRow[cat.dateCol - 1], newRow[cat.amountCol - 1], newRow[cat.nameCol - 1]] }]
-  });
-}
-
-// ---- JSON port of looksLikeSummaryLabel/getAccountsFreeRow -- finds a row
-// safe to write a new Income entry into on the given month sheet, packing
-// alongside existing Expense rows the same way the live version does. If
-// every row runs straight into a "total ..." style summary row with no
-// gap, a blank row is spliced in directly above it (same as
-// sheet.insertRowBefore on the live version) so the row lands inside
-// whatever range the sheet's own SUM-style formulas already cover. ----
-function looksLikeSummaryLabelJson(raw) {
-  const t = (raw || '').toString().trim().toLowerCase();
-  if (!t) return false;
-  if (t.indexOf('total') === 0) return true;
-  const phrases = ['income for month', 'income for the month', 'income less',
-    'bussiness expense', 'business expense', 'personal expense',
-    'wages and bike', 'net profit', 'actual profit', '% of'];
-  for (const p of phrases) { if (t.indexOf(p) !== -1) return true; }
-  return false;
-}
-function isAccountsSideEmptyJson(r, side) {
-  if (side === 'expense') {
-    const eDateEmpty = (r[0] === '' || r[0] === null || r[0] === undefined);
-    const expenseLabel = (r[1] || '').toString().trim();
-    const eAmountEmpty = (r[2] === '' || r[2] === null || r[2] === undefined);
-    return eDateEmpty && !expenseLabel && eAmountEmpty;
-  }
-  const iDateEmpty = (r[5] === '' || r[5] === null || r[5] === undefined);
-  const incomeLabel = (r[6] || '').toString().trim();
-  const nameEmpty = !(r[7] || '').toString().trim();
-  const iAmountEmpty = (r[8] === '' || r[8] === null || r[8] === undefined);
-  return iDateEmpty && !incomeLabel && nameEmpty && iAmountEmpty;
-}
-// Returns { rows: <possibly row-inserted 2D array>, rowNum: 1-indexed
-// sheet row to write into, inserted: bool }.
-function findAccountsFreeRowIdxJson(rows2D, side) {
-  for (let idx = 1; idx < rows2D.length; idx++) {
-    const r = rows2D[idx] || [];
-    const expenseLabel = (r[1] || '').toString().trim();
-    const incomeLabel = (r[6] || '').toString().trim();
-    if (looksLikeSummaryLabelJson(expenseLabel) || looksLikeSummaryLabelJson(incomeLabel)) {
-      const newRows = rows2D.slice();
-      newRows.splice(idx, 0, []);
-      return { rows: newRows, rowNum: idx + 1, inserted: true };
-    }
-    if (isAccountsSideEmptyJson(r, side)) {
-      return { rows: rows2D.slice(), rowNum: idx + 1, inserted: false };
-    }
-  }
-  return { rows: rows2D.slice(), rowNum: rows2D.length + 1, inserted: false };
-}
-
-// ---- JSON port of the F-J Income row write plus setIncomeBikeSplits'
-// note (the bike-attribution JSON blob Code.gs stores as a cell NOTE on
-// column G -- here, an entry in the month sheet's own "<month>_notes"
-// sidecar, same [row, col, note] shape as customer_notes/Contract_notes).
-// Returns the 1-indexed sheet row written. ----
-async function appendIncomeRowFromJson(opts) {
-  const { rows, modifiedTime } = await fetchSheetWithMeta(opts.monthName, opts.year);
-  const free = findAccountsFreeRowIdxJson(rows, 'income');
-  const newRows = free.rows;
-  const rowIdx = free.rowNum - 1;
-  while (newRows.length <= rowIdx) newRows.push([]);
-  const row = (newRows[rowIdx] || []).slice();
-  while (row.length < 10) row.push('');
-  row[5] = opts.date;
-  row[6] = opts.description;
-  row[7] = opts.name || '';
-  row[8] = opts.amount;
-  row[9] = opts.paidBy;
-  newRows[rowIdx] = row;
-  await writeSheetJson(opts.monthName, newRows, modifiedTime, opts.year);
-  await recomputeCurrentMonthSummaryCascadeB();
-  await logTransactionB({
-    page: 'deposits.html', action: 'appendIncomeRowFromJson', reversible: true,
-    summary: 'Income ' + fmtMoneyB(opts.amount) + ' — ' + (opts.description || '(no description)') + (opts.name ? (' from ' + opts.name) : '') + ' (' + opts.monthName + ' ' + opts.year + ')',
-    writes: [{ sheet: opts.monthName, year: opts.year, row: rowIdx + 1, cols: [6, 7, 8, 9, 10], before: ['', '', '', '', ''], after: [row[5], row[6], row[7], row[8], row[9]] }]
-  });
+  } catch (e) { localStorage.removeItem(PENDING_SAVES_KEY); }
 
   try {
-    const cleanSplits = (opts.bikeSplits || [])
-      .map(s => ({
-        bike: (s.bike || '').toString().trim(),
-        amount: (s.amount !== '' && s.amount !== null && s.amount !== undefined && !isNaN(Number(s.amount))) ? Number(s.amount) : ''
-      }))
-      .filter(s => s.bike && s.amount !== '');
-    const notesSheet = opts.monthName + '_notes';
-    const { rows: noteRows, modifiedTime: noteModifiedTime } = await fetchSheetWithMeta(notesSheet, opts.year);
-    const filteredNotes = (noteRows || []).filter(n => !(n[0] === free.rowNum && n[1] === 7));
-    if (cleanSplits.length) filteredNotes.push([free.rowNum, 7, JSON.stringify(cleanSplits)]);
-    await writeSheetJson(notesSheet, filteredNotes, noteModifiedTime, opts.year);
-  } catch (noteErr) {
-    // Best-effort, same as the live setIncomeBikeSplits call (never part
-    // of the transaction that decides success/failure) -- the income row
-    // itself has already been written by this point.
-  }
-  return free.rowNum;
+    const raw2 = localStorage.getItem(FAILED_SAVES_KEY);
+    if (raw2) {
+      const arr2 = JSON.parse(raw2);
+      if (Array.isArray(arr2)) {
+        arr2.forEach(rec => {
+          if (!rec) return;
+          dpFailedItems.set(rec.id, {
+            item: { id: rec.id, label: rec.label, rows: rec.rows || [], requests: rec.requests || [], reqIndex: 0, results: [] },
+            message: rec.message
+          });
+        });
+        updateFailBanner();
+      }
+    }
+  } catch (e) { localStorage.removeItem(FAILED_SAVES_KEY); }
+  dpRefreshUi();
 }
 
-// ---- JSON port of findRentedContractRowForDeduction_ -- most-recently-
-// added "Rented" Contract row matching this customer name (and, if given,
-// a fuzzy bike-name match too). Returns null on no match, never throws --
-// this is always a best-effort lookup, same as the live version. ----
-async function findRentedContractRowForDeductionFromJson(name, bikeModel) {
-  const { rows } = await fetchSheetWithMeta('Contract');
-  const nameTarget = normalizeNameForContractMatch(name);
-  if (!nameTarget) return null;
-  const bikeTarget = (bikeModel || '').toString().trim();
-  for (let i = rows.length - 1; i >= 1; i--) {
-    const row = rows[i];
-    if (!row) continue;
-    const status = (row[16] || '').toString().trim().toLowerCase();
-    if (status !== 'rented') continue;
-    const rowName = normalizeNameForContractMatch(row[3]);
-    if (rowName !== nameTarget) continue;
-    const rowBike = (row[6] || '').toString().trim();
-    if (bikeTarget && rowBike && !bikeNamesMatchForTaxLookup(rowBike, bikeTarget)) continue;
-    return { rowNumber: i + 1, deposit: row[13], depositAmount: row[14], name: row[3], bikeModel: row[6] };
-  }
-  return null;
+// One place that keeps the header strip and the row-level Map in step.
+// Re-renders the deposits list (if it's ever been loaded once) so per-row
+// "Saving…" badges stay current -- see render()'s own pendingRowSaves
+// check further down.
+function dpRefreshUi() {
+  if (depositsLoadedOnce) render(allDeposits, lastSummary);
 }
 
-// ---- JSON port of applyDepositDeductionToContract_ -- writes the reduced
-// deposit amount onto the Contract row's depositAmount cell (column O,
-// index 15) and appends a dated note on top of whatever's already there
-// (Contract_notes sidecar, same [row, col, note] shape). Deliberately just
-// subtracts -- no "can't go below what's left" block, same as the live
-// version (Cash has a physical paper trail; for Scan/Wise/Revolut this is
-// only a best-effort mirror of a deduction the monthly sheet already
-// validated). Returns the new amount. ----
-async function applyDepositDeductionToContractFromJson(contractRowNumber, currentAmount, deductedAmount, reasonText, methodLabel) {
-  const { rows, modifiedTime } = await fetchSheetWithMeta('Contract');
-  const idx = contractRowNumber - 1;
-  if (!rows[idx]) throw new Error('Contract row ' + contractRowNumber + ' not found -- the Contract deposit amount was NOT updated.');
-  const newAmount = currentAmount - deductedAmount;
-  const newRows = rows.map(r => r.slice());
-  const row = newRows[idx].slice();
-  while (row.length < 15) row.push('');
-  row[14] = newAmount;
-  newRows[idx] = row;
-  await writeSheetJson('Contract', newRows, modifiedTime);
-
-  const { rows: noteRows, modifiedTime: noteModifiedTime } = await fetchSheetWithMeta('Contract_notes');
-  const existingEntry = (noteRows || []).find(n => n[0] === contractRowNumber && n[1] === 15);
-  const existingNote = existingEntry ? (existingEntry[2] || '') : '';
-  const todayDmy = formatDmyJson(new Date());
-  const newLine = todayDmy + ' -- deducted ฿' + formatMoneyForLedgerB(deductedAmount) + ' (' + methodLabel + '): ' +
-    reasonText + '. New balance: ฿' + formatMoneyForLedgerB(newAmount) + '.';
-  const newNote = existingNote ? (existingNote + '\n' + newLine) : newLine;
-  const newNoteRows = (noteRows || []).filter(n => !(n[0] === contractRowNumber && n[1] === 15));
-  newNoteRows.push([contractRowNumber, 15, newNote]);
-  await writeSheetJson('Contract_notes', newNoteRows, noteModifiedTime);
-
-  return newAmount;
-}
-function formatMoneyForLedgerB(n) {
-  const num = Number(n) || 0;
-  return num.toLocaleString('en-US', { maximumFractionDigits: 2 });
+function updateFailBanner() {
+  const banner = document.getElementById('optBanner');
+  if (!banner) return;
+  const n = dpFailedItems.size;
+  if (!n) { banner.classList.remove('show'); return; }
+  banner.textContent = '⚠ ' + n + (n === 1 ? ' change' : ' changes') + ' didn’t save — tap to review';
+  banner.classList.add('show');
 }
 
-// ---- action:'deductDeposit' port. data: { category, row, deductionAmount,
-// reason, customerName, bikeModel }. Order matters and is NOT
-// transactional, faithfully matching the live version: the deposit's own
-// balance is reduced FIRST (throws, writes nothing, if the deduction is
-// bigger than what's left); only once that's succeeded is the Income row
-// logged, followed by the Wise/Revolut running total, the bikes-sheet
-// earnings bump, and a best-effort Contract-side mirror -- each of those
-// last three is independently best-effort (folded into `warning`, never
-// blocking) exactly like the live version. ----
-async function deductDepositEntryFromJson(data) {
-  const cat = DEPOSIT_CATEGORIES_B.find(c => c.key === data.category);
-  if (!cat) throw new Error('Unrecognized deposit category "' + data.category + '".');
-  const depositRow = Math.round(Number(data.row));
-  if (!depositRow || depositRow < 2) throw new Error('Invalid deposit row.');
-  const deduction = Number(data.deductionAmount);
-  if (isNaN(deduction) || deduction <= 0) throw new Error('Enter a valid deduction amount.');
-  const reasonText = (data.reason || '').toString().trim();
-  if (!reasonText) throw new Error('Enter a reason for the deduction.');
-
-  const { monthName, year } = currentDepositsMonthYear();
-
-  // 1. Reduce the deposit's own balance first.
-  await consumeDepositFromJson(cat, depositRow, deduction, monthName, year);
-
-  const warnings = [];
-  const paidByLabel = DEPOSIT_CATEGORY_PAID_BY_B[data.category] || cat.label;
-  const bikeNameForDescription = (data.bikeModel || '').toString().trim();
-  const description = (bikeNameForDescription ? bikeNameForDescription + ', ' : '') + 'Deposit deduction for ' + reasonText;
-
-  // 2. Only now, log the deduction as a normal Income entry. The deposit
-  // balance has ALREADY been reduced at this point -- if this step fails,
-  // that's surfaced as a hard error (not a warning) since staff need to
-  // know the income row needs adding by hand, same asymmetry the live
-  // version has (no rollback of step 1 either way).
-  let incomeRowNum;
-  try {
-    incomeRowNum = await appendIncomeRowFromJson({
-      monthName, year, date: todaySheetDateValue(), description,
-      name: data.customerName || '', amount: deduction, paidBy: paidByLabel,
-      bikeSplits: [{ bike: bikeNameForDescription || 'extras', amount: deduction }]
+function openSaveReview() {
+  const listEl = document.getElementById('optPanelList');
+  const entries = Array.from(dpFailedItems.entries());
+  listEl.innerHTML = entries.map(([id, f]) => `
+    <div class="opt-item" data-id="${id}">
+      <div class="rt">${f.item.label}</div>
+      <div class="why">${f.message}</div>
+      <div class="actions">
+        <button type="button" class="opt-btn-retry" data-act="retry" data-id="${id}">Retry</button>
+        <button type="button" class="opt-btn-discard" data-act="discard" data-id="${id}">Discard</button>
+      </div>
+    </div>
+  `).join('') || '<div class="empty-hint">Nothing pending.</div>';
+  listEl.querySelectorAll('button[data-act]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = Number(btn.dataset.id);
+      if (btn.dataset.act === 'retry') dpRetryFailed(id); else dpDiscardFailed(id);
     });
-  } catch (incomeErr) {
-    throw new Error('The deposit balance was reduced, but the income row could NOT be logged: ' + incomeErr.message + ' Please add it by hand.');
-  }
-
-  const paidByLower = paidByLabel.toString().trim().toLowerCase();
-  try {
-    if (paidByLower === 'wise' || paidByLower === 'revolut') {
-      await processDepositForPaymentFromJson(paidByLower, deduction);
-    }
-  } catch (depErr) { warnings.push('Deposit total: ' + depErr.message); }
-
-  try {
-    await addRentalAmountToBikesSheetFromJson(bikeNameForDescription || 'extras', deduction);
-  } catch (bikeErr) { warnings.push('Bikes sheet (income): ' + bikeErr.message); }
-
-  // 3. Best-effort mirror onto the matching "Rented" Contract row's own
-  // deposit amount (Anton, 07/08/2026 -- see the live comment).
-  try {
-    const match = await findRentedContractRowForDeductionFromJson(data.customerName, bikeNameForDescription);
-    if (match && !isNaN(Number(match.depositAmount)) && Number(match.depositAmount) > 0) {
-      await applyDepositDeductionToContractFromJson(match.rowNumber, Number(match.depositAmount), deduction, reasonText, cat.label);
-    }
-  } catch (contractErr) { warnings.push('Contract deposit amount: ' + contractErr.message); }
-
-  const responsePayload = { success: true, incomeRow: incomeRowNum };
-  if (warnings.length) responsePayload.warning = warnings.join(' ');
-  return responsePayload;
+  });
+  document.getElementById('optOverlay').classList.add('show');
+}
+function closeSaveReview() { document.getElementById('optOverlay').classList.remove('show'); }
+function refreshReviewPanelIfOpen() {
+  if (!document.getElementById('optOverlay').classList.contains('show')) return;
+  if (dpFailedItems.size === 0) closeSaveReview(); else openSaveReview();
 }
 
-// ---- action:'deductCashDeposit' port. data: { customerName, bikeModel
-// (optional), deductionAmount, reason }. Writes ONLY to the Contract sheet
-// -- no income row, no monthly sheet, no bikes-sheet earnings update (per
-// Anton: "we don't record cash there"). Deliberately permissive: no
-// matching "Rented" Contract row, or one found but its deposit method
-// isn't Cash, or no deposit amount on file -- none of that is an error,
-// it's applied:false and a message, same as the live version. ----
-async function deductCashDepositFromJson(data) {
-  const customerName = (data.customerName || '').toString().trim();
-  if (!customerName) throw new Error('Enter a customer name.');
-  const deduction = Number(data.deductionAmount);
-  if (isNaN(deduction) || deduction <= 0) throw new Error('Enter a valid deduction amount.');
-  const reasonText = (data.reason || '').toString().trim();
-  if (!reasonText) throw new Error('Enter a reason for the deduction.');
-
-  const match = await findRentedContractRowForDeductionFromJson(customerName, data.bikeModel);
-  const hasCashDeposit = match &&
-    (match.deposit || '').toString().trim().toLowerCase() === 'cash' &&
-    !isNaN(Number(match.depositAmount)) && Number(match.depositAmount) > 0;
-
-  if (!hasCashDeposit) {
-    return {
-      success: true, applied: false,
-      message: 'No cash deposit on file for "' + customerName + '" -- nothing was deducted.'
-    };
-  }
-
-  const newAmount = await applyDepositDeductionToContractFromJson(
-    match.rowNumber, Number(match.depositAmount), deduction, reasonText, 'Cash');
-
-  return { success: true, applied: true, newAmount, contractRow: match.rowNumber };
+function dpRetryFailed(id) {
+  const f = dpFailedItems.get(id);
+  if (!f) return;
+  dpFailedItems.delete(id);
+  persistFailedSaves();
+  updateFailBanner();
+  refreshReviewPanelIfOpen();
+  const item = f.item;
+  item.reqIndex = 0;
+  item.results = [];
+  item.onAllSuccess = item.onAllSuccess || dpReloadAndRerender;
+  item.status = dpQueue.length === 0 ? 'running' : 'queued';
+  dpQueue.push(item);
+  item.rows.forEach(r => pendingRowSaves.set(r, item));
+  persistPendingSaves();
+  dpRefreshUi();
+  if (item.status === 'running') dpRun(item);
 }
-// ================== end WRITE layer: deductDeposit / deductCashDeposit ==================
+
+function dpDiscardFailed(id) {
+  const f = dpFailedItems.get(id);
+  if (!f) return;
+  dpFailedItems.delete(id);
+  persistFailedSaves();
+  updateFailBanner();
+  refreshReviewPanelIfOpen();
+  dpReloadAndRerender();
+}
+
+document.getElementById('optOverlay').addEventListener('click', (e) => { if (e.target.id === 'optOverlay') closeSaveReview(); });
+document.getElementById('optPanelCloseBtn').addEventListener('click', closeSaveReview);
+document.getElementById('optBanner').addEventListener('click', () => openSaveReview());
+// ================== end save-pipeline engine ==================
+
 
 // Matches the CATEGORIES list in Code.gs's getDepositsData -- just used
 // here to control display order/labels/colors, since the server already
@@ -1583,7 +1081,11 @@ async function loadDeposits() {
 
 // Kept around (keyed by "category|row") so a row click can look up its
 // full entry without re-parsing the DOM -- used to prefill the edit modal.
+// Also what dpRefreshUi() re-renders from to keep per-row "Saving…" badges
+// current without a full reload -- see the save-pipeline engine above.
 let allDeposits = [];
+let lastSummary = {};
+let depositsLoadedOnce = false;
 
 // `summary` is the sheet's own total figures per category (see
 // getDepositsData/ACCOUNTS_SUMMARY-style reads in Code.gs) -- O15/P15 for
@@ -1593,13 +1095,33 @@ let allDeposits = [];
 // history the visible list doesn't (or vice versa if something's off).
 function render(deposits, summary) {
   allDeposits = deposits;
+  lastSummary = summary || {};
+  depositsLoadedOnce = true;
   const container = document.getElementById('depositsByCategory');
 
   container.innerHTML = CATEGORIES.map(cat => {
     const rows = deposits.filter(d => d.category === cat.key);
     const total = rows.reduce((sum, d) => sum + (typeof d.amount === 'number' ? d.amount : 0), 0);
     const rowsHtml = rows.length
-      ? rows.map(d => `
+      ? rows.map(d => {
+        // This row has an in-flight/queued background save (edit/delete/
+        // deduct, via the save-pipeline engine above) -- show a small
+        // badge instead of the normal row content, same treatment
+        // contract.html's renderResults gives a mid-save row. Row identity
+        // here is "category:row" (see pendingRowSaves' own comment).
+        const pendingHere = pendingRowSaves.get(d.category + ':' + d.row);
+        if (pendingHere) {
+          const isRunning = pendingHere.status === 'running';
+          return `
+            <div class="row opt-row-pending" data-category="${d.category}" data-row="${d.row}">
+              <div class="left">
+                <div class="title">${d.name || '—'}</div>
+              </div>
+              <span class="opt-row-badge${isRunning ? '' : ' queued'}">${isRunning ? '<span class="opt-spinner"></span> Saving…' : 'Queued…'}</span>
+            </div>
+          `;
+        }
+        return `
         <div class="row" data-category="${d.category}" data-row="${d.row}">
           <div class="left">
             <div class="title">${d.name || '—'}</div>
@@ -1607,7 +1129,8 @@ function render(deposits, summary) {
           </div>
           <div class="amt">${money(d.amount)}</div>
         </div>
-      `).join('')
+      `;
+      }).join('')
       : '<div class="empty-hint">No ' + cat.label.toLowerCase() + ' deposits found.</div>';
 
     const catSummary = (summary && summary[cat.key]) || {};
@@ -1688,16 +1211,11 @@ function setModalError(msg) {
   modalError.classList.add('show');
 }
 
-function setModalButtonsDisabled(disabled) {
-  modalSaveBtn.disabled = disabled;
-  modalDeleteBtn.disabled = disabled;
-  modalCancelBtn.disabled = disabled;
-  fDepositCategory.disabled = disabled;
-  fDeductToggle.disabled = disabled;
-  fDeductBike.disabled = disabled;
-  fDeductAmount.disabled = disabled;
-  fDeductReason.disabled = disabled;
-}
+// setModalButtonsDisabled/startModalProgress/stopModalProgress REMOVED
+// 2026-08-17 -- the modal now closes immediately on save (see the
+// save-pipeline engine above), so there's no more "waiting with the modal
+// open" state for these to disable/spin during. Per-row "Saving…" badges
+// (render()'s pendingRowSaves check) are the replacement feedback.
 
 // Same normalization used on the Bikes Status page for matching customer
 // names loosely (trim/lowercase/collapse whitespace) -- kept as its own
@@ -1787,17 +1305,6 @@ fDeductToggle.addEventListener('change', () => {
   }
 });
 
-function startModalProgress(label) {
-  modalProgressText.textContent = label || 'Connecting…';
-  modalProgress.classList.add('show');
-  clearTimeout(modalProgressTimer);
-  modalProgressTimer = setTimeout(() => { modalProgressText.textContent = 'Saving…'; }, 500);
-}
-function stopModalProgress() {
-  clearTimeout(modalProgressTimer);
-  modalProgress.classList.remove('show');
-}
-
 function todayIso() {
   const now = new Date();
   const pad = (n) => String(n).padStart(2, '0');
@@ -1845,7 +1352,9 @@ function closeDepositModal() {
 
 document.getElementById('depositsByCategory').addEventListener('click', (e) => {
   const rowEl = e.target.closest('.row[data-row]');
-  if (!rowEl) return;
+  // Skip rows that are already mid-save (badge shown instead) -- belt-and-
+  // suspenders alongside opt-row-pending's own pointer-events:none.
+  if (!rowEl || rowEl.classList.contains('opt-row-pending')) return;
   const category = rowEl.dataset.category;
   const row = Number(rowEl.dataset.row);
   const entry = allDeposits.find(d => d.category === category && d.row === row);
@@ -1855,8 +1364,17 @@ document.getElementById('depositsByCategory').addEventListener('click', (e) => {
 addDepositBtn.addEventListener('click', openAddDepositModal);
 
 modalCancelBtn.addEventListener('click', closeDepositModal);
+// Click-outside-to-close, guarded against a mid-drag text-selection
+// mouseup landing on the backdrop (see project CLAUDE.md's "Modal /
+// lightbox click outside to close" convention -- this modal was missing
+// the guard until now).
+let modalBackdropMouseDownOnBackdrop = false;
+modalBackdrop.addEventListener('mousedown', (e) => {
+  modalBackdropMouseDownOnBackdrop = (e.target === modalBackdrop);
+});
 modalBackdrop.addEventListener('click', (e) => {
-  if (e.target === modalBackdrop) closeDepositModal();
+  if (e.target === modalBackdrop && modalBackdropMouseDownOnBackdrop) closeDepositModal();
+  modalBackdropMouseDownOnBackdrop = false;
 });
 
 // "Deduct from this deposit" is a completely different save action from
@@ -1865,7 +1383,18 @@ modalBackdrop.addEventListener('click', (e) => {
 // directly, and logs an Income entry alongside. Handled first and returns
 // early so the plain edit/add logic below never also runs on the same
 // click.
-async function saveDeductFromDeposit() {
+//
+// REWIRED 2026-08-17 onto the save-pipeline engine -- validates
+// synchronously (same checks as before), then closes the modal and clears
+// UI state IMMEDIATELY rather than waiting for the round trip, same
+// "optimistic" pattern as every other page in this rollout. The affected
+// deposit row shows a "Saving…" badge (see render()'s pendingRowSaves
+// check) until it resolves; a real failure surfaces via the header
+// banner/review panel instead of blocking here. clientTxnId is required --
+// deductDeposit has a HIGH-PRIORITY idempotency guard server-side (see
+// lib/depositsWrites.js's header comment) since a naive retry would
+// double-deduct real money.
+function saveDeductFromDeposit() {
   const deductionRaw = fDeductAmount.value.trim();
   const deductionAmount = deductionRaw === '' ? NaN : Number(deductionRaw);
   const reason = fDeductReason.value.trim();
@@ -1879,50 +1408,46 @@ async function saveDeductFromDeposit() {
     setModalError('Enter a reason for the deduction.');
     return;
   }
+  if (dpQueueFull()) {
+    setModalError('Too many saves in progress -- wait for one to finish before starting another.');
+    return;
+  }
 
+  const category = modalCategory;
+  const row = modalRow;
+  const customerName = fDepositName.value.trim();
   const payload = {
-    action: 'deductDeposit',
-    category: modalCategory,
-    row: modalRow,
+    category,
+    row,
     deductionAmount: deductionAmount,
     reason: reason,
-    customerName: fDepositName.value.trim(),
-    bikeModel: bikeModel
+    customerName: customerName,
+    bikeModel: bikeModel,
+    clientTxnId: genClientTxnId()
   };
 
-  setModalButtonsDisabled(true);
-  startModalProgress('Connecting…');
-  try {
-    // DISCONNECTED: writes to the static data/ JSON export instead of the live scriptUrl (see project CLAUDE.md)
-    const res = await deductDepositEntryFromJson(payload);
-    stopModalProgress();
-
-    if (!res.success) {
-      // Most commonly: the deduction is bigger than what's left in this
-      // deposit -- consumeDeposit() on the server refuses that outright
-      // rather than capping it or going negative, so nothing gets written
-      // at all. Staff handle that case manually instead (remove the whole
-      // deposit, collect the shortfall from the customer, log a fresh
-      // full-amount entry).
-      setModalError(res.error || 'Deduction failed — please try again.');
-      return;
+  closeDepositModal();
+  dpEnqueue({
+    label: 'Deduct ' + money(deductionAmount) + ' from ' + category + ' deposit' + (customerName ? ' — ' + customerName : ''),
+    rows: [category + ':' + row],
+    requests: [{ action: 'deductDeposit', payload }],
+    onAllSuccess: (results) => {
+      // Most common failure this WOULD have surfaced synchronously before:
+      // the deduction is bigger than what's left in this deposit --
+      // consumeDeposit() on the server refuses that outright rather than
+      // capping it or going negative. That now shows up as a failed-item
+      // in the review banner instead, same as any other failure.
+      if (results[0].warning) alert('Deducted, but: ' + results[0].warning);
+      dpReloadAndRerender();
     }
-    closeDepositModal();
-    if (res.warning) alert('Deducted, but: ' + res.warning);
-    clearDepositsCache(); loadDeposits();
-  } catch (err) {
-    stopModalProgress();
-    setModalError('Deduction failed: ' + err.message);
-  } finally {
-    setModalButtonsDisabled(false);
-  }
+  });
 }
 
-modalSaveBtn.addEventListener('click', async () => {
+modalSaveBtn.addEventListener('click', () => {
   setModalError(null);
 
   if (modalMode === 'edit' && fDeductToggle.checked) {
-    await saveDeductFromDeposit();
+    saveDeductFromDeposit();
     return;
   }
 
@@ -1935,77 +1460,54 @@ modalSaveBtn.addEventListener('click', async () => {
   if (isAdd && !category) { setModalError('Select a deposit type.'); return; }
   if (isAdd && (amountRaw === '' || isNaN(amount) || amount <= 0)) { setModalError('Enter a valid deposit amount.'); return; }
   if (!isAdd && amountRaw !== '' && isNaN(amount)) { setModalError('Amount must be a number.'); return; }
+  if (dpQueueFull()) { setModalError('Too many saves in progress -- wait for one to finish before starting another.'); return; }
 
+  const name = fDepositName.value.trim();
+  const date = fDepositDate.value || '';
+  const row = modalRow;
+
+  // REWIRED 2026-08-17 onto the save-pipeline engine -- see
+  // saveDeductFromDeposit's comment above for the general pattern.
+  // addDeposit has no existing row to badge (brand-new entry, same as
+  // contract.html's addContract) -- rows:[] there, same reasoning.
   const payload = isAdd
-    ? {
-        action: 'addDeposit',
-        category: category,
-        date: fDepositDate.value || '',
-        name: fDepositName.value.trim(),
-        amount: amount
-      }
-    : {
-        action: 'editDeposit',
-        category: modalCategory,
-        row: modalRow,
-        date: fDepositDate.value || '',
-        name: fDepositName.value.trim(),
-        amount: amount
-      };
+    ? { category, date, name, amount, clientTxnId: genClientTxnId() }
+    : { category, row, date, name, amount };
 
-  setModalButtonsDisabled(true);
-  startModalProgress('Connecting…');
-  try {
-    const res = isAdd ? await addDepositEntryJson(payload) : await editDepositEntryJson(payload);
-    stopModalProgress();
-
-    if (!res.success) {
-      setModalError(res.error || 'Save failed — please try again.');
-      return;
+  closeDepositModal();
+  dpEnqueue({
+    label: (isAdd ? 'Add ' : 'Edit ') + category + ' deposit' + (name ? ' — ' + name : ''),
+    rows: isAdd ? [] : [category + ':' + row],
+    requests: [{ action: isAdd ? 'addDeposit' : 'editDeposit', payload }],
+    onAllSuccess: (results) => {
+      if (results[0].warning) alert('Saved, but: ' + results[0].warning);
+      dpReloadAndRerender();
     }
-    closeDepositModal();
-    if (res.warning) alert('Saved, but: ' + res.warning);
-    clearDepositsCache(); loadDeposits();
-  } catch (err) {
-    stopModalProgress();
-    setModalError('Save failed: ' + err.message);
-  } finally {
-    setModalButtonsDisabled(false);
-  }
+  });
 });
 
-modalDeleteBtn.addEventListener('click', async () => {
+modalDeleteBtn.addEventListener('click', () => {
   const label = fDepositName.value.trim() || 'this deposit';
   if (!confirm('Remove ' + label + '? This clears the date, name and amount for this deposit. This can\'t be undone.')) {
     return;
   }
+  if (dpQueueFull()) { setModalError('Too many saves in progress -- wait for one to finish before starting another.'); return; }
 
   setModalError(null);
-  const payload = {
-    action: 'deleteDeposit',
-    category: modalCategory,
-    row: modalRow
-  };
+  const category = modalCategory;
+  const row = modalRow;
+  const payload = { category, row };
 
-  setModalButtonsDisabled(true);
-  startModalProgress('Connecting…');
-  try {
-    const res = await deleteDepositEntryJson(payload);
-    stopModalProgress();
-
-    if (!res.success) {
-      setModalError(res.error || 'Remove failed — please try again.');
-      return;
+  closeDepositModal();
+  dpEnqueue({
+    label: 'Remove ' + category + ' deposit' + (label !== 'this deposit' ? ' — ' + label : ''),
+    rows: [category + ':' + row],
+    requests: [{ action: 'deleteDeposit', payload }],
+    onAllSuccess: (results) => {
+      if (results[0].warning) alert('Removed, but: ' + results[0].warning);
+      dpReloadAndRerender();
     }
-    closeDepositModal();
-    if (res.warning) alert('Removed, but: ' + res.warning);
-    clearDepositsCache(); loadDeposits();
-  } catch (err) {
-    stopModalProgress();
-    setModalError('Remove failed: ' + err.message);
-  } finally {
-    setModalButtonsDisabled(false);
-  }
+  });
 });
 
 // ---- Cash Deposit Deduction card ----
@@ -2020,11 +1522,8 @@ const cashDeductName = document.getElementById('cashDeductName');
 const cashDeductAmount = document.getElementById('cashDeductAmount');
 const cashDeductReason = document.getElementById('cashDeductReason');
 const cashDeductError = document.getElementById('cashDeductError');
-const cashDeductProgress = document.getElementById('cashDeductProgress');
-const cashDeductProgressText = document.getElementById('cashDeductProgressText');
 const cashDeductResult = document.getElementById('cashDeductResult');
 const cashDeductBtn = document.getElementById('cashDeductBtn');
-let cashDeductProgressTimer = null;
 
 function setCashDeductError(msg) {
   if (!msg) { cashDeductError.classList.remove('show'); cashDeductError.textContent = ''; return; }
@@ -2039,18 +1538,18 @@ function setCashDeductResult(msg, isInfo) {
   cashDeductResult.classList.add('show');
 }
 
-function startCashDeductProgress() {
-  cashDeductProgressText.textContent = 'Connecting…';
-  cashDeductProgress.classList.add('show');
-  clearTimeout(cashDeductProgressTimer);
-  cashDeductProgressTimer = setTimeout(() => { cashDeductProgressText.textContent = 'Deducting…'; }, 500);
-}
-function stopCashDeductProgress() {
-  clearTimeout(cashDeductProgressTimer);
-  cashDeductProgress.classList.remove('show');
-}
-
-cashDeductBtn.addEventListener('click', async () => {
+// REWIRED 2026-08-17 onto the save-pipeline engine -- validates
+// synchronously as before, then clears the inputs and shows an inline
+// "Saving…" message IMMEDIATELY rather than waiting for the round trip.
+// No per-row badge target for this one (it doesn't touch anything visible
+// in the deposits list above -- it operates on a Contract row elsewhere,
+// rows:[] here, same reasoning as contract.html's addContract/
+// customerIntake), so this inline result line IS the feedback: replaced
+// with the real outcome once the request resolves. clientTxnId is
+// required -- deductCashDeposit has a HIGH-PRIORITY idempotency guard
+// server-side (see lib/depositsWrites.js's header comment) since a naive
+// retry would deduct twice from the same Contract row.
+cashDeductBtn.addEventListener('click', () => {
   setCashDeductError(null);
   setCashDeductResult(null);
 
@@ -2062,49 +1561,50 @@ cashDeductBtn.addEventListener('click', async () => {
   if (!customerName) { setCashDeductError('Enter a customer name.'); return; }
   if (amountRaw === '' || isNaN(amount) || amount <= 0) { setCashDeductError('Enter a valid deduction amount.'); return; }
   if (!reason) { setCashDeductError('Enter a reason for the deduction.'); return; }
+  if (dpQueueFull()) { setCashDeductError('Too many saves in progress -- wait for one to finish before starting another.'); return; }
 
   const payload = {
-    action: 'deductCashDeposit',
     customerName: customerName,
     deductionAmount: amount,
-    reason: reason
+    reason: reason,
+    clientTxnId: genClientTxnId()
   };
 
-  cashDeductBtn.disabled = true;
-  startCashDeductProgress();
-  try {
-    // DISCONNECTED: writes to the static data/ JSON export instead of the live scriptUrl (see project CLAUDE.md)
-    const res = await deductCashDepositFromJson(payload);
-    stopCashDeductProgress();
+  cashDeductName.value = '';
+  cashDeductAmount.value = '';
+  cashDeductReason.value = '';
+  setCashDeductResult('Saving…', true);
 
-    if (!res.success) {
-      setCashDeductError(res.error || 'Deduction failed — please try again.');
-      return;
+  dpEnqueue({
+    label: 'Cash deposit deduction — ' + customerName,
+    rows: [],
+    requests: [{ action: 'deductCashDeposit', payload }],
+    onAllSuccess: (results) => {
+      const res = results[0];
+      if (!res.applied) {
+        // Per Anton: no cash deposit on file for this customer is not an
+        // error -- staff click "deduct" and nothing happens.
+        setCashDeductResult(res.message || 'No cash deposit on file for this customer — nothing was deducted.', true);
+        return;
+      }
+      setCashDeductResult(
+        'Deducted ' + money(amount) + ' — new contract deposit balance: ' + money(res.newAmount) + '.',
+        false
+      );
+      if (res.warning) alert('Deducted, but: ' + res.warning);
     }
-
-    if (!res.applied) {
-      // Per Anton: no cash deposit on file for this customer is not an
-      // error -- staff can click "deduct" and nothing happens.
-      setCashDeductResult(res.message || 'No cash deposit on file for this customer — nothing was deducted.', true);
-      return;
-    }
-
-    setCashDeductResult(
-      'Deducted ' + money(amount) + ' — new contract deposit balance: ' + money(res.newAmount) + '.',
-      false
-    );
-    if (res.warning) alert('Deducted, but: ' + res.warning);
-    cashDeductName.value = '';
-    cashDeductAmount.value = '';
-    cashDeductReason.value = '';
-  } catch (err) {
-    stopCashDeductProgress();
-    setCashDeductError('Deduction failed: ' + err.message);
-  } finally {
-    cashDeductBtn.disabled = false;
-  }
+  });
 });
 
+// Recover any leftover pending/failed saves from before this page load
+// (see restoreUnresolvedSaves' own comment, up in the save-pipeline
+// engine). Called here rather than right after the engine block itself,
+// since it can transitively touch allDeposits/lastSummary/
+// depositsLoadedOnce (via dpRefreshUi -> render) which aren't declared
+// until further down this script -- calling it any earlier would be the
+// exact same TDZ crash contract.html hit and fixed this session
+// (searchView 'Cannot access before initialization').
+restoreUnresolvedSaves();
 loadDeposits();
 </script>
 
