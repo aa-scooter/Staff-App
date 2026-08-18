@@ -6,6 +6,232 @@ This exists because work on this project gets picked up across multiple
 Claude sessions/accounts with no shared memory between them — this file is
 the handoff.
 
+## ✅ customers.html: full port (backend + frontend) — LAST PAGE IN THE
+## ROLLOUT — CODED, UNIT-TESTED (27/27 backend + 22/22 engine), NOT YET
+## DEPLOYED (2026-08-17, overnight session)
+
+This closes out the page-by-page save-pipeline rollout: bikes.html ->
+contract.html -> deposits.html -> add-bikes.html -> **customers.html**.
+
+**Backend — `lib/customersWrites.js` (new):** ports customers.html's one
+write action, `customerIntake` (`customerIntakeFromJson`), an 8-sub-write
+cascade against `customer`, `customer_notes`, the current month's income
+sheet, `cash`, `bikes`, and `Contract`. Every sub-write past the row insert
+itself is independently try/catch'd into a `warning` string rather than
+failing the whole request — verbatim port of that structure, not new.
+
+**Routing:** no new `api/customers/write.js` — same Hobby-plan
+12-function-cap constraint as every other page this rollout. Routed
+through the EXISTING `api/accounts/write.js` (already hosts deposits.html's
+actions alongside accounts.html's own) via a new `CUSTOMERS_ACTIONS` Set
+(`customerIntake`).
+
+**Idempotency — the one genuinely new thing this port adds:**
+customers.html had **NO clientTxnId guard at all** before this port
+(unlike bikes.html's/contract.html's own customerIntake variants
+elsewhere in this project, which already had one) — a real, live gap,
+identified during this session's inventory pass. Added a clientTxnId guard
+on the customer-row insert ONLY, not the full 8-sub-write cascade (marker
+on a `customer_notes` sidecar, column `CUSTOMER_INTAKE_IDEMPOTENCY_COL_B
+=90`, same `[row, col, clientTxnId]` shape as every other guard in this
+project). This is a **deliberate, documented scope limit**: re-running the
+whole cascade on retry would double-log income/cash/ledger entries, which
+is worse than the duplicate-row bug the guard exists to prevent. See
+`lib/customersWrites.js`'s own header comment for the full reasoning —
+matches `addBikeFromJson`'s own precedent in `lib/addBikesWrites.js` (that
+guard likewise only covers its own critical row-creating write, not its
+warnings-wrapped fan-out).
+
+The Extend flow's `paidFromDeposit` (drawing down an existing deposit-log
+row) remains NOT ported — was already explicitly deferred in
+customers.html's own comments before this port, carried forward unchanged.
+
+**Frontend — `customers.html`:** new `cu`-prefixed save-pipeline engine
+(same shape as `bk`/`ct`/`dp`/`ab`), POSTing to `/api/accounts/write`.
+Only one write action and no persistent per-row list view to badge (every
+customerIntake is a brand-new row, unlike bikes.html's/add-bikes.html's
+row-keyed engines) — `rows` is always `[]`; `pendingRowSaves`/
+`.opt-row-pending` are kept only for structural parity with every other
+page's engine (nav.js's `PENDING_SAVE_SOURCES` table and the review
+overlay both expect the same shape). The Add form's submit handler is now
+optimistic: resets immediately and shows Saving…/Queued… in `statusBox`,
+matching every other page's own addX handler in this rollout. The old
+blanket `setAllButtonsDisabled(true)` lock is no longer called (the
+engine's own `MAX_QUEUE` cap + `cuQueueFull()` guard covers the
+double-submit risk instead) — left in place as dead code, not deleted, per
+project convention. `restoreUnresolvedSaves()` called once, at the very
+end of the script (same TDZ caution as every other page this rollout,
+since it transitively touches `sheetRows`/`searchView`, declared much
+further down the file).
+
+**nav.js:** added a `customers.html` entry to the shared
+`PENDING_SAVE_SOURCES` table (`pendingKey: aaCustomersPendingSaves`,
+`failedKey: aaCustomersFailedSaves`, `endpoint: /api/accounts/write`).
+
+**Testing:**
+- Backend: hand-rolled in-memory fake `sheetIO` against
+  `createCustomersWrites` (brace-extracted the same way as
+  `addbikestest`, to dodge `googleapis`'s module-load-time require in the
+  test sandbox) — covers basic successful intake (customer row + ledger
+  note + income row + Contract row flipped Pending->Rented + total
+  synced), clientTxnId idempotent replay (retry does NOT insert a second
+  row or re-run the cascade), two different real customers both insert
+  normally, Wise payment (running total bump + security deposit log
+  entry), a missing monthly-income tab surfacing as a warning without
+  failing the whole intake, the "never shrink Contract total" failsafe,
+  missing-name throwing before any writes, and dispatch routing.
+  **27/27 passing.**
+- Frontend engine: same vm-sandbox pattern as `abenginetest` — covers
+  immediate-run vs queued-behind-MAX_QUEUE, dispatch posts to the correct
+  endpoint (`/api/accounts/write`), 409-conflict retry with backoff
+  eventually succeeding, non-conflict failure going straight to
+  `cuFailedItems`/`aaCustomersFailedSaves` with no retry, and
+  `restoreUnresolvedSaves` correctly resubmitting an orphaned pending item
+  AND restoring (without resubmitting) a previously-failed one. **22/22
+  passing.**
+
+**Files changed:** `lib/customersWrites.js` (new), `api/accounts/write.js`
+(routing), `customers.html` (CSS/HTML/engine block + submit handler
+rewire + restoreUnresolvedSaves call), `nav.js` (`PENDING_SAVE_SOURCES`
+entry). All syntax-checked clean (`node --check`); all verified to hold on
+disk (grep + 15s recheck).
+
+**Still NOT deployed** — bundled with everything else from this overnight
+session into one consolidated push, ready in the morning. This is the
+LAST page in the rollout — once this is pushed and Anton has smoke-tested
+it, the page-by-page save-pipeline migration (bikes.html -> contract.html
+-> deposits.html -> add-bikes.html -> customers.html) is complete.
+
+## ✅ add-bikes.html: frontend wired onto the ab-prefixed save-pipeline
+## engine — CODED, UNIT-TESTED (24/24), NOT YET DEPLOYED (2026-08-17,
+## overnight session)
+
+**What changed:** all 4 of add-bikes.html's write-action call sites
+(Add-bike form submit, Edit-bike modal Save, Sell confirm, Unsell confirm)
+now route through the `ab`-prefixed save-pipeline engine (`abEnqueue` /
+`abRun` / `abDispatchWithRetry`) instead of calling the old client-side
+`addBikeFromJson`/`editBikeFromJson`/`sellBikeFromJson`/`unsellBikeFromJson`
+functions directly. Those old functions are left in place as dead code
+(not deleted, per project convention) — the new call sites hit
+`/api/bikes/write` via the engine instead, which is what actually reaches
+`lib/addBikesWrites.js` (see the backend-port entry below).
+
+- **Add bike**: optimistic — form resets and shows Saving…/Queued… in
+  `statusBox` immediately, matching contract.html's addContract/
+  deposits.html's addDeposit pattern. `rows: []` since there's no existing
+  bike row to badge.
+- **Edit bike**: modal closes immediately, `rows: [originalBike]` badges
+  that row Saving…/Queued… in the fleet list underneath.
+- **Sell / Unsell**: `rows: [bikeName]` badges just that row. The old
+  blanket `setFleetBusyUI(true)` lock (disabled the ENTIRE fleet list +
+  the Add form for the whole request) is removed — the engine already caps
+  true concurrency to 1 running request at a time (MAX_QUEUE=2 = 1 running
+  + 1 queued) and retries 409 conflicts with backoff, which is exactly the
+  "two writes fighting over the same rows" scenario the old lock existed to
+  prevent. `setFleetBusyUI`/`fleetActionInFlight` are left in place as dead
+  code (now permanently false) rather than deleted, per project convention.
+
+**Row badges:** `fleetItemHtml` now checks `pendingRowSaves.get(bike.name)`
+and renders an `.opt-row-badge` (Saving…/Queued…, spinner) next to that
+bike's name, with its Sell/Unsell/Edit buttons disabled while its own save
+is pending — unrelated rows and the Add form stay fully interactive. CSS
+adapted from deposits.html's own "opt-" prefixed block (`.row` →
+`.fleet-item`).
+
+**Crash/nav recovery:** `restoreUnresolvedSaves()` is called once, at the
+very end of the script (not right after the engine block) — same TDZ
+caution as contract.html hit earlier this project, since it transitively
+touches `fleetListLoaded`/`loadFleetList`, declared much further down the
+file.
+
+**nav.js:** added an `add-bikes.html` entry to the shared
+`PENDING_SAVE_SOURCES` table (`pendingKey: aaAddBikesPendingSaves`,
+`failedKey: aaAddBikesFailedSaves`, `endpoint: /api/bikes/write`) — closes
+the loop on cross-page orphan-save recovery/the header "Saving…" strip for
+this page too, one-line addition since that table is generic.
+
+**Testing:** new Node vm-sandbox test harness
+(`abenginetest/engine.js` + `run.js`, brace-extracted from add-bikes.html's
+own inline `<script>`) drives `abEnqueue`/`abRun`/`abDispatchWithRetry`/
+`restoreUnresolvedSaves` directly against a fake `fetch`/`localStorage` —
+covers: immediate-run vs queued-behind-MAX_QUEUE, 409-conflict retry with
+backoff eventually succeeding, non-conflict failure going straight to
+`abFailedItems`/`aaAddBikesFailedSaves` with no retry, and
+`restoreUnresolvedSaves` correctly resubmitting an orphaned pending item
+AND restoring (without resubmitting) a previously-failed one. **24/24
+passing.** (First pass had 3 spurious failures from the test's own fetch
+mock missing `.ok: true` on 200 responses — abDispatch's
+`if (!r.ok || ...) throw` was treating every mocked success as an HTTP
+failure; fixed in the harness, not the engine.)
+
+**Files changed:** `add-bikes.html` (CSS/HTML/engine block + 4 call sites
++ row badges + restoreUnresolvedSaves call), `nav.js`
+(`PENDING_SAVE_SOURCES` entry). Both `node --check` clean; both verified to
+hold on disk (grep + 15s recheck).
+
+**Still NOT deployed** — bundled with the backend-port entry below and
+customers.html's port into one consolidated push, ready in the morning.
+
+## ✅ add-bikes.html: server-side write layer ported (4 actions) — CODED,
+## UNIT-TESTED (40/40), NOT YET DEPLOYED (2026-08-17, overnight session)
+
+**What changed:** add-bikes.html's 4 write actions (addBike, editBike,
+sellBike, unsellBike) ported from their existing client-side JSON-backed
+copies (already read/write straight against `/api/data/<sheet>`, just not
+server-side atomic) into a new `lib/addBikesWrites.js`, following the same
+`createSheetIO`/`create<Page>Writes` factory shape as
+`lib/bikesWrites.js`/`lib/depositsWrites.js`.
+
+**Routing:** no new `api/add-bikes/write.js` — `api/` is already at
+Vercel's Hobby-plan 12-serverless-function cap. Routed through the
+EXISTING `api/bikes/write.js` instead, via a new `ADD_BIKES_ACTIONS` Set
+check (`addBike`/`editBike`/`sellBike`/`unsellBike`) alongside the
+existing `bikesWriteDispatch` path — mirrors exactly how deposits.html's
+actions got routed through `api/accounts/write.js` earlier this session.
+The two dispatch paths (bikes.html's own actions vs add-bikes.html's) never
+mix; bikes.html's own frontend is untouched.
+
+**Idempotency, added as part of this port (none of these existed
+client-side before):**
+- `addBike`: clientTxnId guard on a new `Parts_and_Oil_change_notes`
+  sidecar ([row, col, clientTxnId] shape, same convention as every other
+  guard in this project). Without it, a crash/reload resubmit would hit
+  `addBikeFromJson`'s own duplicate-name guard and throw a confusing
+  "already exists" error even though the original add already succeeded —
+  same "retry trap" bug class fixed for contract.html's cancelContract
+  earlier this session, closed proactively here instead.
+- `editBike`: no guard, by design — unconditional overwrite converges to
+  the same end state on retry.
+- `sellBike` / `unsellBike`: clientTxnId idempotent-replay guards, piggy-
+  backed onto the SAME per-bike-name JSON note
+  `readBikeSoldNoteFromJson`/`writeBikeSoldNoteFromJson` already
+  read/write (new `soldByTxnId` field on sell; `unsellBike` now leaves a
+  tombstone note behind — `unsoldByTxnId` + `reversedAmount`, no
+  `soldAmount`/`reason` — instead of clearing to null outright, so a
+  retry can be recognized without breaking every other reader's
+  `soldAmount || reason` "is this sold" check).
+
+**Testing:** `node --check` on `lib/addBikesWrites.js` and
+`api/bikes/write.js` (both OK). 40/40 unit tests against a fake in-memory
+Drive-backed sheetIO, covering: alphabetical insert across all 4 sheets on
+addBike, the Bike Tax column-A renumber, the "no live formula engine"
+warning on Bike Tax's Status/day-count columns, duplicate-name guards
+(exact and fuzzy-matched), clientTxnId idempotent replay on
+addBike/sellBike/unsellBike (confirmed NOT double-charging/double-
+reversing the "total" column on replay), editBike's rename-collision
+guard and partial-sheet-failure-as-warning behavior, sellBike's write-off
+(reason) path leaving the total untouched, and unsellBike's "nothing to
+reverse" guard.
+
+**Files changed:** `vercel-site/lib/addBikesWrites.js` (new),
+`vercel-site/api/bikes/write.js`.
+
+**Not done in this entry:** the frontend (add-bikes.html itself) is not
+yet wired onto a save-pipeline engine — that's the next entry, once
+written.
+
+---
+
 ## ↩️ contract.html: "Send Contract + Receipt" reverted back to Web Share —
 ## CODED, NOT YET DEPLOYED (2026-08-17)
 

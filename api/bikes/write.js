@@ -17,10 +17,23 @@
 // frontend does NOT call this endpoint yet -- it is net-new and
 // unreferenced, so its mere existence changes nothing about how
 // bikes.html behaves today.
+//
+// ROUTING NOTE, added during the add-bikes.html port (see
+// lib/addBikesWrites.js's own header comment for the full reasoning): this
+// endpoint ALSO serves add-bikes.html's 4 write actions (addBike, editBike,
+// sellBike, unsellBike), routed to a completely separate module
+// (lib/addBikesWrites.js) below, purely because Vercel's Hobby-plan
+// 12-serverless-function cap left no room for a dedicated
+// api/add-bikes/write.js. The two dispatch paths never mix -- bikes.html's
+// own actions keep going through bikesWriteDispatch exactly as before,
+// untouched by this change.
 const { withDrive } = require('../../lib/apiAuth');
 const { ensureAppFolder, ConflictError } = require('../../lib/googleDrive');
 const { setSessionCookie } = require('../../lib/session');
 const { createBikesWrites, createSheetIO } = require('../../lib/bikesWrites');
+const { createAddBikesWrites } = require('../../lib/addBikesWrites');
+
+const ADD_BIKES_ACTIONS = new Set(['addBike', 'editBike', 'sellBike', 'unsellBike']);
 
 function readJsonBody(req) {
   if (req.body !== undefined && req.body !== null) {
@@ -62,11 +75,12 @@ module.exports = withDrive(async function handler(req, res, { drive, folderId, s
 
     const effectiveFolderId = folderId || await ensureAppFolder(drive);
     const sheetIO = createSheetIO(drive, effectiveFolderId, session);
-    const writes = createBikesWrites(sheetIO);
+    const isAddBikesAction = ADD_BIKES_ACTIONS.has(action);
+    const writes = isAddBikesAction ? createAddBikesWrites(sheetIO) : createBikesWrites(sheetIO);
 
     let result;
     try {
-      result = await writes.bikesWriteDispatch(body);
+      result = isAddBikesAction ? await writes.addBikesWriteDispatch(body) : await writes.bikesWriteDispatch(body);
     } catch (err) {
       if (err instanceof ConflictError || err.isConflict) {
         if (session && !res.headersSent) setSessionCookie(res, session);

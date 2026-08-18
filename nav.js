@@ -593,7 +593,22 @@
     // dedicated /api/deposits/write -- deposits.html's 5 actions are
     // routed through the SAME endpoint accounts.html uses (see that file's
     // own routing comment for why: Vercel's Hobby-plan 12-function cap).
-    { ownerPage: 'deposits.html', pendingKey: 'aaDepositsPendingSaves', failedKey: 'aaDepositsFailedSaves', endpoint: '/api/accounts/write' }
+    { ownerPage: 'deposits.html', pendingKey: 'aaDepositsPendingSaves', failedKey: 'aaDepositsFailedSaves', endpoint: '/api/accounts/write' },
+    // Added 17/08/2026 (overnight) the moment add-bikes.html's own
+    // save-pipeline engine landed (see PROGRESS.md). endpoint is
+    // /api/bikes/write, NOT a dedicated /api/add-bikes/write -- routed
+    // through the SAME endpoint bikes.html uses, split by action name (see
+    // api/bikes/write.js's own ROUTING NOTE comment for why: Vercel's
+    // Hobby-plan 12-function cap).
+    { ownerPage: 'add-bikes.html', pendingKey: 'aaAddBikesPendingSaves', failedKey: 'aaAddBikesFailedSaves', endpoint: '/api/bikes/write' },
+    // Added 17/08/2026 (overnight) the moment customers.html's own
+    // save-pipeline engine landed (see PROGRESS.md) -- last page in this
+    // rollout. endpoint is /api/accounts/write, NOT a dedicated
+    // /api/customers/write -- routed through the SAME endpoint
+    // accounts.html/deposits.html use, split by action name (see
+    // lib/customersWrites.js's own header comment for why: Vercel's
+    // Hobby-plan 12-function cap).
+    { ownerPage: 'customers.html', pendingKey: 'aaCustomersPendingSaves', failedKey: 'aaCustomersFailedSaves', endpoint: '/api/accounts/write' }
   ];
 
   // Only items queued at least this long ago are treated as possibly
