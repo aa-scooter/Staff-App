@@ -5412,3 +5412,27 @@ only happen once Anton does the manual steps above.
 
 🔴 No `Code.gs` changes in this entry -- Code.gs's own calendar system is
 untouched and keeps running the live production site exactly as before.
+
+**Fix, same evening (2026-08-18), found via live testing:** Anton connected
+`aascooters1@gmail.com`, then added a Pending contract and separately rented
+one via contract.html -- neither produced a calendar event. Root cause: 
+`lib/contractWrites.js` has its OWN separate copy of `customerIntakeFromJson`
+(the actual "Rent" action contract.html's doRent flow calls -- distinct from
+`lib/customersWrites.js`'s and `lib/bikesWrites.js`'s own copies, per this
+project's no-shared-JS convention). The first pass wired the calendar hook
+into `addContractFromJson`/`editContractFromJson`/`cancelContractFromJson`/
+`markMatchingContractAsRentedFromJson` in that file, but missed this
+`customerIntakeFromJson` copy -- exactly the function that creates the
+customer-sheet row a 🛵 due-back event needs. Fixed by adding the same
+pre-write sync hook used in the other two files' copies. Verified with 3 new
+end-to-end regression tests (against the real files, with a stubbed-but-
+functional fake Calendar API behind a "connected" fake Drive) proving:
+`addContractFromJson` with `deliverToHotel:'Yes'` really does create a 🏨
+event (this path was NOT broken -- tested clean even before this fix, so if
+a delivery event still doesn't show up after redeploying, check that the
+contract actually had "Deliver to hotel" toggled on with a delivery time
+set, not just added -- both are required, matching Code.gs's own rule
+exactly), and the previously-broken doRent `customerIntakeFromJson` now
+creates the due-back event too. All 12/12 regression tests + the original
+54/54 pass. This fix is included in the same files as the original entry
+above -- no additional files touched.
