@@ -5302,3 +5302,113 @@ not new porting work:
   harness seeded from real exported JSON (`/tmp/vercel-site-disconnected/data/`)
   before being considered done — this has caught real bugs before (see the
   accounts.html row-insert notes-shift bug above).
+
+## Calendar sync port (2026-08-18) -- built, NOT yet deployed/tested live
+
+Full port of Code.gs's native Google Calendar integration (CalendarApp,
+`syncCalendarForCustomerRow`/`syncDeliveryCalendarForContractRow`/reminders/
+`createContactCustomerReminders`) onto the Vercel app, per Anton's explicit
+ask: "I want the calendar to function exactly as it does here... other than
+[a separate login], it should do exactly the same shit." Built end-to-end
+without stopping for feedback, per Anton's own instruction that evening
+("get as much of it done as you can without asking for feedback"). Not yet
+exercised against a real Google account -- next session should treat this as
+"needs live verification," not "done."
+
+**New files:**
+- `lib/googleCalendarAuth.js` -- a SECOND, independent OAuth2 flow (own
+  scopes: `calendar` + `drive.readonly` + `userinfo.email`), completely
+  separate from the staff Drive login. Token stored in `calendar_auth.json`
+  in the app's Drive folder (same convention as `ai_keys.json`), read/written
+  via the STAFF session's own Drive access -- see the file's header comment
+  for the full "why," including why this account also needs `drive.readonly`
+  (the headless daily cron has no browser/session to read booking data with,
+  so this one connected account does double duty).
+- `lib/googleCalendarSync.js` -- the ported sync logic: pure decision
+  functions (`computeDueBackEventPlan`/`computeDeliveryEventPlan`/
+  `computeContactReminderCandidates`, fully unit-tested, no network) plus
+  thin Calendar-API-v3-calling wrappers. Change-detection (Code.gs's "note on
+  the cell" trick) is now `extendedProperties.private.syncSignature` on the
+  event itself. Color mapping confirmed against Google's own Apps Script
+  reference docs (PALE_BLUE=1, YELLOW=5, ORANGE=6 [labeled "Tangerine" in the
+  Calendar UI -- Code.gs's own `CalendarApp.EventColor.TANGERINE` reference
+  isn't a real enum member and likely silently no-ops there; ORANGE/"6" is
+  used here since that's clearly the intent], GREEN=10).
+
+**Wired into (all try/catch'd, non-blocking, exactly Code.gs's own posture):**
+`lib/customersWrites.js` (`customerIntakeFromJson`), `lib/bikesWrites.js`
+(`closeBikeForExtendFromJson` + its own `customerIntakeFromJson` copy),
+`lib/contractWrites.js` (`addContractFromJson`/`editContractFromJson`/
+`cancelContractFromJson`/`markMatchingContractAsRentedFromJson`). All take an
+optional `calendarCtx` param (`{drive, folderId, session}`) -- omitted
+entirely by old call sites/tests, which keeps behaving exactly as before.
+
+**Routing (Vercel Hobby 12-function cap is already maxed -- confirmed via
+`api/` listing, no new files added):** calendar.html's 8 actions
+(addCalendarReminder/editCalendarReminder/completeCalendarReminder/
+listCalendarReminders/listDeliveryPickupLinks/setDeliveryPickupLink/
+calendarConnectionStatus/disconnectCalendar) folded into
+`api/contract/write.js`'s existing POST dispatch. The Calendar OAuth
+connect/callback flow reuses `api/auth/login.js`/`api/auth/callback.js` (a
+`?flow=calendar` branch + an `aa_oauth_flow` cookie tell the two flows
+apart) rather than needing new files.
+
+**Daily sweep (safety-net resync + Code.gs's nightly contact-reminder job,
+combined into ONE run per Anton's own call that evening):**
+`GET /api/contract/write?cron=dailySweep`, wired into `vercel.json`'s
+`crons` (`"0 15 * * *"` = 22:00 Asia/Bangkok, matching Code.gs's own nightly
+trigger hour -- confirmed Vercel Hobby only allows once-daily cron, so this
+also replaces Code.gs's separate 15-minute sweep triggers; the real-time
+write hooks above cover what those sweeps mostly existed to catch anyway).
+Authenticated via a `CRON_SECRET` env var checked against the
+`Authorization: Bearer` header Vercel sends its own cron requests with --
+**not yet set**, so the cron endpoint will 401 until it is. The cron handler
+also needs `CALENDAR_AUTOMATION_REFRESH_TOKEN` (a copy of the connected
+calendar account's refresh token, shown once on calendar.html right after
+connecting) as an env var -- **not yet set either**; without it the cron
+just logs "skipped, not configured" and does nothing, harmlessly.
+
+**Manual steps still needed before ANY of this actually works, none of which
+this session could do:**
+1. Google Cloud Console: add `calendar` + `drive.readonly` scopes to the
+   OAuth consent screen for the existing client (GOOGLE_CLIENT_ID/SECRET are
+   reused, not a new Cloud project).
+2. Click "Connect Calendar" on calendar.html (once deployed) -- for testing,
+   sign in as `aascooters1@gmail.com`.
+3. Copy the refresh token calendar.html shows once after connecting into a
+   new `CALENDAR_AUTOMATION_REFRESH_TOKEN` Vercel env var, and set a
+   `CRON_SECRET` env var (any random string) -- both needed only for the
+   daily sweep, not for the real-time sync, which works as soon as step 2 is
+   done.
+4. Share the "AA Scooters App Data" Drive folder (Viewer is enough) with
+   whichever email got connected in step 2 -- required ONLY for the daily
+   cron sweep to read booking data headlessly; the interactive sync doesn't
+   need this.
+5. Redeploy so the new `crons` entry in `vercel.json` actually registers.
+
+**Explicit scope trims (flagged, not silently dropped):** the
+"customer-facing bike model via Bike Tax lookup" refinement Code.gs's
+`customerFacingBikeModelServer_` has isn't ported (no server-side Bike Tax
+lookup exists anywhere in this app yet) -- WhatsApp reminder messages here
+always use the shortened/mangled internal bike name, Code.gs's own fallback
+case. `TestCalendarScript.gs` (the actual script behind calendar.html's OLD
+test scriptUrl) was never obtained -- this port was built from Code.gs's
+production logic instead, so if that test script had drifted from
+production in some way, this won't match it exactly (matches PRODUCTION
+Code.gs exactly, which was the more important target anyway).
+
+**Testing:** 54 unit tests against the pure decision logic + a small
+in-memory fake Calendar API client (color rules, all-day-vs-timed, the
+extendedProperties change-detection skip, create/update/delete branches,
+reminder CRUD, dailySweep), plus 9 regression tests confirming
+`customersWrites.js`/`bikesWrites.js`/`contractWrites.js` still behave
+identically with `calendarCtx` omitted and fail gracefully with it present
+but disconnected. All 63 passing. Every edited/new file's write was verified
+held via a fresh grep (not a cached read) after writing, per this file's own
+"never trust a successful write on its own" rule above. No live Google
+Calendar API call has been exercised (sandbox has no `googleapis` package
+installed and no real credentials) -- that first real end-to-end test can
+only happen once Anton does the manual steps above.
+
+🔴 No `Code.gs` changes in this entry -- Code.gs's own calendar system is
+untouched and keeps running the live production site exactly as before.

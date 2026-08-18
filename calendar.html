@@ -50,6 +50,61 @@
     margin:0 auto;
     padding:24px 16px 60px;
   }
+  .cal-connect-bar{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    flex-wrap:wrap;
+    gap:10px;
+    background:var(--card);
+    border:1px solid var(--line);
+    border-radius:12px;
+    padding:12px 14px;
+    margin-bottom:14px;
+    font-size:13px;
+  }
+  .cal-connect-bar .ccb-status{ color:var(--muted); }
+  .cal-connect-bar .ccb-status strong{ color:var(--petrol); }
+  .cal-connect-bar button{
+    width:auto;
+    margin:0;
+    padding:9px 16px;
+    border:none;
+    border-radius:8px;
+    background:var(--cone);
+    color:#fff;
+    font-family:'Barlow Condensed',sans-serif;
+    font-weight:700;
+    font-size:13px;
+    letter-spacing:.03em;
+    text-transform:uppercase;
+    cursor:pointer;
+  }
+  .cal-connect-bar button.secondary{
+    background:#fff;
+    color:#C53030;
+    border:1px solid #F3C6C6;
+  }
+  .cal-token-box{
+    background:#FBFAF7;
+    border:1px solid var(--line);
+    border-radius:10px;
+    padding:12px 14px;
+    margin-bottom:14px;
+    font-size:12.5px;
+    color:var(--muted);
+  }
+  .cal-token-box code{
+    display:block;
+    background:#fff;
+    border:1px solid var(--line);
+    border-radius:6px;
+    padding:8px 10px;
+    margin-top:8px;
+    font-size:11.5px;
+    word-break:break-all;
+    user-select:all;
+  }
   .cal-card{
     background:var(--card);
     border:1px solid var(--line);
@@ -304,17 +359,33 @@
 </div>
 
 <main>
-  <div class="cal-card">
+  <!-- Calendar connection bar (added 18/08/2026) -- a SEPARATE Google login
+       just for calendar sync, independent of who's logged into the app
+       itself (see lib/googleCalendarAuth.js for the full "why"). Connect
+       points at whichever Google account should own the calendar right now
+       (aascooters1@gmail.com for testing); Disconnect + Connect again swaps
+       to a different account any time, no code changes needed. Status is
+       checked on load via action:'calendarConnectionStatus'. -->
+  <div class="cal-connect-bar" id="calConnectBar">
+    <span class="ccb-status" id="calConnectStatus">Checking calendar connection…</span>
+    <div>
+      <button type="button" id="calConnectBtn" class="hidden">Connect Calendar</button>
+      <button type="button" id="calDisconnectBtn" class="hidden secondary">Disconnect</button>
+    </div>
+  </div>
+  <div class="cal-token-box hidden" id="calTokenBox"></div>
+
+  <div class="cal-card hidden" id="calCard">
     <iframe
       id="calendarIframe"
-      src="https://calendar.google.com/calendar/embed?src=aascooters1%40gmail.com&ctz=Asia%2FBangkok&mode=AGENDA&showTitle=0&showPrint=0&showTabs=1&showCalendars=0&showTz=0"
+      src="about:blank"
       frameborder="0"
       scrolling="no">
     </iframe>
   </div>
-  <div class="cal-note">
+  <div class="cal-note hidden" id="calNote">
     <span class="hint">This calendar is shared by link — anyone with the link can view it, no Google login needed.</span>
-    <a href="https://calendar.google.com/calendar/r?cid=aascooterchiangmai%40gmail.com" target="_blank" rel="noopener">Open in Google Calendar ↗</a>
+    <a id="openInGoogleCalendarLink" href="#" target="_blank" rel="noopener">Open in Google Calendar ↗</a>
   </div>
   <div class="reminder-btn-row">
     <button type="button" id="addReminderBtn">+ Add reminder</button>
@@ -430,7 +501,27 @@
 </div>
 
 <script>
-const scriptUrl = 'https://script.google.com/macros/s/AKfycbyOYF1K-DyoFKLrk1yr_hPGzlLAXKoqjLR2TTKunHcajkMvafa7StBlSiZph_hzliqJ/exec'; // TEST CALENDAR ONLY: points at a standalone Apps Script deployment under a separate test Google account (aascooters1@gmail.com), not the live aascooterchiangmai@gmail.com backend. See TestCalendarScript.gs / project CLAUDE.md.
+// ---- Calendar backend (rewired 18/08/2026) -- was a direct fetch() against
+// a standalone Apps Script deployment (scriptUrl, TEST CALENDAR ONLY under
+// aascooters1@gmail.com). Now routed through this app's own Vercel API,
+// same endpoint contract.html already uses (api/contract/write.js's
+// contractWriteDispatch -- calendar.html's 8 actions were added there since
+// the app is already at Vercel's 12-serverless-function Hobby cap, see that
+// file's header comment), with the calendar account itself connected
+// separately via lib/googleCalendarAuth.js -- see the "Connect Calendar"
+// bar above. Every call below goes through this one helper instead of a
+// raw fetch(scriptUrl, ...), same POST-with-action shape as before, just a
+// different URL and requiring the staff session cookie (credentials are
+// same-origin by default, no extra config needed).
+async function callApi(action, payload) {
+  const res = await fetch('/api/contract/write', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(Object.assign({ action }, payload || {}))
+  });
+  const data = await res.json();
+  return data;
+}
 
 const addReminderBtn = document.getElementById('addReminderBtn');
 const reminderBackdrop = document.getElementById('reminderBackdrop');
@@ -555,28 +646,22 @@ reminderForm.addEventListener('submit', async (e) => {
   reminderCompleteBtn.disabled = true;
   reminderSaveBtn.textContent = 'Saving…';
 
+  const action = currentReminderEventId ? 'editCalendarReminder' : 'addCalendarReminder';
   const payload = currentReminderEventId
     ? {
-        action: 'editCalendarReminder',
         eventId: currentReminderEventId,
         date: reminderDateInput.value,
         time: reminderTimeInput.value,
         text: reminderTextInput.value.trim()
       }
     : {
-        action: 'addCalendarReminder',
         date: reminderDateInput.value,
         time: reminderTimeInput.value,
         text: reminderTextInput.value.trim()
       };
 
   try {
-    const res = await fetch(scriptUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify(payload)
-    });
-    const data = await res.json();
+    const data = await callApi(action, payload);
     if (!data.success) throw new Error(data.error || 'Unknown error');
     reminderStatusBox.textContent = (currentReminderEventId ? 'Reminder updated.' : 'Reminder saved to the calendar.') +
       ' The calendar above will refresh automatically (Google can still take a minute or two to catch up).';
@@ -607,12 +692,7 @@ reminderCompleteBtn.addEventListener('click', async () => {
   reminderCompleteBtn.textContent = 'Completing…';
 
   try {
-    const res = await fetch(scriptUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({ action: 'completeCalendarReminder', eventId: currentReminderEventId })
-    });
-    const data = await res.json();
+    const data = await callApi('completeCalendarReminder', { eventId: currentReminderEventId });
     if (!data.success) throw new Error(data.error || 'Unknown error');
     reminderStatusBox.textContent = 'Reminder marked completed and removed from the calendar.';
     reminderStatusBox.className = 'status ok';
@@ -659,8 +739,7 @@ async function loadRemindersList() {
   refreshBulkBar();
   remindersListBox.innerHTML = '<div class="reminders-loading">Loading reminders…</div>';
   try {
-    const res = await fetch(scriptUrl + '?action=reminders');
-    const data = await res.json();
+    const data = await callApi('listCalendarReminders');
     if (!data.success) throw new Error(data.error || 'Could not load reminders');
     renderRemindersList(data.reminders || []);
   } catch (err) {
@@ -736,12 +815,7 @@ remindersBulkCompleteBtn.addEventListener('click', async () => {
   for (let i = 0; i < ids.length; i++) {
     remindersBulkCompleteBtn.textContent = 'Completing ' + (i + 1) + '/' + ids.length + '…';
     try {
-      const res = await fetch(scriptUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify({ action: 'completeCalendarReminder', eventId: ids[i] })
-      });
-      const data = await res.json();
+      const data = await callApi('completeCalendarReminder', { eventId: ids[i] });
       if (!data.success) failures.push(data.error || 'Unknown error');
     } catch (err) {
       failures.push(err.message);
@@ -786,8 +860,7 @@ linksListBackdrop.addEventListener('click', (e) => {
 async function loadLinksList() {
   linksListBox.innerHTML = '<div class="reminders-loading">Loading…</div>';
   try {
-    const res = await fetch(scriptUrl + '?action=deliveryPickupLinks');
-    const data = await res.json();
+    const data = await callApi('listDeliveryPickupLinks');
     if (!data.success) throw new Error(data.error || 'Could not load the list');
     renderLinksList(data.entries || []);
   } catch (err) {
@@ -858,17 +931,11 @@ linkEntryForm.addEventListener('submit', async (e) => {
   linkEntrySaveBtn.textContent = 'Saving…';
 
   try {
-    const res = await fetch(scriptUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({
-        action: 'setDeliveryPickupLink',
-        type: currentLinkEntry.type,
-        rowNumber: currentLinkEntry.rowNumber,
-        link: linkEntryInput.value.trim()
-      })
+    const data = await callApi('setDeliveryPickupLink', {
+      type: currentLinkEntry.type,
+      rowIndex: currentLinkEntry.rowIndex,
+      link: linkEntryInput.value.trim()
     });
-    const data = await res.json();
     if (!data.success) throw new Error(data.error || 'Unknown error');
     linkEntryStatusBox.textContent = 'Link saved. The calendar above will refresh automatically.';
     linkEntryStatusBox.className = 'status ok';
@@ -881,6 +948,103 @@ linkEntryForm.addEventListener('submit', async (e) => {
     linkEntrySaveBtn.textContent = 'Save link';
   }
 });
+
+/* ---------------- Calendar connection (added 18/08/2026) ---------------- */
+// A separate Google login just for the calendar, independent of whoever's
+// logged into the app -- see lib/googleCalendarAuth.js's header comment for
+// the full "why" (test account now, swap to the real one later, or any
+// other account at any point, no code changes needed).
+
+const calConnectStatus = document.getElementById('calConnectStatus');
+const calConnectBtn = document.getElementById('calConnectBtn');
+const calDisconnectBtn = document.getElementById('calDisconnectBtn');
+const calTokenBox = document.getElementById('calTokenBox');
+const calCard = document.getElementById('calCard');
+const calNote = document.getElementById('calNote');
+const openInGoogleCalendarLink = document.getElementById('openInGoogleCalendarLink');
+
+function setCalendarView(email) {
+  if (!email) {
+    calCard.classList.add('hidden');
+    calNote.classList.add('hidden');
+    return;
+  }
+  calendarIframe.src = 'https://calendar.google.com/calendar/embed?src=' + encodeURIComponent(email) +
+    '&ctz=Asia%2FBangkok&mode=AGENDA&showTitle=0&showPrint=0&showTabs=1&showCalendars=0&showTz=0';
+  openInGoogleCalendarLink.href = 'https://calendar.google.com/calendar/r?cid=' + encodeURIComponent(email);
+  calCard.classList.remove('hidden');
+  calNote.classList.remove('hidden');
+}
+
+function readAndClearCookie(name) {
+  const match = document.cookie.match(new RegExp('(?:^|; )' + name + '=([^;]*)'));
+  if (!match) return null;
+  document.cookie = name + '=; Path=/; Max-Age=0';
+  return decodeURIComponent(match[1]);
+}
+
+async function refreshCalendarConnectionStatus() {
+  calConnectStatus.textContent = 'Checking calendar connection…';
+  calConnectBtn.classList.add('hidden');
+  calDisconnectBtn.classList.add('hidden');
+  try {
+    const data = await callApi('calendarConnectionStatus');
+    if (data.connected) {
+      calConnectStatus.innerHTML = 'Calendar connected: <strong>' + escapeHtml(data.email || '(unknown account)') + '</strong>';
+      calDisconnectBtn.classList.remove('hidden');
+      setCalendarView(data.email);
+    } else {
+      calConnectStatus.textContent = 'No calendar connected yet.';
+      calConnectBtn.classList.remove('hidden');
+      setCalendarView(null);
+    }
+  } catch (err) {
+    calConnectStatus.textContent = 'Could not check calendar connection: ' + err.message;
+    calConnectBtn.classList.remove('hidden');
+    setCalendarView(null);
+  }
+}
+
+calConnectBtn.addEventListener('click', () => {
+  window.location.href = '/api/auth/login?flow=calendar&next=' + encodeURIComponent('/calendar.html');
+});
+
+calDisconnectBtn.addEventListener('click', async () => {
+  if (!confirm('Disconnect the currently connected calendar account? You can connect a different one (or the same one again) right after.')) return;
+  calDisconnectBtn.disabled = true;
+  calDisconnectBtn.textContent = 'Disconnecting…';
+  try {
+    await callApi('disconnectCalendar');
+  } catch (err) { /* fall through to a status refresh either way */ }
+  calDisconnectBtn.disabled = false;
+  calDisconnectBtn.textContent = 'Disconnect';
+  refreshCalendarConnectionStatus();
+});
+
+// Right after a successful Connect, api/auth/callback.js redirects back here
+// with ?calConnected=1&calEmail=... and a short-lived, JS-readable cookie
+// (aa_cal_automation_token) carrying the SAME refresh token calendar_auth.json
+// just got, purely so it can be shown ONCE in a copyable box -- only needed
+// if Anton wants the headless daily sweep to work too (see
+// lib/googleCalendarAuth.js's header comment); the interactive sync above
+// works immediately either way. Cleaned from both the URL and the cookie
+// right away so it doesn't linger anywhere after this one view.
+(function handleConnectRedirect() {
+  const params = new URLSearchParams(window.location.search);
+  if (params.get('calConnected') !== '1') return;
+  const token = readAndClearCookie('aa_cal_automation_token');
+  if (token) {
+    calTokenBox.classList.remove('hidden');
+    calTokenBox.innerHTML = 'Calendar connected. To also enable the daily automated sweep (safety-net resync + nightly contact reminders), copy this into Vercel’s <strong>CALENDAR_AUTOMATION_REFRESH_TOKEN</strong> environment variable and redeploy. Not required for the calendar to work right now -- everything else updates live already.' +
+      '<code>' + escapeHtml(token) + '</code>';
+  }
+  params.delete('calConnected');
+  params.delete('calEmail');
+  const cleanUrl = window.location.pathname + (params.toString() ? '?' + params.toString() : '');
+  window.history.replaceState({}, '', cleanUrl);
+})();
+
+refreshCalendarConnectionStatus();
 </script>
 
 </body>

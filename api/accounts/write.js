@@ -93,7 +93,7 @@ module.exports = withDrive(async function handler(req, res, { drive, folderId, s
     const writes = isDepositsAction
       ? createDepositsWrites(sheetIO)
       : isCustomersAction
-        ? createCustomersWrites(sheetIO)
+        ? createCustomersWrites(sheetIO, { drive, folderId: effectiveFolderId, session })
         : createAccountsWrites(sheetIO);
 
     let result;

@@ -76,7 +76,7 @@ module.exports = withDrive(async function handler(req, res, { drive, folderId, s
     const effectiveFolderId = folderId || await ensureAppFolder(drive);
     const sheetIO = createSheetIO(drive, effectiveFolderId, session);
     const isAddBikesAction = ADD_BIKES_ACTIONS.has(action);
-    const writes = isAddBikesAction ? createAddBikesWrites(sheetIO) : createBikesWrites(sheetIO);
+    const writes = isAddBikesAction ? createAddBikesWrites(sheetIO) : createBikesWrites(sheetIO, { drive, folderId: effectiveFolderId, session });
 
     let result;
     try {
