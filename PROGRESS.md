@@ -5521,3 +5521,42 @@ live once more and checks Vercel's logs (Observability -> Logs -> filter
 one fires (or doesn't) will point directly at the real cause. Remove this
 logging once confirmed fixed. New regression test count: 13/13 (was 12),
 plus the original 54/54, still green.
+
+**Update, same evening (2026-08-18) -- narrowed further via Vercel logs,
+still open:** Anton deployed the diagnostic-logging commit and reproduced
+live with a fresh test bike ("Gt black 1"). The logs answered the question
+cleanly: the CREATE request logged `action=create, existingEventId=(none),
+status="Pending"`, and the later RENT request logged `action=delete,
+existingEventId=i2loojeom8p03tlg59lubqje58, status="Rented"` -- confirming
+`markMatchingContractAsRentedFromJson`'s match AND
+`computeDeliveryEventPlan`'s decision logic are BOTH working correctly live,
+not just in the sandbox test. Yet the delivery event stayed on the
+calendar. This rules out both original hypotheses (silent name/bike
+mismatch, plan computing something other than delete) and points
+somewhere more specific: the actual `calendar.events.delete()` call inside
+`applyDeliveryEventPlan` must itself be failing -- and that exact call was
+wrapped in a bare `try { ... } catch (err) { /* best-effort */ }` with NO
+logging at all, so whatever real error Google's API is returning (auth,
+permissions, a bad/stale event id, quota, anything) had nowhere to surface
+from. Found and fixed 3 other identical silent-catch spots in the same
+file while in there (`applyDueBackEventPlan`'s own delete branch, its
+all-day/timed-swap delete-then-recreate branch, and the daily sweep's
+stale-contact-reminder cleanup) -- same risk, same fix, added
+`console.warn` with the real `err.message` to all four. 54/54 + 13/13
+still green. Next step: Anton redeploys and reproduces once more; whatever
+error message these new lines print is the actual root cause.
+
+**Resolved, same evening (2026-08-18):** before even redeploying the
+error-logging commit above, Anton reloaded calendar.html and the stale
+"Gt black 1" 🏨 delivery event had disappeared on its own -- the delete
+call evidently DID succeed, it just took a while to actually clear from
+Google Calendar's own view/index. Likely the same flavor of "not
+immediately consistent" propagation delay this project has already hit on
+the Drive side (see `lib/googleDrive.js`'s `findFileInFolderWithRetry`
+comment) -- not a real bug in this app's code. The error-logging commit
+above was still pushed regardless (purely additive, zero behavior change,
+free visibility if a genuine delete failure ever does happen). No further
+action needed unless a stale delivery event is seen NOT to clear after a
+longer wait (a few minutes) -- if that happens, check Vercel's logs for
+the new `delivery event delete failed for eventId=...` line this commit
+added, which would now show the real reason.
