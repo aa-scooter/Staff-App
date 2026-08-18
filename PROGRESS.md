@@ -5436,3 +5436,55 @@ exactly), and the previously-broken doRent `customerIntakeFromJson` now
 creates the due-back event too. All 12/12 regression tests + the original
 54/54 pass. This fix is included in the same files as the original entry
 above -- no additional files touched.
+
+**Second fix, same evening (2026-08-18) -- the REAL root cause, found by
+reading Vercel's function logs directly:** after the `doRent` hook fix above
+deployed, Anton reported renting a pending contract STILL produced no
+calendar event, with no visible error either. Re-grepped the deployed file
+to rule out a silent revert (per this file's/CLAUDE.md's own documented
+risk) -- the fix code was genuinely present and intact, so the bug had to be
+a live-runtime issue, not a redeploy/revert issue. Walked Anton through
+Vercel's Logs tab (Observability -> Logs -> filter `/api/contract/write`,
+expand a request, check "Contains Console Level" -> Warning) to get real
+server-side evidence instead of guessing further, which surfaced the actual
+line: `[googleCalendarSync] due-back sync failed: Missing time zone
+definition for start time.`
+
+Root cause: every TIMED (non-all-day) event this file builds --
+`planToEventResource`'s `dateTime` branch (due-back events with a specific
+return time, and every 🏨 delivery event, which is always timed), plus both
+`addReminder` and `editReminder` -- set `dateTime` but never set the
+sibling `timeZone` field. Apps Script's `CalendarApp` never needed this (it
+implicitly used the script's own timezone), but the real Calendar API v3
+**rejects** a `dateTime` with no UTC offset/`Z` and no `timeZone` field, so
+every one of these was failing 100% of the time in production. Because
+every calendar-sync call site wraps its own failure in a non-blocking
+try/catch (by design -- a calendar hiccup should never break the booking
+write it's piggybacking on), the booking always saved fine and the failure
+was swallowed silently -- worse, `contractWrites.js`'s own
+`customerIntakeFromJson` catch block (see the first fix above) only pushes
+into a `warnings` array, which the frontend's `ctDispatch`/`doRent` path
+(the overnight optimistic-UI save-pipeline engine) never actually reads or
+surfaces to the user at all, so there was no alert either -- this made the
+failure fully invisible from the browser, only visible in Vercel's own
+logs. This is also almost certainly the same root cause behind the earlier
+"delivery event didn't show up" complaint, not a toggle/time-not-set issue
+as originally guessed.
+
+Fixed in `lib/googleCalendarSync.js`: added a `CALENDAR_TIMEZONE = 'Asia/
+Bangkok'` constant and wired `timeZone: CALENDAR_TIMEZONE` into every
+`{ dateTime: ... }` block (`planToEventResource`'s timed branch, used by
+both due-back and delivery events; `addReminder`; `editReminder`). All-day
+events (`{ date: ... }`, no `dateTime`) are unaffected -- they don't require
+`timeZone`.
+
+Also hardened the test harness itself, since this bug got past all 66
+existing tests without tripping a single one -- the fake Calendar API stub
+(`stubs/node_modules/googleapis`) accepted any request shape, so a real API
+rejection rule was never being checked. Added `assertValidEventResource`
+to the fake `events.insert`/`events.update`, replicating this one real
+validation rule (`dateTime` requires a sibling `timeZone`) so this exact bug
+class is a red test from now on, not just a silent gap. Re-ran both
+harnesses against the stricter stub after the fix: 54/54 + 12/12 still
+green, confirming the fix is what actually satisfies the real API's
+requirement, not just a coincidence of the old permissive stub.
