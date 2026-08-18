@@ -3455,7 +3455,15 @@ function doRent() {
     clientTxnId: genClientTxnId()
   };
 
+  // Closes BOTH the confirm modal and the Pending Contracts list modal
+  // (added 18/08/2026, per Anton: the list modal staying open just showed
+  // its own redundant "Saving…" badge on this row, on top of the page-level
+  // "Saving…" pill that's already visible up top -- confusing, and it
+  // blocked clicking around elsewhere while the background save ran. Going
+  // straight back to the plain screen makes it clear staff can keep working
+  // immediately; the top pill is the only saving indicator needed now.
   closeConfirmModal();
+  closePendingModal();
 
   ctEnqueue({
     label: (r.name ? r.name + ' — ' : '') + 'Rent out',
