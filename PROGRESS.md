@@ -5560,3 +5560,38 @@ action needed unless a stale delivery event is seen NOT to clear after a
 longer wait (a few minutes) -- if that happens, check Vercel's logs for
 the new `delivery event delete failed for eventId=...` line this commit
 added, which would now show the real reason.
+
+## ✅ DONE, tested, awaiting Anton's push — "Add to Home Screen" icon across
+## every page (2026-08-18)
+
+Anton wants a proper icon when he saves any of these pages to his Android
+home screen as a shortcut (currently falls back to a generic browser
+glyph). Added to all 18 HTML pages' `<head>`: `<link rel="icon">`,
+`<link rel="apple-touch-icon">`, `<link rel="manifest" href="/manifest.json">`,
+plus `theme-color`/`apple-mobile-web-app-capable`/`apple-mobile-web-app-title`
+meta tags (`pricing.html` already had those three, so only the icon/manifest
+links were added there). New `manifest.json` at the project root declares
+name/short_name/theme/background colors and one icon entry.
+
+Icon source: reused the exact same externally-hosted logo `nav.js`'s own
+header already links to (`https://scooterrentalchiangmai.com/wp-content/
+uploads/2025/02/cropped-cropped-logo-3333-270x270.png`, a 270x270 square
+PNG — the highest-res version of the AA Scooters logo actually published
+on the live site, found via that site's own `msapplication-TileImage` meta
+tag). Deliberately did NOT download/self-host a local copy: manifest icons
+and `<link>` icon hrefs can point at any absolute URL, so pointing straight
+at the already-live asset avoids adding an image file to this repo (and
+avoids the file-revert risk this project's own CLAUDE.md flags for
+image/binary assets) at zero functional cost — same trust boundary this
+app already accepts by loading that URL in `nav.js`.
+
+Also removed `pricing.html`'s OLD `<!-- PWA Manifest inline -->` script
+block, which built a throwaway `Blob` URL manifest at runtime with a
+generic 🏍️-emoji-on-orange-square placeholder icon (own comment called
+this out already) and was never referenced by any other page -- replaced
+by the same real static `manifest.json` link every other page now uses,
+so `pricing.html`'s "Add to Home Screen" icon now matches the rest of the
+site instead of showing the placeholder.
+
+No `Code.gs` involved -- plain static file changes, so no Apps Script
+redeploy needed, just the normal Vercel deploy on push.

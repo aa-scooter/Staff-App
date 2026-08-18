@@ -1,0 +1,16 @@
+{
+  "name": "AA Scooter Rental — Staff Tools",
+  "short_name": "AA Scooters",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#F5EFE6",
+  "theme_color": "#0F3D3E",
+  "icons": [
+    {
+      "src": "https://scooterrentalchiangmai.com/wp-content/uploads/2025/02/cropped-cropped-logo-3333-270x270.png",
+      "sizes": "270x270",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}
