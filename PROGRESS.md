@@ -5488,3 +5488,36 @@ class is a red test from now on, not just a silent gap. Re-ran both
 harnesses against the stricter stub after the fix: 54/54 + 12/12 still
 green, confirming the fix is what actually satisfies the real API's
 requirement, not just a coincidence of the old permissive stub.
+
+**Third report, same evening (2026-08-18), still open:** after the timezone
+fix above deployed, Anton confirmed the 🏨 delivery event and 🛵 due-back
+event both now appear correctly -- but reported that renting a Pending
+contract with a delivery event leaves the OLD delivery event on the
+calendar instead of removing it (two events now visible: the stale
+delivery one alongside the new due-back one). `computeDeliveryEventPlan`'s
+own `!isPending -> action:'delete'` branch is supposed to handle this via
+`markMatchingContractAsRentedFromJson`'s calendar hook (added in the first
+fix above), and a new end-to-end regression test built to reproduce this
+exact sequence (create a Pending+delivery contract, then rent it via the
+same `customerIntakeFromJson` "Rent" flow, same name+bike) PASSES against
+the real code -- `action=delete` is computed correctly and the row's
+calendarEventId column does get cleared in the test. So the deletion logic
+itself is not obviously wrong; something specific to Anton's live data
+(most likely candidate: a bike-name mismatch between the Contract row's
+stored bike field and whatever the Rent form actually sent, tripping
+`bikeNamesMatchForTaxLookup`'s match check silently) is the leading
+hypothesis, unconfirmed.
+
+Added TEMP diagnostic logging (mirroring how the timezone bug itself was
+found) rather than guess further: `lib/googleCalendarSync.js`'s
+`syncDeliveryEventForContractRow` now logs the computed plan
+(`action`/`existingEventId`/`status`) every time it runs, and
+`lib/contractWrites.js`'s `markMatchingContractAsRentedFromJson` now logs
+when a Pending row can't be matched at all, when a Pending row matches by
+name but fails the bike check, and when `getCalendarClient()` itself
+returns null. Next step: Anton reproduces the delivery-then-rent sequence
+live once more and checks Vercel's logs (Observability -> Logs -> filter
+`/api/contract/write` -> Warning level) for these new lines -- whichever
+one fires (or doesn't) will point directly at the real cause. Remove this
+logging once confirmed fixed. New regression test count: 13/13 (was 12),
+plus the original 54/54, still green.
