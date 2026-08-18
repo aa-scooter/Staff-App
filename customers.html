@@ -274,11 +274,67 @@
     display:none;
   }
   .load-status.show{ display:block; }
+
+  /* ---- Optimistic save/queue UX (17/08/2026) -- ported verbatim from
+  add-bikes.html's/deposits.html's own "opt-" prefixed pass (see either
+  file's own comment for the full visual-language reasoning, itself ported
+  from contract.html's original). customers.html has no persistent list
+  view of its own rows to badge (unlike bikes.html's/add-bikes.html's fleet
+  list), so .opt-row-pending is unused here -- kept only for the banner/
+  review-overlay pieces every other page's copy also has. Prefixed "opt-"
+  for the same reason every other page's copy is -- easy to find/remove as
+  a unit, can't collide with anything already on this page. ---- */
+  .opt-banner{
+    position:sticky; top:0; z-index:40; background:#FCEBEB; color:#C53030;
+    border-bottom:1px solid #F3C6C6; font-family:'Barlow Condensed',sans-serif; font-weight:700;
+    font-size:14px; letter-spacing:.02em; display:none; align-items:center; justify-content:center;
+    gap:8px; padding:11px 14px; cursor:pointer; text-align:center;
+  }
+  .opt-banner.show{ display:flex; }
+  .opt-banner:active{ opacity:.85; }
+
+  .opt-overlay{
+    position:fixed; inset:0; background:rgba(15,61,62,.35); display:none; align-items:flex-end;
+    justify-content:center; z-index:50;
+  }
+  .opt-overlay.show{ display:flex; }
+  @media (min-width:640px){ .opt-overlay{ align-items:center; } }
+  .opt-panel{
+    background:var(--card); width:100%; max-width:480px; border-radius:16px 16px 0 0;
+    padding:20px; max-height:80vh; overflow-y:auto;
+  }
+  @media (min-width:640px){ .opt-panel{ border-radius:14px; } }
+  .opt-panel h3{ font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:19px; color:var(--petrol); margin:0 0 4px; }
+  .opt-panel .sub{ font-size:12.5px; color:var(--muted); margin-bottom:16px; }
+  .opt-item{ border:1px solid #F3C6C6; background:#FDF2F2; border-radius:10px; padding:12px; margin-bottom:10px; }
+  .opt-item .rt{ font-weight:500; font-size:13.5px; }
+  .opt-item .rm{ font-size:12px; color:var(--muted); margin-top:2px; }
+  .opt-item .why{ font-size:12px; color:#C53030; margin-top:6px; }
+  .opt-item .actions{ display:flex; gap:8px; margin-top:10px; }
+  .opt-item .actions button{
+    flex:1; padding:9px; border:none; border-radius:8px; font-family:'Barlow Condensed',sans-serif;
+    font-weight:700; font-size:12.5px; letter-spacing:.02em; text-transform:uppercase; cursor:pointer;
+  }
+  .opt-btn-retry{ background:var(--cone); color:#fff; }
+  .opt-btn-discard{ background:#E4E0D8; color:var(--petrol); }
+  .opt-panel-close{
+    width:100%; margin-top:6px; padding:12px; border:1px solid var(--line); background:#fff;
+    border-radius:9px; font-family:'Barlow Condensed',sans-serif; font-weight:700; color:var(--petrol);
+    cursor:pointer;
+  }
 </style>
 </head>
 <body>
 
 <div id="topbar-mount"></div>
+
+<div class="opt-banner" id="optBanner"></div>
+<div class="opt-overlay" id="optOverlay"><div class="opt-panel">
+  <h3>Changes that didn't save</h3>
+  <div class="sub" id="optPanelSub">These are only on this device -- Google Drive doesn't have them yet. Retry when you're ready, or discard.</div>
+  <div id="optPanelList"></div>
+  <button type="button" class="opt-panel-close" id="optPanelCloseBtn">Close</button>
+</div></div>
 
 <div class="page-head">
   <h1>Customer Record</h1>
@@ -1816,6 +1872,322 @@ async function customerIntakeFromJson(data) {
 }
 // ================== end WRITE layer ==================
 
+// ================== save-pipeline engine (17/08/2026, overnight session)
+// ==================
+// cu-prefixed, same structural port as bikes.html's bk-/contract.html's
+// ct-/deposits.html's dp-/add-bikes.html's ab- own engines -- see any of
+// those files' own header comment for the full "why" (optimistic UI,
+// keepalive-surviving-navigation dispatch, crash/nav recovery, cross-page
+// orphan-save recovery via nav.js's PENDING_SAVE_SOURCES table).
+//
+// Routes through the EXISTING /api/accounts/write (not a new
+// /api/customers/write) -- see lib/customersWrites.js's own header comment
+// for the full reasoning (Vercel's Hobby-plan 12-function cap).
+//
+// customers.html has exactly ONE write action (customerIntake, a brand-new
+// row every time -- there's no existing customer row to badge as
+// "saving", unlike bikes.html's/add-bikes.html's own row-keyed engines),
+// so `rows` is always [] here and pendingRowSaves/opt-row-pending are kept
+// only for structural parity with every other page's copy (nav.js's
+// PENDING_SAVE_SOURCES table and the review overlay both expect the same
+// shape regardless of whether a given page actually uses row badges).
+//
+// The old client-side customerIntakeFromJson (defined just above, end of
+// the WRITE layer) is left in place as dead code -- not deleted, per
+// project convention -- the new call site below hits /api/accounts/write
+// via this engine instead, which is what actually reaches
+// lib/customersWrites.js server-side.
+function genClientTxnId() {
+  if (window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID();
+  return 'cux_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10);
+}
+
+const MAX_QUEUE = 2; // exactly 2 -- 1 running + 1 waiting, same cap every other page's engine uses
+const cuQueue = [];
+let cuSeq = 0;
+const PENDING_SAVES_KEY = 'aaCustomersPendingSaves';
+const FAILED_SAVES_KEY = 'aaCustomersFailedSaves';
+
+// Always empty in practice (see comment above), kept for structural parity.
+const pendingRowSaves = new Map();
+// item.id -> { item, message } for saves that failed for real -- surfaced
+// in the header banner + review overlay, same as every other page's copy.
+const cuFailedItems = new Map();
+
+function cuQueueFull() { return cuQueue.length >= MAX_QUEUE; }
+
+function cuEnqueue({ label, rows, requests, onStepSuccess, onAllSuccess }) {
+  const item = {
+    id: ++cuSeq,
+    clientTxnId: (requests[0] && requests[0].payload && requests[0].payload.clientTxnId) || genClientTxnId(),
+    label, rows: (rows || []).slice(), requests, reqIndex: 0, results: [],
+    onStepSuccess: onStepSuccess || null,
+    onAllSuccess: onAllSuccess || null,
+    queuedAt: Date.now(), // lets nav.js's cross-page recoverOrphanedSaves() tell a stuck item from a genuinely in-flight one
+    status: cuQueue.length === 0 ? 'running' : 'queued'
+  };
+  cuQueue.push(item);
+  item.rows.forEach(r => pendingRowSaves.set(r, item));
+  persistPendingSaves();
+  cuRefreshUi();
+  if (item.status === 'running') cuRun(item);
+  return item;
+}
+
+async function cuRun(item) {
+  item.status = 'running';
+  cuRefreshUi();
+  try {
+    while (item.reqIndex < item.requests.length) {
+      const req = item.requests[item.reqIndex];
+      const res = await cuDispatchWithRetry(req.action, req.payload);
+      item.results.push(res);
+      item.reqIndex++;
+      persistPendingSaves();
+      if (item.onStepSuccess) { try { item.onStepSuccess(item.reqIndex - 1, res); } catch (e) { console.error(e); } }
+    }
+    cuResolveItem(item, true, null);
+  } catch (err) {
+    cuResolveItem(item, false, err);
+  }
+}
+
+function cuResolveItem(item, success, err) {
+  const idx = cuQueue.indexOf(item);
+  if (idx > -1) cuQueue.splice(idx, 1);
+  item.rows.forEach(r => { if (pendingRowSaves.get(r) === item) pendingRowSaves.delete(r); });
+  persistPendingSaves();
+  if (success) {
+    if (item.onAllSuccess) { try { item.onAllSuccess(item.results); } catch (e) { console.error(e); } }
+  } else {
+    cuFailedItems.set(item.id, { item, message: err.message });
+    persistFailedSaves();
+    updateFailBanner();
+  }
+  const next = cuQueue.find(it => it.status === 'queued');
+  if (next) cuRun(next);
+  cuRefreshUi();
+}
+
+// keepalive:true -- lets the network request finish even after this page's
+// JS context is torn down by a navigation; the localStorage pending-save
+// tracking below is what notices and safely resubmits anything keepalive
+// itself couldn't hand a result back to.
+async function cuDispatch(body) {
+  const r = await fetch('/api/accounts/write', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    keepalive: true
+  });
+  if (r.status === 401) throw new Error('Signed out -- please refresh to sign in again.');
+  const res = await r.json().catch(() => ({}));
+  if (r.status === 409) {
+    const e = new Error(res.error || 'This record was changed by someone else in the meantime -- please reload and try again.');
+    e.isConflict = true;
+    throw e;
+  }
+  if (!r.ok || res.success === undefined) throw new Error(res.error || ('HTTP ' + r.status));
+  if (res.success === false) throw new Error(res.error || 'Could not save.');
+  return res;
+}
+
+async function cuDispatchWithRetry(action, payload) {
+  const body = Object.assign({ action }, payload);
+  const maxAttempts = 3;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await cuDispatch(body);
+    } catch (err) {
+      if (err.isConflict && attempt < maxAttempts) {
+        await new Promise(resolve => setTimeout(resolve, 700 * attempt));
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
+function persistPendingSaves() {
+  try {
+    const arr = cuQueue.map(it => ({
+      clientTxnId: it.clientTxnId, label: it.label, rows: it.rows,
+      requests: it.requests.slice(it.reqIndex), queuedAt: it.queuedAt || Date.now()
+    }));
+    if (arr.length) localStorage.setItem(PENDING_SAVES_KEY, JSON.stringify(arr));
+    else localStorage.removeItem(PENDING_SAVES_KEY);
+  } catch (e) { /* best-effort, same posture as every other page's engine */ }
+}
+
+function persistFailedSaves() {
+  try {
+    const arr = Array.from(cuFailedItems.entries()).map(([id, f]) => ({
+      id, label: f.item.label, rows: f.item.rows,
+      requests: f.item.requests.slice(f.item.reqIndex), message: f.message
+    }));
+    if (arr.length) localStorage.setItem(FAILED_SAVES_KEY, JSON.stringify(arr));
+    else localStorage.removeItem(FAILED_SAVES_KEY);
+  } catch (e) { /* best-effort */ }
+}
+
+// Clears BOTH the localStorage display cache (aaCustomersRowsCache) AND the
+// in-memory customersJsonCache (keyed by sheet name, declared next to
+// fetchSheetJson near the top of this script) -- contract.html hit a real
+// production bug (2026-08-17, see its own PROGRESS.md entry) where only the
+// localStorage cache was cleared on reload and the in-memory one was left
+// stale, making every write look like it silently did nothing. Both are
+// cleared here from the start so customers.html never repeats that bug.
+// Resets sheetRows/rowsPromise so the next loadRows() call re-fetches
+// instead of replaying a stale in-memory copy, and -- only if the Search
+// tab is actually the one showing right now -- immediately re-loads and
+// re-renders it (mirrors add-bikes.html's own fleetListLoaded guard,
+// adapted to this page's tab-visibility check instead).
+function cuReloadAndRerender() {
+  clearCustomersRowsCache();
+  Object.keys(customersJsonCache).forEach(k => { delete customersJsonCache[k]; });
+  sheetRows = null;
+  rowsPromise = null;
+  if (searchView && !searchView.classList.contains('hidden')) {
+    loadRows().then(() => renderResults());
+  }
+}
+
+// Called once during page init. Recovers BOTH unresolved saves (resubmits
+// immediately, safe per the clientTxnId idempotency guard on the customer-
+// row insert -- see lib/customersWrites.js's header comment) and
+// previously-failed ones (just restores the banner/review panel).
+// Byte-for-byte structural port of add-bikes.html's own
+// restoreUnresolvedSaves. Called at the very end of this script (see the
+// bottom, right before the final init calls) rather than immediately after
+// this engine block -- cuRefreshUi()/cuReloadAndRerender() below
+// transitively touch sheetRows/rowsPromise/searchView, which aren't
+// declared until much further down this file, and contract.html hit a real
+// TDZ ("Cannot access before initialization") crash earlier this project
+// from calling an equivalent function too early. Same caution here.
+function restoreUnresolvedSaves() {
+  try {
+    const raw = localStorage.getItem(PENDING_SAVES_KEY);
+    if (raw) {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr) && arr.length) {
+        console.warn('[customers] Recovering ' + arr.length + ' unfinished save(s) left over from before this page loaded (likely a navigation or closed tab mid-save) -- resubmitting in the background. Safe because customerIntake is idempotency-guarded server-side.');
+        arr.forEach(rec => {
+          if (!rec || !Array.isArray(rec.requests) || !rec.requests.length) return;
+          const item = {
+            id: ++cuSeq, clientTxnId: rec.clientTxnId, label: rec.label || 'Unfinished save',
+            rows: rec.rows || [], requests: rec.requests, reqIndex: 0, results: [],
+            onAllSuccess: cuReloadAndRerender,
+            queuedAt: rec.queuedAt || 0, // preserve original age -- see contract.html's own comment on why
+            status: cuQueue.length === 0 ? 'running' : 'queued'
+          };
+          cuQueue.push(item);
+          item.rows.forEach(r => pendingRowSaves.set(r, item));
+        });
+        persistPendingSaves();
+        const first = cuQueue.find(it => it.status === 'running');
+        if (first) cuRun(first);
+      }
+    }
+  } catch (e) { localStorage.removeItem(PENDING_SAVES_KEY); }
+
+  try {
+    const raw2 = localStorage.getItem(FAILED_SAVES_KEY);
+    if (raw2) {
+      const arr2 = JSON.parse(raw2);
+      if (Array.isArray(arr2)) {
+        arr2.forEach(rec => {
+          if (!rec) return;
+          cuFailedItems.set(rec.id, {
+            item: { id: rec.id, label: rec.label, rows: rec.rows || [], requests: rec.requests || [], reqIndex: 0, results: [] },
+            message: rec.message
+          });
+        });
+        updateFailBanner();
+      }
+    }
+  } catch (e) { localStorage.removeItem(FAILED_SAVES_KEY); }
+  cuRefreshUi();
+}
+
+// No persistent per-row list to re-render here (see the block comment
+// above) -- only re-renders the Search tab's results if it's currently the
+// one showing, same guard cuReloadAndRerender uses.
+function cuRefreshUi() {
+  if (searchView && !searchView.classList.contains('hidden') && sheetRows !== null) renderResults();
+}
+
+function updateFailBanner() {
+  const banner = document.getElementById('optBanner');
+  if (!banner) return;
+  const n = cuFailedItems.size;
+  if (!n) { banner.classList.remove('show'); return; }
+  banner.textContent = n === 1
+    ? '⚠ 1 change did not save -- tap to review'
+    : ('⚠ ' + n + ' changes did not save -- tap to review');
+  banner.classList.add('show');
+}
+
+function openSaveReview() {
+  const overlay = document.getElementById('optOverlay');
+  const list = document.getElementById('optPanelList');
+  const sub = document.getElementById('optPanelSub');
+  if (!overlay || !list) return;
+  const items = Array.from(cuFailedItems.values());
+  sub.textContent = items.length
+    ? 'These are only on this device -- Google Drive doesn\'t have them yet. Retry when you\'re ready, or discard.'
+    : 'Nothing to review right now.';
+  list.innerHTML = items.map(({ item, message }) => `
+    <div class="opt-item">
+      <div class="rt">${item.label}</div>
+      <div class="rm">${(item.rows || []).length ? 'Rows: ' + item.rows.join(', ') : ''}</div>
+      <div class="why">${message}</div>
+      <div class="actions">
+        <button type="button" class="opt-btn-retry" data-retry="${item.id}">Retry</button>
+        <button type="button" class="opt-btn-discard" data-discard="${item.id}">Discard</button>
+      </div>
+    </div>
+  `).join('');
+  overlay.classList.add('show');
+}
+function closeSaveReview() {
+  const overlay = document.getElementById('optOverlay');
+  if (overlay) overlay.classList.remove('show');
+}
+function refreshReviewPanelIfOpen() {
+  const overlay = document.getElementById('optOverlay');
+  if (overlay && overlay.classList.contains('show')) openSaveReview();
+}
+
+function cuRetryFailed(id) {
+  const entry = cuFailedItems.get(id);
+  if (!entry) return;
+  cuFailedItems.delete(id);
+  persistFailedSaves();
+  updateFailBanner();
+  cuEnqueue({
+    label: entry.item.label, rows: entry.item.rows,
+    requests: entry.item.requests, onAllSuccess: cuReloadAndRerender
+  });
+  refreshReviewPanelIfOpen();
+}
+function cuDiscardFailed(id) {
+  cuFailedItems.delete(id);
+  persistFailedSaves();
+  updateFailBanner();
+  refreshReviewPanelIfOpen();
+}
+
+document.getElementById('optBanner').addEventListener('click', openSaveReview);
+document.getElementById('optPanelCloseBtn').addEventListener('click', closeSaveReview);
+document.getElementById('optOverlay').addEventListener('click', (e) => {
+  if (e.target.id === 'optOverlay') closeSaveReview();
+  const retryBtn = e.target.closest('[data-retry]');
+  if (retryBtn) cuRetryFailed(Number(retryBtn.dataset.retry));
+  const discardBtn = e.target.closest('[data-discard]');
+  if (discardBtn) cuDiscardFailed(Number(discardBtn.dataset.discard));
+});
+// ================== end save-pipeline engine ==================
+
 let sessionCount = 0;
 
 const form = document.getElementById('intakeForm');
@@ -2040,11 +2412,21 @@ function stripDealSuffix(text) {
   return result;
 }
 
-form.addEventListener('submit', async (e) => {
+// REWORKED 2026-08-17 (overnight) onto the cu-prefixed save-pipeline
+// engine. Optimistic, same pattern as every other page's own addX handler
+// in this rollout (contract.html's addContract, deposits.html's
+// addDeposit, add-bikes.html's addBike): the form resets and staff can
+// start the next intake immediately once validation passes, rather than
+// waiting for the request to resolve. A genuine failure no longer shows
+// synchronously in statusBox (there's nothing left to await) -- it surfaces
+// via the opt-banner/review-overlay instead, same as every other engine-
+// backed page. setAllButtonsDisabled is no longer needed for the whole-page
+// lock this used to do (that existed to stop a double-click firing a
+// second overlapping write; the engine's own MAX_QUEUE cap + cuQueueFull()
+// guard below covers that instead) -- left in place as dead code, not
+// deleted, per project convention.
+form.addEventListener('submit', (e) => {
   e.preventDefault();
-  statusBox.className = 'status';
-  setAllButtonsDisabled(true);
-  submitBtn.textContent = 'Saving…';
 
   const rentingDateFrom = document.getElementById('rentingDateFrom').value;
   const returnDate = document.getElementById('returnDate').value;
@@ -2053,8 +2435,6 @@ form.addEventListener('submit', async (e) => {
   if (totalPrice === '' || totalPrice === null || isNaN(Number(totalPrice))) {
     statusBox.textContent = 'Please enter a total price before saving.';
     statusBox.className = 'status err';
-    setAllButtonsDisabled(false);
-    submitBtn.textContent = 'Add to sheet';
     document.getElementById('totalPrice').focus();
     return;
   }
@@ -2062,8 +2442,12 @@ form.addEventListener('submit', async (e) => {
   if (entrySource === 'extend' && paidFromDepositCheckbox.checked && !paidFromDepositSelect.value) {
     statusBox.textContent = 'Please select which deposit this extension was paid from, or untick the checkbox.';
     statusBox.className = 'status err';
-    setAllButtonsDisabled(false);
-    submitBtn.textContent = 'Add to sheet';
+    return;
+  }
+
+  if (cuQueueFull()) {
+    statusBox.textContent = '2 saves are already in progress — wait for one to finish before starting another.';
+    statusBox.className = 'status err';
     return;
   }
 
@@ -2078,6 +2462,7 @@ form.addEventListener('submit', async (e) => {
   const isDeal = document.getElementById('dealCheckbox').checked;
 
   const payload = {
+    action: 'customerIntake',
     name: document.getElementById('name').value.trim(),
     nationality: document.getElementById('nationality').value.trim(),
     passport: document.getElementById('passport').value.trim(),
@@ -2092,7 +2477,8 @@ form.addEventListener('submit', async (e) => {
     deposit: depositCheckbox.checked ? depositMethod.value : '',
     depositAmount: (depositCheckbox.checked && DEPOSIT_METHODS_NEEDING_AMOUNT.includes(depositMethod.value)) ? depositAmount.value : '',
     source: entrySource,
-    isDeal: isDeal
+    isDeal: isDeal,
+    clientTxnId: genClientTxnId()
   };
 
   // Add-only, extend-only: never sent for a brand-new customer, matching
@@ -2110,51 +2496,45 @@ form.addEventListener('submit', async (e) => {
     payload.previousRowNumber = extendPreviousRowNumber;
   }
 
-  startSaveProgress();
-  try {
-    const data = await customerIntakeFromJson(payload); // DISCONNECTED: writes to the static data/ JSON export instead of the live scriptUrl (see project CLAUDE.md)
-    stopSaveProgress();
-    if (data.success) {
+  const customerName = payload.name;
+  const willRunImmediately = cuQueue.length === 0;
+
+  form.reset();
+  contactOther.classList.add('hidden');
+  contactOther.required = false;
+  depositMethod.disabled = true;
+  depositMethod.required = false;
+  depositAmount.classList.add('hidden');
+  depositAmount.required = false;
+  entrySource = 'direct';
+  extendPreviousRowNumber = null;
+  setDepositSectionVisible(true);
+  setPaidFromDepositVisible(false);
+  setDefaultsToNow();
+
+  statusBox.className = 'status progress';
+  statusBox.innerHTML = willRunImmediately
+    ? '<span class="status-spinner"></span><span>Saving…</span>'
+    : '<span class="status-spinner"></span><span>Queued…</span>';
+
+  cuEnqueue({
+    label: (customerName ? customerName + ' — ' : '') + 'Customer intake',
+    rows: [],
+    requests: [{ action: 'customerIntake', payload }],
+    onAllSuccess: (results) => {
+      const data = results[0];
       if (data.warning) {
-        statusBox.textContent = 'Added — "' + payload.name + '" saved, but: ' + data.warning;
+        statusBox.textContent = 'Added — "' + customerName + '" saved, but: ' + data.warning;
         statusBox.className = 'status warn';
       } else {
-        // checksTotal/checksPassed come from the server's post-write
-        // verification: it re-reads every cell it wrote (customer row,
-        // monthly income row, cash row, bikes total, deposit cells) and
-        // confirms each landed correctly.
-        const checksNote = data.checksTotal
-          ? ' ✓ Verified: ' + data.checksPassed + '/' + data.checksTotal + ' write-back checks passed.'
-          : '';
-        statusBox.textContent = 'Added — "' + payload.name + '" saved to the sheet.' + checksNote;
+        statusBox.textContent = 'Added — "' + customerName + '" saved to the sheet.';
         statusBox.className = 'status ok';
       }
-      clearCustomersRowsCache();
       sessionCount++;
       document.getElementById('sessionCount').textContent = sessionCount;
-      form.reset();
-      contactOther.classList.add('hidden');
-      contactOther.required = false;
-      depositMethod.disabled = true;
-      depositMethod.required = false;
-      depositAmount.classList.add('hidden');
-      depositAmount.required = false;
-      entrySource = 'direct';
-      extendPreviousRowNumber = null;
-      setDepositSectionVisible(true);
-      setPaidFromDepositVisible(false);
-      setDefaultsToNow();
-    } else {
-      throw new Error(data.error || 'Unknown error');
+      cuReloadAndRerender();
     }
-  } catch (err) {
-    stopSaveProgress();
-    statusBox.textContent = 'Could not save: ' + err.message;
-    statusBox.className = 'status err';
-  } finally {
-    setAllButtonsDisabled(false);
-    submitBtn.textContent = 'Add to sheet';
-  }
+  });
 });
 
 setDefaultsToNow();
@@ -2866,6 +3246,13 @@ document.getElementById('clearSearch').addEventListener('click', () => {
   searchKeys.forEach(k => document.getElementById('s_' + k).value = '');
   renderResults();
 });
+
+// Must be the very last thing this script does -- see restoreUnresolvedSaves'
+// own definition (and contract.html's/add-bikes.html's matching comments)
+// for why: it can transitively touch state declared further down the file,
+// so calling it any earlier risks a "Cannot access 'X' before
+// initialization" TDZ crash.
+restoreUnresolvedSaves();
 </script>
 
 

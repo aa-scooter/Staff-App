@@ -29,13 +29,24 @@
 // a dedicated api/deposits/write.js. The two dispatch paths never mix --
 // accounts.html's own actions keep going through accountsWriteDispatch
 // exactly as before, untouched by this change.
+//
+// ROUTING NOTE, added during the customers.html port (2026-08-17, overnight
+// session -- see lib/customersWrites.js's own header comment): this
+// endpoint ALSO now serves customers.html's one write action
+// (customerIntake), routed to yet another separate module
+// (lib/customersWrites.js) below -- same 12-function-cap reasoning as
+// deposits.html above, no natural home of its own to spare. All three
+// dispatch paths (accounts.html's own, deposits.html's, customers.html's)
+// stay fully independent modules; only the physical routing is shared.
 const { withDrive } = require('../../lib/apiAuth');
 const { ensureAppFolder, ConflictError } = require('../../lib/googleDrive');
 const { setSessionCookie } = require('../../lib/session');
 const { createAccountsWrites, createSheetIO } = require('../../lib/accountsWrites');
 const { createDepositsWrites } = require('../../lib/depositsWrites');
+const { createCustomersWrites } = require('../../lib/customersWrites');
 
 const DEPOSITS_ACTIONS = new Set(['addDeposit', 'editDeposit', 'deleteDeposit', 'deductDeposit', 'deductCashDeposit']);
+const CUSTOMERS_ACTIONS = new Set(['customerIntake']);
 
 function readJsonBody(req) {
   if (req.body !== undefined && req.body !== null) {
@@ -78,11 +89,20 @@ module.exports = withDrive(async function handler(req, res, { drive, folderId, s
     const effectiveFolderId = folderId || await ensureAppFolder(drive);
     const sheetIO = createSheetIO(drive, effectiveFolderId, session);
     const isDepositsAction = DEPOSITS_ACTIONS.has(action);
-    const writes = isDepositsAction ? createDepositsWrites(sheetIO) : createAccountsWrites(sheetIO);
+    const isCustomersAction = !isDepositsAction && CUSTOMERS_ACTIONS.has(action);
+    const writes = isDepositsAction
+      ? createDepositsWrites(sheetIO)
+      : isCustomersAction
+        ? createCustomersWrites(sheetIO)
+        : createAccountsWrites(sheetIO);
 
     let result;
     try {
-      result = isDepositsAction ? await writes.depositsWriteDispatch(body) : await writes.accountsWriteDispatch(body);
+      result = isDepositsAction
+        ? await writes.depositsWriteDispatch(body)
+        : isCustomersAction
+          ? await writes.customersWriteDispatch(body)
+          : await writes.accountsWriteDispatch(body);
     } catch (err) {
       if (err instanceof ConflictError || err.isConflict) {
         if (session && !res.headersSent) setSessionCookie(res, session);
