@@ -5595,3 +5595,62 @@ site instead of showing the placeholder.
 
 No `Code.gs` involved -- plain static file changes, so no Apps Script
 redeploy needed, just the normal Vercel deploy on push.
+
+## ✅ DONE, awaiting Anton's push — overnight bugfix pass, all 6 real bugs
+## from the 2026-08-18 QA report (2026-08-19)
+
+Ran unattended overnight per Anton's request ("fix everything, no
+questions, I'm going to bed"). Full detail + code-level reasoning for each
+fix is in `TESTING.md`'s "Fix pass (2026-08-19, overnight, unattended)"
+section, right under the bug report it responds to -- this entry is just
+the short version. Bug #7 (possible wrong contract date) was left alone,
+per its own note in BUGFIX_HANDOFF.md -- never got a clean repro, and this
+session had no logged-in browser access to attempt one.
+
+1. **Cash-sheet-drift, `lib/accountsWrites.js`** -- fixed. Added
+   `locateCashSummaryBlock()`, which finds the "income" and "total cash"
+   summary rows independently by their own labels, and made
+   `deleteCashRowFromJson`'s row-shift refuse to cross that boundary
+   (previously it had no idea where the summary block was at all).
+   Reproduced the original bug and confirmed the fix against the real
+   `cash.json` data with a standalone Node harness.
+2. **Bike photos 404** -- no code change. `api/photos/[...path].js` and
+   `api/contracts/[...path].js` already look correct on disk. Live
+   testing against the deployed site found every 1-segment sub-route
+   (`/list`, `/folders`, `/documents`) correctly 401s (proving those
+   functions ARE deployed), but every 2+-segment sub-route (`/file/<id>`,
+   even a made-up `/list/extra`) hits a genuine Vercel-platform 404 --
+   exactly the signature of the LIVE deployment still running an older,
+   non-catch-all version of these two functions. Likely just needs
+   tonight's deploy to go out; re-test after, and if still broken, check
+   the Vercel dashboard's Functions tab directly (this session's Vercel
+   connector didn't have access to this specific project).
+3. **Stuck "Saving…" indicator** -- fixed defensively. Added a 20s
+   `AbortController` timeout to both `contract.html`'s `ctDispatch` and
+   `bikes.html`'s `bkDispatch`, so a hung fetch (the likely cause, given
+   the write always completed correctly on the server) now resolves as a
+   normal reviewable failure instead of leaving the UI stuck forever.
+   Idempotency-safe on retry either way.
+4. **Autocomplete double space** -- fixed, and root-caused to dirty
+   source data, not the fill code: `data/Parts_and_Oil_change.json`'s
+   "Bike" column genuinely has entries like `"Gt  black 1"` (double space
+   baked in). Added `.replace(/\s+/g, ' ')` after `.trim()` everywhere
+   this column becomes a names list -- contract.html, oilchange.html,
+   customers.html, and bikes.html's Swap search (all 5 read sites, not
+   just the 2 the QA pass happened to catch).
+5. **Extend "Amount paid" concatenation, `bikes.html`** -- fixed. Added
+   select-all-on-focus to the Amount-paid input so a keystroke replaces
+   the auto-filled figure instead of inserting into it.
+6. **ServiceWorker console exception, `pricing.html`** -- fixed by
+   removing the dead `blob:` service-worker registration entirely (it
+   could never have worked in any browser -- not a regression). Left a
+   comment explaining why a real `/sw.js` wasn't used instead: a working
+   cache-first SW would risk staff seeing stale cached pages after future
+   fixes ship.
+
+No `Code.gs` involved anywhere in this pass -- confirmed at the start that
+this app is entirely JSON/Drive-backed with no live Apps Script dependency
+left except the already-disconnected "Bugs & Features" legacy feature.
+**None of this pass's fixes were verified live in the browser** (no
+Anton-equivalent login available this session) -- re-test all 6 after
+deploying.

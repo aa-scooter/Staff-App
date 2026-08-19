@@ -669,9 +669,18 @@ function loadParts() {
       if (!partsResult.success) throw new Error(partsResult.error || 'Could not load data');
       partsData = partsResult;
       const bikeHeader = partsData.headers[0];
+      // FIX 2026-08-19 (autocomplete double-space bug -- TESTING.md/CLAUDE.md):
+      // .replace(/\s+/g, ' ') added after .trim() -- the real Parts & Oil
+      // Change sheet's "Bike" column has several names typed with a genuine
+      // extra internal space baked in (confirmed from
+      // data/Parts_and_Oil_change.json: "Gt  black 1", "Gt  black 2", etc.),
+      // which .trim() alone doesn't collapse -- this is what made the search
+      // box's autocomplete fill "Gt  black 1" (double space) on a suggestion
+      // click. Same collapse this file's own normalizeBikeName() already
+      // does for MATCHING purposes, now applied to the actual list too.
       searchBikeNames = partsData.rows
         .filter(r => !r.__struck) // sold bikes don't need an oil change here anymore
-        .map(r => (r[bikeHeader] || '').toString().trim())
+        .map(r => (r[bikeHeader] || '').toString().trim().replace(/\s+/g, ' '))
         .filter(Boolean)
         .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
       if (rentalResult && rentalResult.success) {

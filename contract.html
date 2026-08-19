@@ -3185,13 +3185,45 @@ function ctResolveItem(item, success, err) {
 // context is torn down by a navigation; the localStorage pending-save
 // tracking below is what notices and safely resubmits anything keepalive
 // itself couldn't hand a result back to).
+//
+// FIX 2026-08-19 (stuck "Saving..." bug -- TESTING.md/CLAUDE.md): added a
+// DISPATCH_TIMEOUT_MS watchdog via AbortController. Before this, if the
+// fetch Promise itself never settled for any reason (the QA-confirmed
+// symptom was: network tab shows the request already returned 200 with
+// the correct data written, yet nothing here ever ran to clear the
+// pending-save state -- only a full page reload, which re-runs
+// restoreUnresolvedSaves() and gets a clean resubmit, ever unstuck it),
+// ctRun's `await ctDispatchWithRetry(...)` would sit there forever: no
+// timeout anywhere in this pipeline meant a single hung dispatch left the
+// queue item (and therefore the page's "Saving..." card AND nav.js's
+// header pill, which both key off this same in-memory/localStorage state)
+// stuck indefinitely, exactly matching what was reported. A timeout can't
+// double-write anything even if the abort races a write that actually
+// finishes right after -- every action here already carries its own
+// clientTxnId idempotency guard server-side (see doRent's own comment),
+// so a resulting Retry (or an app restart's restoreUnresolvedSaves) safely
+// no-ops if the original attempt secretly succeeded.
+const DISPATCH_TIMEOUT_MS = 20000;
 async function ctDispatch(body) {
-  const r = await fetch('/api/contract/write', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    keepalive: true
-  });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), DISPATCH_TIMEOUT_MS);
+  let r;
+  try {
+    r = await fetch('/api/contract/write', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      keepalive: true,
+      signal: controller.signal
+    });
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      throw new Error('This save took longer than ' + (DISPATCH_TIMEOUT_MS / 1000) + 's and was stopped so the page would stop showing "Saving..." forever -- the write may already have gone through server-side. Reload to check before retrying, to avoid a duplicate attempt.');
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeoutId);
+  }
   if (r.status === 401) throw new Error('Signed out -- please refresh to sign in again.');
   const res = await r.json().catch(() => ({}));
   if (r.status === 409) {
@@ -5154,14 +5186,25 @@ function loadBikeNames() {
     .then(data => {
       if (!data.success) throw new Error(data.error || 'Could not load bike list');
       const bikeHeader = data.headers[0];
+      // FIX 2026-08-19 (autocomplete double-space bug -- TESTING.md/CLAUDE.md):
+      // .replace(/\s+/g, ' ') added after .trim() -- the "Bike" column on the
+      // real Parts & Oil Change sheet has several names typed with a genuine
+      // extra internal space baked in (confirmed straight from
+      // data/Parts_and_Oil_change.json: "Gt  black 1", "Gt  black 2", "Gt
+      // mint  ", etc.) -- .trim() alone only strips the ends, so that
+      // internal double space survived straight into this array and then
+      // into whatever an autocomplete click filled the field with. Same
+      // whitespace-collapse this file's own normalizeBikeName() already
+      // does for MATCHING purposes -- applying it here too means the actual
+      // stored/displayed name is clean, not just the fuzzy-match comparison.
       bikeNames = data.rows
-        .map(r => (r[bikeHeader] || '').toString().trim())
+        .map(r => (r[bikeHeader] || '').toString().trim().replace(/\s+/g, ' '))
         .filter(Boolean)
         .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
       soldBikeNameSet = new Set(
         data.rows
           .filter(r => r.__struck)
-          .map(r => (r[bikeHeader] || '').toString().trim())
+          .map(r => (r[bikeHeader] || '').toString().trim().replace(/\s+/g, ' '))
           .filter(Boolean)
       );
       setBikeModelLoadStatus(null);

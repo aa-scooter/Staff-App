@@ -3223,13 +3223,45 @@ function bkResolveItem(item, success, err) {
 // localStorage pending-save tracking + restoreUnresolvedSaves() below
 // exist -- to notice and safely resubmit anything keepalive itself
 // couldn't hand a result back to).
+//
+// FIX 2026-08-19 (stuck "Saving.../SAVING..." bug -- TESTING.md/CLAUDE.md):
+// added a DISPATCH_TIMEOUT_MS watchdog via AbortController. Before this,
+// Extend and Swap Bike (both go through this same bkDispatch) could show
+// their row's "Saving..." badge forever with no way to clear it short of a
+// full page reload -- confirmed via QA the write itself had already
+// succeeded server-side (fresh reload showed the correct data) within
+// seconds, so nothing was actually taking 9-15+ real seconds; the
+// `await bkDispatchWithRetry(...)` in bkRun below had simply never settled
+// at all, and with zero timeout anywhere in this pipeline nothing could
+// ever notice and resolve the queue item (which both the row's own badge
+// and nav.js's shared header pill key off of). A timeout can't cause a
+// double-write even if it races a request that actually finishes right
+// after being aborted -- every action here already carries its own
+// clientTxnId idempotency guard server-side (see submitSwap/confirmExtend's
+// own comments), so a resulting Retry (or an app restart's
+// restoreUnresolvedSaves) safely no-ops if the original attempt secretly
+// succeeded.
+const DISPATCH_TIMEOUT_MS = 20000;
 async function bkDispatch(body) {
-  const r = await fetch('/api/bikes/write', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    keepalive: true
-  });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), DISPATCH_TIMEOUT_MS);
+  let r;
+  try {
+    r = await fetch('/api/bikes/write', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      keepalive: true,
+      signal: controller.signal
+    });
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      throw new Error('This save took longer than ' + (DISPATCH_TIMEOUT_MS / 1000) + 's and was stopped so the page would stop showing "Saving..." forever -- the write may already have gone through server-side. Reload to check before retrying, to avoid a duplicate attempt.');
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeoutId);
+  }
   if (r.status === 401) throw new Error('Signed out -- please refresh to sign in again.');
   const res = await r.json().catch(() => ({}));
   if (r.status === 409) {
@@ -3558,9 +3590,20 @@ function loadData() {
     .then(([partsResult, customerResult]) => {
       if (!partsResult.success) throw new Error(partsResult.error || 'Could not load bikes');
       const bikeHeader = partsResult.headers[0];
+      // FIX 2026-08-19 (autocomplete double-space bug -- TESTING.md/CLAUDE.md,
+      // same root cause found via contract.html/oilchange.html): .replace(
+      // /\s+/g, ' ') added after .trim() -- the real Parts & Oil Change
+      // sheet's "Bike" column has several names typed with a genuine extra
+      // internal space baked in (confirmed from
+      // data/Parts_and_Oil_change.json: "Gt  black 1", "Gt  black 2", etc.),
+      // which .trim() alone doesn't collapse. QA's Swap Bike test happened
+      // to search "Aerox" (not one of the affected names), but this list
+      // pulls from the exact same dirty column every other page does, so
+      // Swap Bike's New Bike search was equally exposed -- fixed here too
+      // for consistency rather than leaving a known-latent copy of the bug.
       bikeNames = partsResult.rows
         .filter(r => !r.__struck) // struck-through in Parts & Oil = sold, don't show it
-        .map(r => (r[bikeHeader] || '').toString().trim())
+        .map(r => (r[bikeHeader] || '').toString().trim().replace(/\s+/g, ' '))
         .filter(Boolean)
         .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
       categoryRows = partsResult.categoryRows || [];
@@ -4967,6 +5010,27 @@ document.getElementById('listBox').addEventListener('input', (e) => {
   const deductionEl = e.target.closest('[id^="returnDeductionsInput-"]');
   if (deductionEl) {
     refreshReturnDeductionCashExclusivity(parseInt(deductionEl.id.replace('returnDeductionsInput-', ''), 10));
+  }
+});
+
+// FIX 2026-08-19 (Extend "Amount paid" concatenation bug -- TESTING.md/
+// CLAUDE.md): typing "300" over an auto-filled "600" produced the literal
+// string "300600" -- not because anything here appends to .value (nothing
+// does; maybeAutofillExtendAmount only ever does a plain `amountInput.value
+// = price` assignment), but because a real keystroke into a field that
+// already has focus-less auto-filled text INSERTS at the cursor position
+// rather than replacing it, same as clicking into the middle of any
+// pre-filled input and typing. Select-all-on-focus is the standard fix for
+// this exact class of "auto-suggested value that should be fully
+// overwritable by typing" field -- it means the FIRST keystroke after
+// focusing this field replaces the whole auto-filled value instead of
+// inserting into it, matching what staff actually expect. 'focusin' (not
+// 'focus') is required for delegation here -- plain 'focus' doesn't bubble,
+// so a listener on the shared #listBox container would never see it.
+document.getElementById('listBox').addEventListener('focusin', (e) => {
+  const amountFocusEl = e.target.closest('[id^="extendAmountInput-"]');
+  if (amountFocusEl && amountFocusEl.value) {
+    amountFocusEl.select();
   }
 });
 

@@ -918,19 +918,25 @@ document.getElementById('fromDate').addEventListener('change', () => {
 });
 document.getElementById('toDate').addEventListener('change', updateBtn);
 
-// Register service worker for offline use
-if ('serviceWorker' in navigator) {
-  const sw = `
-    self.addEventListener('install', e => {
-      e.waitUntil(caches.open('aa-scooter-v1').then(c => c.add('/')));
-    });
-    self.addEventListener('fetch', e => {
-      e.respondWith(caches.match(e.request).then(r => r || fetch(e.request)));
-    });
-  `;
-  const blob = new Blob([sw], { type: 'application/javascript' });
-  navigator.serviceWorker.register(URL.createObjectURL(blob));
-}
+// REMOVED 2026-08-19 (ServiceWorker console exception bug -- TESTING.md/
+// CLAUDE.md): this used to try registering a service worker from an
+// inline blob: URL for offline caching. That was never actually possible
+// -- registering a service worker from a blob: URL is disallowed by every
+// browser's Service Worker spec (script sources must be same-origin
+// http(s)), so navigator.serviceWorker.register() here always rejected,
+// surfacing as the reported "Failed to register a ServiceWorker: The URL
+// protocol of the script ('blob:...') is not supported" console error on
+// every page load -- there was no working offline-caching behavior this
+// removal takes away. Deliberately removed rather than "fixed" by pointing
+// it at a real same-origin /sw.js file: a real, WORKING cache-first
+// service worker would introduce a genuinely new risk this app doesn't
+// need right now -- staff could keep seeing a stale cached copy of a page
+// after a fix ships, until the SW's own cache expires/updates, which is
+// exactly the kind of "why isn't my fix showing up" confusion this whole
+// session has otherwise been about tracking down. If real offline support
+// is ever wanted, it should be a deliberate, tested addition (with a real
+// versioned /sw.js and an explicit cache-invalidation/update strategy),
+// not a silently-broken leftover.
 </script>
 
 <script>

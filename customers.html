@@ -2779,9 +2779,19 @@ function loadBikeNames() {
     .then(data => {
       if (!data.success) throw new Error(data.error || 'Could not load bike list');
       const bikeHeader = data.headers[0];
+      // FIX 2026-08-19 (autocomplete double-space bug -- TESTING.md/CLAUDE.md,
+      // same root cause found via contract.html/oilchange.html): .replace(
+      // /\s+/g, ' ') added after .trim() -- the real Parts & Oil Change
+      // sheet's "Bike" column has several names typed with a genuine extra
+      // internal space baked in (confirmed from
+      // data/Parts_and_Oil_change.json: "Gt  black 1", "Gt  black 2", etc.),
+      // which .trim() alone doesn't collapse. This page's own QA pass didn't
+      // happen to test one of the affected names, but this pulls from the
+      // exact same dirty column, so it was equally exposed -- fixed here too
+      // for consistency rather than leaving a known-latent copy of the bug.
       bikeNames = data.rows
         .filter(r => !r.__struck) // sold bikes (bikes_notes sidecar) -- don't offer them for a new intake
-        .map(r => (r[bikeHeader] || '').toString().trim())
+        .map(r => (r[bikeHeader] || '').toString().trim().replace(/\s+/g, ' '))
         .filter(Boolean)
         .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
       bikeTaxRows = data.categoryRows || [];
