@@ -174,12 +174,25 @@ async function handleFile(req, res, { drive }, fileId) {
 
 module.exports = withDrive(async function handler(req, res, ctx) {
   const url = new URL(req.url, 'https://' + (req.headers.host || 'localhost'));
-  // req.query.path is the catch-all segment array Vercel's Node runtime
-  // gives us (e.g. ['list'], ['file', 'abc123']); fall back to parsing the
-  // URL path directly for a plain Node test harness, same
-  // belt-and-suspenders pattern api/contracts/[...path].js already uses.
-  const pathParts = (req.query && req.query.path) ||
-    url.pathname.replace(/^\/api\/photos\//, '').split('/').filter(Boolean);
+  // req.query.path is normally the catch-all segment array Vercel's Node
+  // runtime gives us (e.g. ['list'], ['file', 'abc123']). 2026-08-19: added
+  // an explicit vercel.json rewrite (/api/photos/:path* -> /api/photos/
+  // [...path]) to fix multi-segment URLs (e.g. file/<id>) 404ing at the
+  // platform routing layer before ever reaching this function -- automatic
+  // bracket-catch-all matching was only resolving exactly one path segment.
+  // That rewrite's ":path*" wildcard may hand this function a joined STRING
+  // ("file/abc123") instead of an array, so normalize either shape here.
+  // Falls back to parsing the URL path directly for a plain Node test
+  // harness, same belt-and-suspenders pattern api/contracts/[...path].js
+  // already uses.
+  let pathParts = req.query && req.query.path;
+  if (Array.isArray(pathParts)) {
+    // already an array of segments -- normal automatic catch-all shape
+  } else if (typeof pathParts === 'string' && pathParts) {
+    pathParts = pathParts.split('/').filter(Boolean);
+  } else {
+    pathParts = url.pathname.replace(/^\/api\/photos\//, '').split('/').filter(Boolean);
+  }
   const route = pathParts[0] || '';
 
   try {

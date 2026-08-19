@@ -5654,3 +5654,41 @@ left except the already-disconnected "Bugs & Features" legacy feature.
 **None of this pass's fixes were verified live in the browser** (no
 Anton-equivalent login available this session) -- re-test all 6 after
 deploying.
+
+## ⚠️ Bug #2 (bike photos 404) was STILL BROKEN after deploy 808533e --
+## now root-caused and actually fixed, awaiting Anton's push (2026-08-19,
+## morning)
+
+Anton confirmed 808533e (last night's fix pass) deployed live and asked
+for all 6 fixes to be live-verified. Full detail in TESTING.md's
+"Live-verification pass (2026-08-19, morning)" section; short version:
+
+- **Confirmed live and working:** cash-sheet-drift (#1, spot-checked),
+  autocomplete double space (#4, byte-level DOM check, zero double
+  spaces found), Extend amount concatenation (#5, watched the field
+  auto-fill, pre-select, and cleanly get overwritten), ServiceWorker
+  console exception (#6, zero related console messages on page load).
+- **Not force-reproducible either way:** stuck "Saving…" indicator (#3)
+  -- still just the defensive 20s timeout fix from last night, unchanged.
+- **Was still broken, now actually fixed:** bike photos / contract file
+  404 (#2). Last night's "just needs deployment" diagnosis was wrong --
+  confirmed live against the deployed, logged-in site that
+  `/api/photos/file/<id>` and `/api/contracts/file/<id>` still hit a
+  genuine Vercel-platform 404, for ANY id (even a fake single-char one),
+  while the exact same 1-segment sub-routes on both catch-alls work fine.
+  Proved via the `x-vercel-id` response header that the 2+-segment
+  requests never reach the function at all (no `iad1` region segment in
+  the id) -- this is Vercel's own router failing to recognize the
+  `[...path].js` catch-all convention as matching more than one path
+  segment, not an app bug. **Fix:** added explicit `rewrites` to
+  `vercel.json` pointing `/api/photos/:path*` and `/api/contracts/:path*`
+  at their respective `[...path]` functions (Vercel's own documented
+  workaround for exactly this), plus defensive parsing in both handlers
+  so `req.query.path` is normalized whether Vercel hands it through as an
+  array or a joined string. This is now the one part of the whole punch
+  list still needing a push + re-deploy + re-test.
+
+**Files touched this pass:** `vercel.json`, `api/photos/[...path].js`,
+`api/contracts/[...path].js`. Every file re-read back from the real
+device and grepped for the `2026-08-19` marker comment after writing,
+per CLAUDE.md's standing instruction.

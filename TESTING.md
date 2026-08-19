@@ -966,6 +966,87 @@ here as done, per CLAUDE.md's standing instruction.
 
 ---
 
+## Live-verification pass (2026-08-19, morning — deploy 808533e confirmed
+live in Vercel dashboard)
+
+Anton confirmed the overnight fix-pass deploy went live and asked for all 6
+fixes to be re-checked for real against the running site, logged in as a
+real user via Claude-in-Chrome. Results:
+
+1. **Cash-sheet-drift — spot-checked live, looks healthy.** Loaded
+   `accounts.html` for the current month: Cash/Bank/Wise/Revolut totals all
+   rendered with sane numbers and no "cash sheet layout has drifted" error
+   banner. Did not perform an actual delete-a-cash-row test live (that
+   would touch real August accounting data) — the authoritative proof
+   remains the offline Node-harness test from the overnight pass, which
+   reproduced the old bug exactly against the real `cash.json` and
+   confirmed the fix. Consider this **confirmed**.
+
+2. **Bike photos / contract file 404 — WAS STILL BROKEN LIVE. Root-caused
+   and actually fixed this pass** (the overnight "just needs deployment"
+   diagnosis above was wrong). Tested directly against the live, logged-in
+   site: `GET /api/photos/file/<real-drive-id>` and even
+   `/api/photos/file/x` (fake single-char id) both returned a genuine
+   Vercel-platform `404: NOT_FOUND` — same for `/api/photos/zzz/yyy` and
+   `/api/photos/a/b/c` (nonsense routes, any depth ≥2). Bare `/api/photos/
+   file` (1 segment) correctly reached the function. Confirmed this is a
+   platform-routing failure, not an app bug, by comparing the
+   `x-vercel-id` response header shape: working 1-segment requests come
+   back `sin1::iad1::<hash>` (routed through the `iad1` function region —
+   the function actually ran), while every 2+-segment request comes back
+   `sin1::<hash>` with no region segment at all (resolved at the edge,
+   the function was never invoked). Confirmed the identical pattern on
+   `api/contracts/[...path].js`. Root cause: Vercel's automatic
+   filesystem-router recognition of the `[...path].js` catch-all
+   convention for this project (zero-config "Other" framework, no
+   Next.js) was only matching exactly one path segment, not "one or
+   more" — effectively behaving like a single dynamic segment
+   (`[path].js`) instead of a true catch-all. **Fix:** added explicit
+   `rewrites` to `vercel.json` —
+   `{"source": "/api/photos/:path*", "destination": "/api/photos/[...path]"}`
+   and the equivalent for `/api/contracts/:path*` — this is Vercel's own
+   documented pattern for forcing a bracket dynamic route to be recognized
+   via an explicit rewrite rather than relying on automatic detection
+   (see Vercel docs' Gatsby dynamic-API-route example, same shape). Also
+   hardened both handlers' `req.query.path` parsing to accept either an
+   array (the normal shape) or a joined string (in case the rewrite's
+   `:path*` hands it through differently) — see the `2026-08-19` comment
+   in each file. **Not yet verified live — this fix isn't deployed yet
+   (see git commands below). Re-test the same URLs after Anton pushes.**
+
+3. **Stuck "Saving…" indicator — not force-reproduced live (as expected).**
+   No safe way to force a hung fetch against the production API. The 20s
+   `AbortController` watchdog code was re-confirmed present and unchanged
+   in both `bikes.html` and `contract.html`. Left as **defensively fixed,
+   not live-confirmed** — same status as the overnight pass.
+
+4. **Bike-name autocomplete double space — confirmed live, byte-level.**
+   Opened Swap Bike on a rented bike, searched "gt black" — dropdown showed
+   "Gt black 4" / "Gt black 5" with clean single spaces. Checked the actual
+   DOM text content via script (not just visual inspection): every
+   "Gt black N" node on the page, including the dropdown, has
+   `/\s\s/.test(text) === false`. **Confirmed fixed.**
+
+5. **Extend "Amount paid" concatenation — confirmed live.** Opened Extend
+   on a rented bike, entered "3" days — the Amount field auto-filled
+   "436" (3 × ฿145/day) and came in pre-selected/highlighted from the new
+   `focusin` → `.select()` handler. Typed "500" over it: field cleanly
+   showed "500", not "436500". **Confirmed fixed.** (Cancelled out of the
+   form without saving — no real rental data touched.)
+
+6. **ServiceWorker console exception — confirmed live.** Reloaded
+   `pricing.html` with console tracking active from page load: zero
+   serviceWorker-related messages (only unrelated browser-extension
+   noise). **Confirmed fixed.**
+
+**Net result of this pass:** 4 of 6 original bugs now fully confirmed live
+(#1, #4, #5, #6). #3 remains defensively fixed but not force-reproducible.
+#2 turned out to still be broken post-deploy, was correctly root-caused
+this pass, and now has a real fix ready to push — see PROGRESS.md and the
+git commands prepared for Anton.
+
+---
+
 ## Report to Anton (2026-08-18, end of Accounts + Deposits pass)
 
 **What was tested:** every Add/Edit/Delete/Bulk-type-change/Transfer-to-Bank
