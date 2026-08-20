@@ -1,10 +1,138 @@
 # AA Scooters — JSON-parity rewrite progress tracker
 
-Last updated: 2026-08-17. Keep this file current — whenever a page's write
+Last updated: 2026-08-20. Keep this file current — whenever a page's write
 layer gets ported/tested/pushed, update its row below in the same commit.
 This exists because work on this project gets picked up across multiple
 Claude sessions/accounts with no shared memory between them — this file is
 the handoff.
+
+## ✅ bikes.html: page now auto-refreshes after Extend/Return/Swap/Adjust
+## Pickup instead of needing a manual reload — DEPLOYED 2026-08-20
+
+Anton reported: extended a bike, the save went through fine, but the page
+kept showing the old (pre-extend) data until he manually refreshed the
+browser.
+
+**Root cause:** `bikesJsonCache` (declared near `fetchSheetJson`) caches
+each sheet's fetch as a resolved PROMISE for the lifetime of one page
+load — `fetchSheetJson('customer')` etc. only ever hits the network once,
+then hands back the same cached result forever after. Every write action
+here (Return/Extend/Swap/Adjust Pickup/discard-failed-retry) already
+called `clearBikesCache(); loadData();` on success, but `clearBikesCache()`
+only ever cleared the localStorage stale-while-revalidate snapshot
+(`BIKES_CACHE_KEY`) — it never touched `bikesJsonCache`. So the follow-up
+`loadData()` → `getCustomerRowsFromJson()`/`getPartsDataFromJson()` →
+`fetchSheetJson(...)` kept finding e.g. `bikesJsonCache['customer']`
+already populated from the very first page load and returned that stale
+cached promise instead of re-fetching — exactly why nothing changed on
+screen until a full manual reload (which resets `bikesJsonCache` to `{}`
+along with everything else). Same class of bug `writeSheetJson()` already
+guards against for its own direct callers (one
+`delete bikesJsonCache[cacheKey]` per sheet just written, found earlier
+during `markReturned`'s own write-then-readback testing) — just never
+extended to the `bkEnqueue`/server-API write path, which is what
+Return/Extend/Swap/Adjust Pickup actually use.
+
+**Fix — `bikes.html`, `clearBikesCache()` (near `BIKES_CACHE_KEY`):** now
+also wipes every entry out of `bikesJsonCache`, not just the localStorage
+snapshot. Fixes all 6 existing `clearBikesCache(); loadData();` call sites
+at once (Return, Adjust Pickup, long Extend, short Extend, Swap,
+discard-failed-retry) with one centralized change rather than touching
+each call site.
+
+**Verification:** `node --check` on the file's 3 extracted `<script>`
+blocks (all pass), re-confirmed against the freshly re-staged on-device
+copy. **Anton should do one live test:** extend a bike and confirm the new
+due date/amount shows up on the page immediately, with no manual refresh
+needed.
+
+## ✅ contract.html: receipt + checklist auto-generation, "View Receipt"/
+## "View Checklist" now find existing documents after reload — DEPLOYED
+## 2026-08-20
+
+Anton reported two bugs: (1) creating a contract no longer auto-generates a
+receipt or checklist the way the old system did; (2) "View Receipt" never
+finds a previously-generated receipt after logging out/reloading — it
+always offers to generate a new one.
+
+**Root cause (both bugs, same event):** Anton decommissioned the legacy
+Google Sheets spreadsheet that Code.gs (the old Apps Script backend) was
+bound to. `contract.html` still had 3 live `fetch(scriptUrl, ...)` calls
+left over from that system (`generateReceipt`, `findChecklistDocument`,
+`generateChecklist`) — with the spreadsheet gone, all 3 now fail silently.
+On top of that, bug #2 was ALSO present in the old system itself: Code.gs
+named receipt PDFs `"Receipt - <name> - <today's date at generation
+time>"`, which can never be reconstructed later, so a `findReceiptDocument`
+action never existed even under Code.gs — "View Receipt" only ever worked
+within the same browser session that generated it.
+
+**Fix — `lib/contractDocGen.js` (extended, +389 lines):** ported Code.gs's
+`generateReceiptDocument`/`generateChecklistDocument` (and their template
+lookup/fallback-template-build/receipt-numbering logic) into
+`generateReceiptDocumentFromJson`/`generateChecklistDocumentFromJson`,
+following the same Drive/Docs API pattern already proven for the contract
+PDF itself (copy template -> `batchUpdate` `replaceAllText` -> export PDF ->
+trash the intermediate Doc copy). Receipt numbers now come from a new JSON
+sidecar counter (`receipt_counter.json`, same optimistic-concurrency
+retry-on-`ConflictError` pattern as `logTransactionB`), starting at 100000
+since Code.gs's own counter (Script Properties) was lost with the
+decommissioned spreadsheet — **correctable by hand if Anton has the real
+last-issued number**.
+
+**Deliberate deviation from Code.gs:** receipt PDF file names are now keyed
+off `rentingDateFrom` (same immutable field the contract/checklist file
+names already use) instead of "today's date at generation time" — this is
+what makes "View Receipt" able to find a receipt again after a reload. The
+`<<RECEIPT_DATE>>` token inside the document itself still shows the actual
+generation/edit date.
+
+**Template gap found:** neither
+`'AA Scooter Rental Payment Receipt - MASTER TEMPLATE (do not edit
+fields)'` nor `'AA Scooter Rental Checklist - MASTER TEMPLATE (do not edit
+fields)'` actually exists in the "AA Scooters Contracts" Drive folder today
+— Code.gs's own lookup always fell through to its bare-bones fallback
+template too. Nicer, manually-designed versions of both exist elsewhere in
+Anton's Drive but were never wired up at the expected name/location. Ported
+Code.gs's own plain-text fallback-template-build behavior faithfully rather
+than risk editing Anton's uploaded designs without asking. **Anton: if you
+want your own designs used instead, either rename/move them to the exact
+names above inside the "AA Scooters Contracts" folder (zero code changes
+needed), or ask for the tokens to be added to a copy.**
+
+**Routing — `api/contracts/[...path].js` (+42 lines):** two new routes,
+`POST /api/contracts/generateReceipt` / `POST /api/contracts/generateChecklist`,
+same catch-all-function pattern as every other route here (Hobby-plan
+12-function cap).
+
+**Frontend — `contract.html`:**
+- Add-contract's `onAllSuccess` now calls both new generate routes as
+  best-effort follow-ups (same placement/pattern as the existing
+  passport-photo-upload follow-up) — never blocks the "Added" success
+  message, only folds success/failure into it.
+- New shared helper `findExistingContractFile(expectedName)` — same
+  "search Drive via `GET /api/contracts/documents`, match by exact expected
+  filename" pattern `viewContract()` already used, now reused by View
+  Receipt, Edit Receipt, and View Checklist.
+- `editViewReceiptBtn`/`editReceiptBtn`/`viewChecklist()` all now search
+  first via `findExistingContractFile` before offering to generate.
+- `receiptConfirmBtn` and `viewChecklist()`'s generate step re-pointed from
+  the dead `scriptUrl` calls to the two new API routes.
+
+**Verification:** `node --check` on all 3 files plus each of
+`contract.html`'s 3 extracted `<script>` blocks (all pass). Payload shapes
+double-checked by hand against the new functions' expected `data` fields —
+no live-Drive test harness was built (would have meant hand-mocking most of
+`lib/googleDrive.js`'s Drive/Docs API surface without much more confidence
+than careful reading gives); **Anton should do one live test** — add a
+throwaway test contract, confirm both a receipt and checklist appear, then
+log out/in and confirm "View Receipt" finds the same receipt instead of
+offering to generate a new one.
+
+**Left alone (out of scope, flagged for awareness):** `editSendDocsBtn`'s
+"Send Contract + Receipt" (Web Share) button still POSTs
+`action:'getFilesForShare'` to the same dead `scriptUrl` — very likely
+broken by the same spreadsheet decommissioning, not reported broken by
+Anton yet, not touched here.
 
 ## ✅ customers.html: full port (backend + frontend) — LAST PAGE IN THE
 ## ROLLOUT — CODED, UNIT-TESTED (27/27 backend + 22/22 engine), NOT YET
