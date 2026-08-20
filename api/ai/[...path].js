@@ -209,7 +209,17 @@ async function handlePassport(req, res, { drive, folderId }) {
   const provider = await getAiProvider(drive, effectiveFolderId);
   const storedKey = await getStoredApiKey(drive, effectiveFolderId, providerToKeyName(provider));
 
-  const prompt = 'You are reading a photo of the personal-details page of a passport, for a motorbike rental shop\'s customer intake form. Respond with ONLY a JSON object (no markdown code fences, no extra text) in exactly this shape: {"name": "", "nationality": "", "passport": ""} -- full name exactly as printed, nationality (or the issuing country if nationality isn\'t explicitly printed), and the passport number. If a field is not legible, use an empty string for it. Never guess or invent a value.';
+  // "name" MUST come back as English/Latin script ONLY -- added 20/08/2026
+  // per Anton, live bug: a dual-language passport (e.g. Russian, which
+  // prints the holder's name in BOTH Cyrillic AND a Latin transliteration
+  // on the same details page) was coming back with both versions in the
+  // name field, which then landed in the Contract-sheet "Name" cell as
+  // unusable double-script text. Every passport's Machine Readable Zone
+  // (the two OCR-style lines at the bottom of the page) is Latin-script by
+  // international standard regardless of the passport's language, so it's
+  // always available as the correct source for this even when the visual
+  // name field is printed in a non-Latin script.
+  const prompt = 'You are reading a photo of the personal-details page of a passport, for a motorbike rental shop\'s customer intake form. Respond with ONLY a JSON object (no markdown code fences, no extra text) in exactly this shape: {"name": "", "nationality": "", "passport": ""} -- nationality (or the issuing country if nationality isn\'t explicitly printed), and the passport number. For "name": the full name in ENGLISH/LATIN SCRIPT ONLY, exactly as printed -- if the passport prints the name in a non-Latin script (Cyrillic, Chinese, Arabic, Thai, etc.), use ONLY the Latin-script transliteration instead (the Machine Readable Zone at the bottom of the page is always Latin-script and is the most reliable source for this). Never include both scripts, never return the non-Latin version, and never guess or invent a value -- if no Latin-script name is legible anywhere on the page, use an empty string. If a field is not legible, use an empty string for it.';
 
   const text = await callAiProvider(provider, { userText: prompt, imageBase64, imageMimeType, maxTokens: 400, storedKey });
   const parsed = parseJsonFromModelText(text) || {};
