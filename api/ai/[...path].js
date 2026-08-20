@@ -198,6 +198,48 @@ function parseJsonFromModelText(text) {
 // Mirrors contract.html's original 'readPassportWithAI' action exactly:
 // same three response fields (name, nationality, passport), same
 // "empty string for anything illegible, never guess" contract. ----
+// ---- Title-cases one name part, preserving internal spaces/hyphens as
+// their own word boundaries (e.g. "VAN DER BERG" -> "Van Der Berg",
+// "JEAN-PAUL" -> "Jean-Paul") -- added 20/08/2026 alongside formatPassportName
+// below, see that function's own comment for why this exists at all. ----
+function titleCaseNamePart(s) {
+  return (s || '').toString().trim().toLowerCase()
+    .split(/(\s+|-)/)
+    .map((chunk) => (/^[\s-]*$/.test(chunk) ? chunk : (chunk.charAt(0).toUpperCase() + chunk.slice(1))))
+    .join('');
+}
+
+// M -> "Mr", F -> "Ms" -- "Ms" rather than "Mrs"/"Miss" deliberately, since
+// a passport has no marital-status field to derive that distinction from;
+// staff can hand-edit the field afterwards same as they already do for
+// every other AI-filled field here (see this route's own "double check
+// before saving" UI copy). Anything else (not printed/legible, or a
+// passport using a third-gender marker) comes back '' -- no honorific
+// rather than a guessed-wrong one.
+function honorificForSex(sex) {
+  const s = (sex || '').toString().trim().toUpperCase();
+  if (s === 'M') return 'Mr';
+  if (s === 'F') return 'Ms';
+  return '';
+}
+
+// ---- Builds the app's own "Name" field convention -- "Mr Firstname
+// Surname" / "Ms Firstname Surname" (no period after the honorific, given
+// name before surname, each word capitalized) -- added 20/08/2026 per
+// Anton, live bug: the raw AI/MRZ extraction below is SURNAME-first and
+// ALL-CAPS by international MRZ standard (e.g. "VOLKOV ANDREY" for a
+// customer named Andrey Volkov), which is the correct source data but not
+// this app's display convention. Reformatted here in code rather than
+// asking the model to do it, since a model can't be relied on to apply a
+// fixed capitalization/ordering rule with 100% consistency the way a plain
+// string transform can. ----
+function formatPassportName(givenNamesRaw, surnameRaw, sex) {
+  const given = titleCaseNamePart(givenNamesRaw);
+  const surname = titleCaseNamePart(surnameRaw);
+  const honorific = honorificForSex(sex);
+  return [honorific, given, surname].filter(Boolean).join(' ').trim();
+}
+
 async function handlePassport(req, res, { drive, folderId }) {
   if (req.method !== 'POST') { sendJson(res, 405, { success: false, error: 'Method not allowed.' }); return; }
   const body = await readJsonBody(req);
@@ -209,24 +251,32 @@ async function handlePassport(req, res, { drive, folderId }) {
   const provider = await getAiProvider(drive, effectiveFolderId);
   const storedKey = await getStoredApiKey(drive, effectiveFolderId, providerToKeyName(provider));
 
-  // "name" MUST come back as English/Latin script ONLY -- added 20/08/2026
-  // per Anton, live bug: a dual-language passport (e.g. Russian, which
-  // prints the holder's name in BOTH Cyrillic AND a Latin transliteration
-  // on the same details page) was coming back with both versions in the
-  // name field, which then landed in the Contract-sheet "Name" cell as
-  // unusable double-script text. Every passport's Machine Readable Zone
-  // (the two OCR-style lines at the bottom of the page) is Latin-script by
-  // international standard regardless of the passport's language, so it's
-  // always available as the correct source for this even when the visual
-  // name field is printed in a non-Latin script.
-  const prompt = 'You are reading a photo of the personal-details page of a passport, for a motorbike rental shop\'s customer intake form. Respond with ONLY a JSON object (no markdown code fences, no extra text) in exactly this shape: {"name": "", "nationality": "", "passport": ""} -- nationality (or the issuing country if nationality isn\'t explicitly printed), and the passport number. For "name": the full name in ENGLISH/LATIN SCRIPT ONLY, exactly as printed -- if the passport prints the name in a non-Latin script (Cyrillic, Chinese, Arabic, Thai, etc.), use ONLY the Latin-script transliteration instead (the Machine Readable Zone at the bottom of the page is always Latin-script and is the most reliable source for this). Never include both scripts, never return the non-Latin version, and never guess or invent a value -- if no Latin-script name is legible anywhere on the page, use an empty string. If a field is not legible, use an empty string for it.';
+  // "givenNames"/"surname" MUST come back as English/Latin script ONLY --
+  // added 20/08/2026 per Anton, live bug: a dual-language passport (e.g.
+  // Russian, which prints the holder's name in BOTH Cyrillic AND a Latin
+  // transliteration on the same details page) was coming back with both
+  // versions in the name field, which then landed in the Contract-sheet
+  // "Name" cell as unusable double-script text. Every passport's Machine
+  // Readable Zone (the two OCR-style lines at the bottom of the page) is
+  // Latin-script by international standard regardless of the passport's
+  // language, so it's always available as the correct source for this even
+  // when the visual name field is printed in a non-Latin script.
+  //
+  // UPDATED 20/08/2026 (same day, per Anton): split into "givenNames" +
+  // "surname" + "sex" instead of one pre-formatted "name" string -- the MRZ
+  // is surname-first and all-caps, which is fine as raw extracted data but
+  // not this app's own "Mr Firstname Surname" display convention; the actual
+  // reformatting now happens in formatPassportName() above, in plain code,
+  // rather than trusting the model to apply a fixed formatting rule
+  // consistently.
+  const prompt = 'You are reading a photo of the personal-details page of a passport, for a motorbike rental shop\'s customer intake form. Respond with ONLY a JSON object (no markdown code fences, no extra text) in exactly this shape: {"givenNames": "", "surname": "", "sex": "", "nationality": "", "passport": ""} -- nationality (or the issuing country if nationality isn\'t explicitly printed), and the passport number. For "givenNames" and "surname": in ENGLISH/LATIN SCRIPT ONLY, split apart exactly the way the passport\'s Machine Readable Zone (the two OCR-style lines at the bottom of the page) splits them, which is always Latin-script by international standard regardless of the passport\'s own language/script -- if the passport prints the name in a non-Latin script (Cyrillic, Chinese, Arabic, Thai, etc.), use ONLY that Latin-script MRZ version, never the non-Latin one, and never both. For "sex": exactly "M" or "F" as printed on the passport\'s sex/gender field, or "" if not legible or not printed. Never guess or invent any value -- if a field is not legible, use an empty string for it.';
 
   const text = await callAiProvider(provider, { userText: prompt, imageBase64, imageMimeType, maxTokens: 400, storedKey });
   const parsed = parseJsonFromModelText(text) || {};
   sendJson(res, 200, {
     success: true,
     fields: {
-      name: (parsed.name || '').toString().trim(),
+      name: formatPassportName(parsed.givenNames, parsed.surname, parsed.sex),
       nationality: (parsed.nationality || '').toString().trim(),
       passport: (parsed.passport || '').toString().trim()
     }
