@@ -3203,7 +3203,33 @@ function ctResolveItem(item, success, err) {
 // clientTxnId idempotency guard server-side (see doRent's own comment),
 // so a resulting Retry (or an app restart's restoreUnresolvedSaves) safely
 // no-ops if the original attempt secretly succeeded.
-const DISPATCH_TIMEOUT_MS = 20000;
+//
+// RAISED 20/08/2026 (false "didn't save" alarm on doRent -- Anton hit this
+// live): 20s was tuned for the lighter actions (addContract/editContract/
+// cancelContract, each ~2-4 sequential sheet read+write round trips).
+// 'customerIntake' (doRent, i.e. "Rent out") is structurally much heavier
+// -- lib/contractWrites.js's customerIntakeFromJson chains roughly 15
+// sequential Drive/Sheets round trips end to end (customer sheet,
+// customer_notes idempotency marker, optional calendar due-back sync,
+// ledger note, monthly income, cash sheet, bikes sheet, deposit/security
+// deposit logs, Contract status flip to "Rented", Contract totals
+// backfill, transaction log -- see that function's own comment for the
+// full chain), each a full read-then-rewrite of a whole sheet's JSON, not
+// a cheap targeted update. Confirmed live: a "Rent out" save that hit this
+// exact watchdog at 20s had in fact already fully succeeded server-side
+// (Contract row, income entry, no duplicates -- checked directly against
+// Drive) by the time the warning fired, so the slowness itself is not a
+// bug, just this one action's genuine cost under normal Google API
+// latency -- 20s wasn't enough headroom for it. 45s gives real room above
+// that observed near-miss while still bounded, per this comment's own
+// original reasoning above (a hung request still eventually surfaces the
+// review panel instead of hanging the UI forever). If 'customerIntake'
+// keeps tripping this even at 45s, the real fix is parallelizing those ~15
+// round trips (several are independent sheets and don't need to be
+// sequential) rather than raising the number again -- flagged for Anton,
+// not done here to avoid touching this many interdependent write paths
+// without dedicated testing.
+const DISPATCH_TIMEOUT_MS = 45000;
 async function ctDispatch(body) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), DISPATCH_TIMEOUT_MS);
