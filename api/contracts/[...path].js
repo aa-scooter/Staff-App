@@ -334,6 +334,22 @@ async function handleFile(req, res, { drive }, fileId) {
   res.statusCode = 200;
   res.setHeader('Content-Type', meta.mimeType);
   res.setHeader('Cache-Control', 'private, max-age=3600');
+  // PDFs (contracts/receipts/checklists): force a real download instead of
+  // rendering inline. Without this, mobile Chrome's built-in PDF viewer
+  // swallows the response and the file never leaves the browser tab --
+  // Anton wants these to hand off to Drive/a native PDF app instead, same
+  // as before this route existed. `attachment` is what makes a browser
+  // treat the response as a file to save/open rather than a page to
+  // display, which is what triggers Android's "Open with" chooser (or the
+  // user's default PDF app) once the download finishes. Images (passport
+  // photos) are left as `inline` -- those should still preview in-browser.
+  if (meta.mimeType === 'application/pdf') {
+    const safeName = (meta.name || 'document.pdf').replace(/[\r\n"]/g, '');
+    res.setHeader(
+      'Content-Disposition',
+      'attachment; filename="' + safeName + '"; filename*=UTF-8\'\'' + encodeURIComponent(safeName)
+    );
+  }
   res.end(buffer);
 }
 
