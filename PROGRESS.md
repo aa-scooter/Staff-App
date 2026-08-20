@@ -5822,3 +5822,68 @@ Piggybacks on the existing staff Drive session instead of a new cron/
 credential -- see lib/backups.js and PROGRESS.md for the full design."
 git push
 ```
+
+## Backup feature: fixed duplicate "AUTO" backup race condition
+
+**Status: DONE, tested, awaiting Anton's review + push.**
+
+Anton caught this live (screenshot showed two "AUTO" backups created at
+the same timestamp) and asked whether it would recur daily or was a
+one-off. It was a real, recurring race condition in `ensureDailyBackup`
+(`lib/backups.js`) -- traced and fixed the same session.
+
+**Root cause:** the hourly `checkDailyBackup()` ping from `nav.js` fires
+independently from every open tab/device. If two land in the same
+window (e.g. two staff phones both idle-open past the 20h threshold),
+both requests can reach `ensureDailyBackup` before either one's backup
+has been created, so both see "no recent backup" and both proceed.
+
+**First fix attempt (superseded):** re-used this app's existing
+`writeJsonFile(expectedModifiedTime)` -> `ConflictError` pattern to
+"claim" a new `backupLock.json` file, the same optimistic-concurrency
+check used everywhere else in the app. A concurrency test (firing two
+`ensureDailyBackup()` calls at once against a fake Drive) proved this
+insufficient: both concurrent reads capture the same pre-write
+`modifiedTime`, so both compare-checks pass and both create a backup --
+because Drive (or at least this app's helper) has no true atomic
+compare-and-swap, only "did the file change since I last read it," which
+isn't enough when both reads happen before either write.
+
+**Actual fix:** replaced the compare-and-swap with a claim/wait/verify
+tiebreaker that doesn't depend on Drive-level atomicity at all --
+`ensureDailyBackup` writes `backupLock.json` with a random nonce
+(`claimId`), waits a fixed 300ms settle delay, then re-reads the lock
+file fresh. It only proceeds to create a backup if its own `claimId` is
+still the one stored -- if a second concurrent caller wrote after it,
+whoever's write landed last on Drive's side is what both readers will
+see, so at most one of them matches its own nonce. `backupLock.json` was
+added to `BACKUP_EXCLUDE_FILENAMES` so it never gets swept into an
+actual backup.
+
+**Tested:** the same concurrency test (`Promise.all` of two
+`ensureDailyBackup()` calls in steady state) now passes -- exactly 1 of
+2 creates a backup, every time, across repeated runs. Added a second
+test for the "very first backup ever" case (fresh app folder, no
+pre-existing `backupLock.json`) -- the first fix attempt hadn't actually
+been proven safe here either, and it wasn't: same nonce tiebreaker,
+exactly 1 of 2 concurrent first-ever calls wins. Re-ran the full
+existing backup test suite afterward -- all still passing (one
+downstream test's hardcoded count had to become relative instead of
+fixed, since the new concurrency test itself now creates an extra
+backup as a side effect of proving the race is fixed).
+
+**Files touched:** `lib/backups.js` only (`ensureDailyBackup`'s internals
+plus the `BACKUP_EXCLUDE_FILENAMES` addition). Re-read back from the
+real device and grepped for `LOCK_SETTLE_MS` before being reported here
+as done, per CLAUDE.md's standing instruction.
+
+```
+cd "/Users/anton/AA-Scooters-Project Database/vercel-site"
+git status                                  # review the diff first
+git add lib/backups.js PROGRESS.md
+git commit -m "Fix race condition causing duplicate auto backups
+
+Nonce + settle-delay + re-read tiebreaker instead of a compare-and-swap
+Drive can't actually guarantee -- see lib/backups.js and PROGRESS.md."
+git push
+```
