@@ -1,19 +1,22 @@
 // Single catch-all function for every /api/contracts/* route --
-// /documents, /confirmMatch, /upload, /generate, and /file/<fileId> --
-// dispatched by path + method below, instead of one file per route (see git
-// history for the original 4-file version). Collapsed 2026-08-15: Vercel's
-// Hobby plan caps a deployment at 12 Serverless Functions total, and having
-// these as separate files pushed this project over the cap and broke the
-// deploy (errorCode "exceeded_serverless_functions_per_deployment"). A
-// catch-all dynamic segment ([...path].js) still matches every one of these
-// exact URLs with NO client-side change needed beyond the fetch() URL
-// itself -- Vercel's file-system router treats `/api/contracts/documents`,
+// /documents, /confirmMatch, /upload, /generate, /generateReceipt,
+// /generateChecklist, and /file/<fileId> -- dispatched by path + method
+// below, instead of one file per route (see git history for the original
+// 4-file version). Collapsed 2026-08-15: Vercel's Hobby plan caps a
+// deployment at 12 Serverless Functions total, and having these as
+// separate files pushed this project over the cap and broke the deploy
+// (errorCode "exceeded_serverless_functions_per_deployment"). A catch-all
+// dynamic segment ([...path].js) still matches every one of these exact
+// URLs with NO client-side change needed beyond the fetch() URL itself --
+// Vercel's file-system router treats `/api/contracts/documents`,
 // `/api/contracts/confirmMatch`, `/api/contracts/upload`,
-// `/api/contracts/generate`, and `/api/contracts/file/<id>` as all landing
-// on this one function, with the matched segments available as
-// req.query.path (an array). `generate` (added 2026-08-20) follows this
-// same pattern deliberately -- a brand-new file here would have pushed the
-// count right back over the cap.
+// `/api/contracts/generate`, `/api/contracts/generateReceipt`,
+// `/api/contracts/generateChecklist`, and `/api/contracts/file/<id>` as
+// all landing on this one function, with the matched segments available
+// as req.query.path (an array). `generate` (added 2026-08-20) and
+// `generateReceipt`/`generateChecklist` (added later the same day) all
+// follow this same pattern deliberately -- a brand-new file for any of
+// these would have pushed the count right back over the cap.
 //
 // Each route's own business logic below is otherwise UNCHANGED from its
 // original single-file version -- see each section's own comment for what
@@ -25,7 +28,9 @@ const {
   listAllFilesInFolder, getFileMetadata, getFileMediaBuffer, createImageFile
 } = require('../../lib/googleDrive');
 const { setSessionCookie } = require('../../lib/session');
-const { generateContractDocumentFromJson } = require('../../lib/contractDocGen');
+const {
+  generateContractDocumentFromJson, generateReceiptDocumentFromJson, generateChecklistDocumentFromJson
+} = require('../../lib/contractDocGen');
 
 const SIDECAR_FILENAME = 'contract_docs.json';
 
@@ -272,6 +277,41 @@ async function handleGenerate(req, res, ctx) {
   sendJson(res, 200, result, ctx.session);
 }
 
+// ---- POST /api/contracts/generateReceipt -- body is the SAME shape
+// contract.html's receiptConfirmBtn handler already sends (rowNumber,
+// number, rentingDateFrom, receiptNo, receiptDate, name, bikeModel, cc,
+// rentalPeriodFrom, rentalPeriodTo, rentalFee, deliveryFee, otherLabel,
+// otherAmount, totalPaid, paymentMethod, otherMethodText, receivedBy).
+// Added 2026-08-20, replacing the old scriptUrl call (action
+// 'generateReceipt') to the now-decommissioned Code.gs Apps Script Web
+// App -- see lib/contractDocGen.js's generateReceiptDocumentFromJson for
+// the full story. Same private-proxy pattern as 'generate' above:
+// returns just the new PDF's file id (plus the assigned receiptNo), opened
+// via GET /api/contracts/file/<id>. ----
+async function handleGenerateReceipt(req, res, ctx) {
+  if (req.method !== 'POST') { sendJson(res, 405, { success: false, error: 'Method not allowed.' }); return; }
+  const body = await readJsonBody(req);
+  if (!(body && body.name)) { sendJson(res, 400, { success: false, error: 'Missing "name".' }); return; }
+
+  const result = await generateReceiptDocumentFromJson(ctx, body);
+  sendJson(res, 200, result, ctx.session);
+}
+
+// ---- POST /api/contracts/generateChecklist -- body: { rowNumber, name,
+// number, rentingDateFrom }. Same replacement as handleGenerateReceipt
+// above, for the old scriptUrl action 'generateChecklist' /
+// 'findChecklistDocument' (the latter is now just a client-side filename
+// search against GET /api/contracts/documents, same as "View Contract"
+// already does -- no separate find route needed here). ----
+async function handleGenerateChecklist(req, res, ctx) {
+  if (req.method !== 'POST') { sendJson(res, 405, { success: false, error: 'Method not allowed.' }); return; }
+  const body = await readJsonBody(req);
+  if (!(body && body.name)) { sendJson(res, 400, { success: false, error: 'Missing "name".' }); return; }
+
+  const result = await generateChecklistDocumentFromJson(ctx, body);
+  sendJson(res, 200, result, ctx.session);
+}
+
 // ---- GET /api/contracts/file/<fileId> -- private-proxy stream, images +
 // PDFs. See the original file/[fileId].js's comment. ----
 async function handleFile(req, res, { drive }, fileId) {
@@ -325,6 +365,8 @@ module.exports = withDrive(async function handler(req, res, ctx) {
     if (route === 'confirmMatch') { await handleConfirmMatch(req, res, ctx); return; }
     if (route === 'upload') { await handleUpload(req, res, ctx); return; }
     if (route === 'generate') { await handleGenerate(req, res, ctx); return; }
+    if (route === 'generateReceipt') { await handleGenerateReceipt(req, res, ctx); return; }
+    if (route === 'generateChecklist') { await handleGenerateChecklist(req, res, ctx); return; }
     if (route === 'file') { await handleFile(req, res, ctx, pathParts[1]); return; }
     sendJson(res, 404, { success: false, error: 'Not found.' });
   } catch (err) {

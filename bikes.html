@@ -3542,8 +3542,34 @@ function writeBikesCache(snapshot) {
     }));
   } catch (e) { /* localStorage full/unavailable -- best-effort only */ }
 }
+// FIXED 2026-08-20 (Anton: "when you extend the bike... it didn't update
+// the page automatically... it was still sitting there until you
+// refreshed it"). clearBikesCache() previously only wiped the localStorage
+// stale-while-revalidate snapshot (BIKES_CACHE_KEY) -- it did NOT touch
+// bikesJsonCache (declared near fetchSheetJson above), which caches each
+// sheet's fetch as a resolved PROMISE for "the lifetime of one page load".
+// Every write action here (Return/Extend/Swap/Adjust Pickup/etc.) goes
+// through bkEnqueue -> a server API call, then calls `clearBikesCache();
+// loadData();` on success -- but loadData() -> getCustomerRowsFromJson()/
+// getPartsDataFromJson() both read through fetchSheetJson(), which would
+// still find e.g. bikesJsonCache['customer'] already populated from the
+// very first page load and hand back that STALE cached promise instead of
+// re-fetching -- exactly why the page kept showing the pre-extend data
+// until a full manual reload (which resets bikesJsonCache to {} along with
+// everything else). This is the exact same staleness writeSheetJson()
+// above already guards against for ITS OWN direct callers (one
+// `delete bikesJsonCache[cacheKey]` per sheet just written) -- but nothing
+// previously did the equivalent for the bkEnqueue/server-API write path,
+// which is what Return/Extend/Swap/Adjust Pickup/discard-failed-retry all
+// actually use. Clearing the whole cache here (rather than guessing which
+// sheets a given action touched) is deliberate: cheap (a few small JSON
+// fetches), and every one of clearBikesCache()'s existing call sites
+// already means "something just changed server-side, force a real
+// re-read" -- so the next loadData() right after this should always hit
+// the network, never a leftover in-memory promise.
 function clearBikesCache() {
   try { localStorage.removeItem(BIKES_CACHE_KEY); } catch (e) {}
+  Object.keys(bikesJsonCache).forEach((k) => { delete bikesJsonCache[k]; });
 }
 function timeAgoLabel(ms) {
   const s = Math.max(0, Math.round((Date.now() - ms) / 1000));

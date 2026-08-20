@@ -4111,22 +4111,91 @@ function mapPaidByToMethod(paidBy) {
   return { method: 'cash', otherText: '' };
 }
 
-editViewReceiptBtn.addEventListener('click', () => {
+// Shared Drive-search helper for "does a document already exist for this
+// contract" -- same GET /api/contracts/documents lookup + expected-filename
+// match viewContract/viewChecklist already do, factored out here so View
+// Receipt (and Edit Receipt, and View Checklist further down) can use it
+// too. Returns the private-proxy URL ('/api/contracts/file/<id>') or null.
+async function findExistingContractFile(expectedName) {
+  if (!currentEditRecord) return null;
+  try {
+    const url = '/api/contracts/documents?name=' + encodeURIComponent(currentEditRecord.name || '') + '&phone=' + encodeURIComponent(currentEditRecord.number || '');
+    const res = await fetch(url);
+    if (res.status === 401) throw new Error('Signed out -- please refresh to sign in again.');
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error || 'Unknown error');
+    const files = data.matched ? (data.files || []) : [];
+    const match = files.find((f) => f.name === expectedName);
+    return match ? ('/api/contracts/file/' + encodeURIComponent(match.id)) : null;
+  } catch (err) {
+    return null;
+  }
+}
+
+// Receipt files are named "Receipt - <name> - <RENTAL START DATE>.pdf" --
+// see lib/contractDocGen.js's generateReceiptDocumentFromJson for why the
+// rental start date, not the receipt date, is what's reconstructable here.
+function expectedReceiptFileName() {
+  const dateStr = isoDateToDashDmy(toIsoDateForInput(currentEditRecord.rentingDateFrom));
+  return 'Receipt - ' + (currentEditRecord.name || 'Unnamed') + ' - ' + dateStr + '.pdf';
+}
+
+// FIXED 2026-08-20 (Anton, live: "if you generate a receipt and then...
+// close the app and go back... it doesn't find that receipt, it just
+// generates another one each time"). Root cause: currentEditRecord.
+// receiptPdfUrl only ever lived in this page's own in-memory record for
+// the rest of THIS session -- it was never persisted anywhere retrievable
+// (receiptPdfUrl is never written back onto the Contract row -- see
+// lib/contractWrites.js's own header comment on why), so it was always
+// blank again after a reload, and this button had no fallback search the
+// way "View Contract"/"View Checklist" already did -- it went straight to
+// "no receipt, generate one?" every time. Fixed the same way those two
+// already work: search Drive for the expected file FIRST, only offer to
+// generate if that search genuinely comes up empty.
+editViewReceiptBtn.addEventListener('click', async () => {
   if (!currentEditRecord) return;
   if (currentEditRecord.receiptPdfUrl) {
     window.open(currentEditRecord.receiptPdfUrl, '_blank', 'noopener');
     return;
   }
-  const proceed = confirm('No receipt exists for this contract yet. Would you like to generate one?');
+
+  const originalText = editViewReceiptBtn.textContent;
+  editViewReceiptBtn.disabled = true;
+  editViewReceiptBtn.textContent = 'Searching…';
+  const found = await findExistingContractFile(expectedReceiptFileName());
+  editViewReceiptBtn.disabled = false;
+  editViewReceiptBtn.textContent = originalText;
+
+  if (found) {
+    currentEditRecord.receiptPdfUrl = found;
+    window.open(found, '_blank', 'noopener');
+    return;
+  }
+
+  const proceed = confirm('No receipt found for this contract. Would you like to generate one?');
   if (!proceed) return;
   openEditReceiptForm();
 });
 
-editReceiptBtn.addEventListener('click', () => {
+// "Edit Receipt" -- same search-first fix as View Receipt above, so the
+// "No receipt exists yet" confirmation is only ever shown when that's
+// actually true, not just because nothing had been searched for yet this
+// session.
+editReceiptBtn.addEventListener('click', async () => {
   if (!currentEditRecord) return;
   if (!currentEditRecord.receiptPdfUrl) {
-    const proceed = confirm('No receipt exists for this contract yet. Would you like to generate one?');
-    if (!proceed) return;
+    const originalText = editReceiptBtn.textContent;
+    editReceiptBtn.disabled = true;
+    editReceiptBtn.textContent = 'Checking…';
+    const found = await findExistingContractFile(expectedReceiptFileName());
+    editReceiptBtn.disabled = false;
+    editReceiptBtn.textContent = originalText;
+    if (found) {
+      currentEditRecord.receiptPdfUrl = found;
+    } else {
+      const proceed = confirm('No receipt exists for this contract yet. Would you like to generate one?');
+      if (!proceed) return;
+    }
   }
   openEditReceiptForm();
 });
@@ -4254,12 +4323,11 @@ receiptConfirmBtn.addEventListener('click', async () => {
 
   const method = r_paymentMethod.value;
   const payload = {
-    action: 'generateReceipt',
     rowNumber: currentEditRecord.rowNumber,
     number: currentEditRecord.number,
-    // Only used as a last-resort fallback if this contract's row has no
-    // stored Doc/PDF/photo link yet to anchor the folder lookup on --
-    // see generateReceiptDocument's comment in Code.gs.
+    // Only used to name/find the customer's Drive folder -- see
+    // generateReceiptDocumentFromJson's own comment in
+    // lib/contractDocGen.js.
     rentingDateFrom: toIsoDateForInput(currentEditRecord.rentingDateFrom),
     // No receiptNo field on this form -- always left blank so the backend
     // auto-assigns the next number in sequence.
@@ -4280,17 +4348,26 @@ receiptConfirmBtn.addEventListener('click', async () => {
     receivedBy: document.getElementById('r_receivedBy').value.trim()
   };
 
+  // FIXED 2026-08-20 -- was POSTing action:'generateReceipt' to `scriptUrl`
+  // (the now-decommissioned Code.gs Apps Script Web App), same root cause
+  // as the "View Contract"/"Update Contract" fix earlier today. Re-pointed
+  // at the new lib/contractDocGen.js port instead. The new route returns
+  // just the PDF's Drive file id (not a public "anyone with the link" URL
+  // the way Code.gs did), opened the same private way "View Photo of
+  // Passport"/"View Contract" already do, via /api/contracts/file/<id>.
   try {
-    const res = await fetch(scriptUrl, {
+    const res = await fetch('/api/contracts/generateReceipt', {
       method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
+    if (res.status === 401) throw new Error('Signed out -- please refresh to sign in again.');
     const data = await res.json();
     if (!data.success) throw new Error(data.error || 'Unknown error');
-    currentEditRecord.receiptPdfUrl = data.pdfUrl;
+    const pdfUrl = '/api/contracts/file/' + encodeURIComponent(data.pdfFileId);
+    currentEditRecord.receiptPdfUrl = pdfUrl;
     receiptConfirmStatusBox.innerHTML = 'Receipt updated' + (data.receiptNo ? ' (No. ' + data.receiptNo + ')' : '') + '. ' +
-      '<a href="' + data.pdfUrl + '" target="_blank" rel="noopener" style="color:inherit; text-decoration:underline; font-weight:600;">Open PDF</a>';
+      '<a href="' + pdfUrl + '" target="_blank" rel="noopener" style="color:inherit; text-decoration:underline; font-weight:600;">Open PDF</a>';
     receiptConfirmStatusBox.className = 'status ok';
   } catch (err) {
     receiptConfirmStatusBox.textContent = 'Could not generate the receipt: ' + err.message;
@@ -4416,13 +4493,26 @@ editSendDocsBtn.addEventListener('click', async () => {
 /* ---------------- View Checklist ---------------- */
 // Mirrors "View Contract" (viewContract above), not "View Receipt" -- a
 // checklist has no edit form, so this is just: open the cached PDF if
-// there is one; otherwise ask the backend to search Drive for this
-// customer's checklist (action:'findChecklistDocument'); if that comes up
-// empty too, offer to generate one on the spot (action:'generateChecklist')
-// using nothing but this record's own name -- there's nothing to type in,
+// there is one; otherwise search Drive for this customer's checklist;
+// if that comes up empty too, offer to generate one on the spot using
+// nothing but this record's own name -- there's nothing to type in,
 // unlike the receipt, since the checklist only ever needs the customer's
 // name and today's date.
+//
+// FIXED 2026-08-20 -- was POSTing actions 'findChecklistDocument'/
+// 'generateChecklist' to `scriptUrl` (the now-decommissioned Code.gs Apps
+// Script Web App), same root cause as "View Contract"'s own fix earlier
+// today. The find step is now just the SAME GET /api/contracts/documents
+// filename search viewContract/View Receipt already use (via
+// findExistingContractFile above) -- no separate "find" route needed
+// server-side. The generate step is re-pointed at the new
+// lib/contractDocGen.js port (POST /api/contracts/generateChecklist).
 const editViewChecklistBtn = document.getElementById('editViewChecklistBtn');
+
+function expectedChecklistFileName() {
+  const dateStr = isoDateToDashDmy(toIsoDateForInput(currentEditRecord.rentingDateFrom));
+  return 'Checklist - ' + (currentEditRecord.name || 'Unnamed') + ' - ' + dateStr + '.pdf';
+}
 
 async function viewChecklist() {
   if (!currentEditRecord) return;
@@ -4436,36 +4526,14 @@ async function viewChecklist() {
   editViewChecklistBtn.textContent = 'Searching…';
   editStatusBox.className = 'status';
   editStatusBox.textContent = '';
-  try {
-    const res = await fetch(scriptUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({
-        action: 'findChecklistDocument',
-        rowNumber: currentEditRecord.rowNumber,
-        name: currentEditRecord.name,
-        number: currentEditRecord.number,
-        rentingDateFrom: toIsoDateForInput(currentEditRecord.rentingDateFrom)
-      })
-    });
-    const data = await res.json();
-    if (!data.success) throw new Error(data.error || 'Unknown error');
-    if (data.pdfUrl) currentEditRecord.checklistPdfUrl = data.pdfUrl;
 
-    if (currentEditRecord.checklistPdfUrl) {
-      if (data.warning) {
-        editStatusBox.textContent = data.warning;
-        editStatusBox.className = 'status warn';
-      }
-      window.open(currentEditRecord.checklistPdfUrl, '_blank', 'noopener');
-      editViewChecklistBtn.disabled = false;
-      editViewChecklistBtn.textContent = originalText;
-      return;
-    }
-  } catch (err) {
-    // Falls through to the "generate one?" offer below -- whether the
-    // search threw (no folder/file found at all) or simply came back
-    // empty, the end result for the user is the same: no PDF to open.
+  const found = await findExistingContractFile(expectedChecklistFileName());
+  if (found) {
+    currentEditRecord.checklistPdfUrl = found;
+    window.open(found, '_blank', 'noopener');
+    editViewChecklistBtn.disabled = false;
+    editViewChecklistBtn.textContent = originalText;
+    return;
   }
   editViewChecklistBtn.disabled = false;
   editViewChecklistBtn.textContent = originalText;
@@ -4476,20 +4544,20 @@ async function viewChecklist() {
   editViewChecklistBtn.disabled = true;
   editViewChecklistBtn.textContent = 'Generating…';
   try {
-    const res = await fetch(scriptUrl, {
+    const res = await fetch('/api/contracts/generateChecklist', {
       method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        action: 'generateChecklist',
         rowNumber: currentEditRecord.rowNumber,
         name: currentEditRecord.name,
         number: currentEditRecord.number,
         rentingDateFrom: toIsoDateForInput(currentEditRecord.rentingDateFrom)
       })
     });
+    if (res.status === 401) throw new Error('Signed out -- please refresh to sign in again.');
     const data = await res.json();
     if (!data.success) throw new Error(data.error || 'Unknown error');
-    currentEditRecord.checklistPdfUrl = data.pdfUrl;
+    currentEditRecord.checklistPdfUrl = '/api/contracts/file/' + encodeURIComponent(data.pdfFileId);
     editStatusBox.textContent = 'Checklist generated.';
     editStatusBox.className = 'status ok';
   } catch (err) {
@@ -5057,6 +5125,77 @@ form.addEventListener('submit', (e) => {
         } catch (photoErr) {
           msg += ' Photo upload failed: ' + photoErr.message + '.';
         }
+      }
+
+      // Follow-up receipt + checklist generation -- ADDED 2026-08-20 (Anton:
+      // "when you generate a contract, it doesn't automatically generate a
+      // checklist or receipt"). Mirrors Code.gs's own addContractEntry,
+      // which always generated both automatically right after the Contract
+      // row itself saved -- lib/contractWrites.js's addContractFromJson
+      // deliberately left Doc/PDF generation out of scope (see its own
+      // header comment), so these two calls are the client-side follow-up
+      // that restores that behavior, same shape/placement as the
+      // passport-photo upload just above. Best-effort like every other
+      // follow-up here -- never blocks or fails the "Added" success message,
+      // only folds a problem into it. Uses the SAME default values
+      // addContractEntry always computed (total price as the full amount
+      // paid, rental fee back-calculated as total minus delivery, payment
+      // method mapped from "Paid by", "Miss. Arparatchanee" as receivedBy,
+      // today as the receipt date) -- staff can still open "Edit Receipt"
+      // afterwards to correct the numbers and regenerate.
+      const now = new Date();
+      const pad2 = (n) => String(n).padStart(2, '0');
+      const todayIso = now.getFullYear() + '-' + pad2(now.getMonth() + 1) + '-' + pad2(now.getDate());
+      const receiptTotalPaid = Number(payload.totalPrice) || 0;
+      const receiptRentalFee = receiptTotalPaid - (Number(payload.deliveryFee) || 0);
+      const receiptMethod = mapPaidByToMethod(payload.paidBy);
+      try {
+        const rcRes = await fetch('/api/contracts/generateReceipt', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            rowNumber: res.row,
+            number: payload.number,
+            rentingDateFrom: payload.rentingDateFrom,
+            receiptNo: '',
+            receiptDate: todayIso,
+            name: payload.name,
+            bikeModel: payload.bikeModel,
+            cc: '',
+            rentalPeriodFrom: payload.rentingDateFrom,
+            rentalPeriodTo: payload.returnDate,
+            rentalFee: receiptRentalFee,
+            deliveryFee: payload.deliveryFee,
+            otherLabel: '',
+            otherAmount: '',
+            totalPaid: receiptTotalPaid,
+            paymentMethod: receiptMethod.method,
+            otherMethodText: receiptMethod.otherText,
+            receivedBy: 'Miss. Arparatchanee'
+          })
+        });
+        const rcData = await rcRes.json().catch(() => ({}));
+        if (rcData.success) msg += ' Receipt generated.';
+        else msg += ' Receipt could not be generated: ' + (rcData.error || 'unknown error') + '.';
+      } catch (rcErr) {
+        msg += ' Receipt could not be generated: ' + rcErr.message + '.';
+      }
+      try {
+        const ckRes = await fetch('/api/contracts/generateChecklist', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            rowNumber: res.row,
+            name: payload.name,
+            number: payload.number,
+            rentingDateFrom: payload.rentingDateFrom
+          })
+        });
+        const ckData = await ckRes.json().catch(() => ({}));
+        if (ckData.success) msg += ' Checklist generated.';
+        else msg += ' Checklist could not be generated: ' + (ckData.error || 'unknown error') + '.';
+      } catch (ckErr) {
+        msg += ' Checklist could not be generated: ' + ckErr.message + '.';
       }
 
       statusBox.textContent = msg;
