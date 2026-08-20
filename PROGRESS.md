@@ -5887,3 +5887,142 @@ Nonce + settle-delay + re-read tiebreaker instead of a compare-and-swap
 Drive can't actually guarantee -- see lib/backups.js and PROGRESS.md."
 git push
 ```
+
+(Superseded by the single combined push below -- `lib/backups.js` picked up
+more changes right after this, so there was no separate push of just the
+race fix. No need to run the block above.)
+
+## Updated bundled seed JSON from the new spreadsheet export + backup bulk-delete
+
+**Status: DONE, tested, awaiting Anton's review + push.**
+
+Two changes bundled into one push per Anton (both needed a push anyway,
+no reason to make him do it twice).
+
+### 1. Seed JSON refreshed from `AA Scooter Account 2026 2.xlsx`
+
+Anton uploaded an updated export of the live spreadsheet (the one the old
+Google Sheets/Code.gs system still runs on) and asked for the bundled
+`/data/*.json` seed -- what the "Reset data from latest deploy" button in
+Settings pushes to Drive -- to be refreshed from it, so that clicking
+Reset brings the new app's data up to date with the old system ahead of
+final cutover.
+
+`export_to_json.py` (referenced in old code comments as the tool that
+originally built this seed) isn't actually in the project folder, so this
+was rebuilt from scratch against the existing seed JSON's own format as
+the spec, verified sheet-by-sheet against `_manifest.json`'s row/col
+counts before touching anything live:
+
+- **Main sheets** (customer, Contract, cash, Bike Tax, bikes, checklist,
+  Operation, Parts and Oil change, rates per day, waiting list,
+  investment, Contacts, bugs, and the 9 month sheets incl. template) --
+  a straight `openpyxl` grid dump (`data_only=True`, header row included
+  as row 0, dates/times converted to the same ISO-string format the
+  existing files already use). Row/col counts came out identical to the
+  current manifest for every single sheet; real content differences
+  confirmed anyway by diffing old vs. new row-by-row (customer: 19 of
+  1317 rows changed -- new returns/extensions/dates; cash: 17 of 1357;
+  bikes: 27 of 1064 -- so this is genuinely fresher data, not a no-op
+  upload).
+- **Notes sidecars** (`customer_notes.json`, `Contract_notes.json`,
+  `July_notes.json`, `August_notes.json`) -- these turned out NOT to be
+  spreadsheet data in the way they look; `lib/customersWrites.js`/
+  `contractWrites.js`/`bikesWrites.js` use this sidecar shape
+  (`[row, col, text]`) for BOTH the human-facing ledger note (col 2) AND
+  app-internal idempotency-guard markers (col 3, col 90 on
+  customer_notes) that only ever exist from live app usage, never from
+  the spreadsheet. Checked directly: the xlsx's own cell comments (Excel/
+  Sheets "notes" attached to specific cells), read via `cell.row`/
+  `cell.column`/`cell.comment.text`, match the EXISTING customer_notes.json's
+  `[row, col, text]` triples exactly, value-for-value, on the entries
+  that already existed (e.g. row 302/col 2's "Cool 1 -- 02/06/2026 to
+  20/07/2026..." note) -- confirming this app's ledger-note column is a
+  direct, faithful port of the original spreadsheet's own cell comments,
+  using the same 1-indexed row/column numbering. So these 4 files were
+  regenerated the same way (extract every cell comment per sheet), which
+  naturally produces ONLY ledger-note-shaped entries -- no idempotency
+  markers ride along, since those were never real spreadsheet comments in
+  the first place, and any old ones are tied to row numbers that no
+  longer mean anything once `customer.json`/`Contract.json` are replaced
+  wholesale. `Contract_notes.json` picked up one genuinely new comment
+  (dated 15/08/2026, after the old seed's snapshot) this way, which is
+  exactly the kind of freshness this update is for.
+  - `bikes_notes.json` is a different thing again -- `[bikeName, jsonMetadata]`
+    pairs tracking historical sold-bike info, keyed by name not row
+    number, with zero corresponding cell comments in the "bikes" sheet
+    (checked: 0 comments there). Left untouched, not part of this
+    regeneration -- nothing to derive it from in the spreadsheet, and
+    it's not row-position-dependent so the customer.json/Contract.json
+    replacement doesn't invalidate it the way it would the other 4.
+- `_manifest.json` regenerated alongside (same row/col counts as before,
+  confirmed above).
+
+**Not tested against the live app yet** -- that's the next step once
+Anton pushes/deploys and clicks Reset: compare the new app against the
+old live system page-by-page (two browser tabs) to confirm everything
+matches before cutover.
+
+### 2. Bulk-delete backups (checkboxes + "Delete selected") in Settings
+
+Anton asked for a way to clear out old backups himself rather than
+waiting on the 30-day automatic prune (`pruneOldBackups` in
+`lib/backups.js`, unchanged, still runs after every backup creation).
+
+- `lib/backups.js`: new `deleteBackups(drive, backupIds)` -- trashes
+  (soft-delete, same as the automatic prune, recoverable from Drive's own
+  trash) each id in the array, independently try/catched so one bad/
+  already-gone id doesn't abort the rest of the selection.
+- `api/admin/reset.js`: new `{ action: 'backupDelete', backupIds: [...] }`
+  dispatch case (still the same endpoint, still no new `/api/` file --
+  see that file's own header comment on why). 400s cleanly on a missing/
+  empty/non-string-array `backupIds` rather than crashing.
+- `settings.html`: a checkbox on each backup row (`.backup-item-checkbox`),
+  a "Delete selected" bar above the list showing the current count and
+  disabled until something's checked, and a confirm modal
+  (`#backupDeleteBackdrop`) using the same mousedown+click backdrop-guard
+  pattern as every other modal in this project (CLAUDE.md's standing
+  rule) so a mid-drag text selection that releases over the backdrop
+  can't accidentally close it.
+
+**Tested:** extended the existing `api/admin/reset.js` dispatch harness
+(`test_dispatch.js`) with `backupDelete` cases -- missing/empty/non-string
+`backupIds` all 400 cleanly; deleting real backups removes them from a
+subsequent `backupList`; a mix of one real id + one bogus id still
+deletes the real one and reports the bogus one as an error instead of
+failing the whole request. All passing. `settings.html`'s new script
+block re-checked with `node --check` for syntax, and every new element id
+it references confirmed to exist exactly once in the HTML.
+
+**Files touched:** `lib/backups.js`, `api/admin/reset.js`,
+`settings.html`, every file in `data/` except `bikes_notes.json`
+(unchanged, see above). Every changed file re-read back from the real
+device after writing, per CLAUDE.md's standing instruction.
+
+**Not yet done:**
+1. Anton reviews the diff and pushes (git commands below -- this is the
+   combined push for both changes above, plus the earlier race-condition
+   fix which hadn't been pushed yet either).
+2. Anton clicks "Reset data from latest deploy" in Settings once deployed.
+3. Browser-compare the new app against the old live system, page by page,
+   to confirm parity before cutover.
+4. Live smoke test of backup bulk-delete: select a couple of test backups
+   in Settings, delete them, confirm they drop out of the list.
+
+```
+cd "/Users/anton/AA-Scooters-Project Database/vercel-site"
+git status                                  # review everything below first
+git add lib/backups.js api/admin/reset.js settings.html data/ PROGRESS.md
+git commit -m "Refresh seed data from updated spreadsheet export; add backup bulk-delete
+
+Seed JSON (data/*.json) rebuilt from AA Scooter Account 2026 2.xlsx --
+main sheets are a straight grid dump, the 4 notes sidecars are rebuilt
+from the xlsx's own cell comments (verified to match the existing
+ledger-note format exactly). bikes_notes.json is untouched (not
+spreadsheet-derived). See PROGRESS.md for the full breakdown.
+
+Also adds checkbox bulk-delete for backups in Settings (lib/backups.js's
+new deleteBackups(), a new backupDelete action on api/admin/reset.js,
+and the UI in settings.html) -- bundled into this same push per Anton."
+git push
+```

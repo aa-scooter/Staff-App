@@ -191,6 +191,21 @@
     letter-spacing:.03em; text-transform:uppercase;
   }
   .backup-restore-btn:active{ transform:scale(.98); }
+  .backup-item-left{ display:flex; align-items:center; gap:10px; min-width:0; }
+  .backup-item-checkbox{ flex-shrink:0; width:17px; height:17px; accent-color:var(--petrol); cursor:pointer; }
+  .backup-delete-bar{
+    display:flex; align-items:center; justify-content:space-between; gap:10px;
+    padding:9px 0 3px; margin-bottom:2px;
+  }
+  .backup-delete-count{ font-size:12px; color:var(--muted); }
+  .backup-delete-btn{
+    all:unset; box-sizing:border-box; flex-shrink:0; padding:7px 12px; border-radius:8px; cursor:pointer;
+    background:#FCEBEB; border:1px solid #F3C6C6; color:var(--bad);
+    font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:11.5px;
+    letter-spacing:.03em; text-transform:uppercase;
+  }
+  .backup-delete-btn:disabled{ opacity:.5; cursor:default; }
+  .backup-delete-btn:not(:disabled):active{ transform:scale(.98); }
 
   /* Modal (same pattern used across the app) */
   .modal-backdrop{
@@ -344,6 +359,10 @@
     <div class="api-key-block">
       <label style="display:block; font-size:11px; font-weight:600; color:var(--muted); margin-bottom:8px; text-transform:uppercase; letter-spacing:.04em;">Restore from a backup</label>
       <div class="load-status" id="backupListStatus"></div>
+      <div class="backup-delete-bar">
+        <span class="backup-delete-count" id="backupDeleteCount"></span>
+        <button type="button" class="backup-delete-btn" id="backupDeleteBtn" disabled>Delete selected</button>
+      </div>
       <div id="backupList"><div class="empty-hint">Loading…</div></div>
     </div>
   </div>
@@ -394,6 +413,23 @@
     <div class="modal-btn-row">
       <button type="button" class="btn-cancel" id="restoreCancelBtn">Cancel</button>
       <button type="button" class="btn-delete" id="restoreConfirmBtn">Restore</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="backupDeleteBackdrop">
+  <div class="modal-sheet">
+    <h3>Delete these backups?</h3>
+    <div class="modal-error" id="backupDeleteError"></div>
+    <div class="modal-progress" id="backupDeleteProgress"><span class="modal-progress-spinner"></span><span>Deleting…</span></div>
+    <div class="reverse-summary" id="backupDeleteSummary"></div>
+    <div class="reverse-warning">
+      Deleted backups go to Drive's own trash (same as any other Drive delete), so they're not
+      instantly gone forever, but they no longer count toward your 30-day history here.
+    </div>
+    <div class="modal-btn-row">
+      <button type="button" class="btn-cancel" id="backupDeleteCancelBtn">Cancel</button>
+      <button type="button" class="btn-delete" id="backupDeleteConfirmBtn">Delete</button>
     </div>
   </div>
 </div>
@@ -928,14 +964,18 @@
 
   function renderBackupList(backups) {
     var listEl = document.getElementById('backupList');
+    updateBackupDeleteBar();
     if (!backups.length) { listEl.innerHTML = '<div class="empty-hint">No backups yet.</div>'; return; }
     var html = '';
     for (var i = 0; i < backups.length; i++) {
       var b = backups[i];
       html += '<div class="backup-item">' +
-        '<div class="backup-item-info">' +
-          '<span class="backup-item-date">' + escapeHtmlS(fmtTs(b.createdAt)) + '</span>' +
-          '<span class="backup-item-tag ' + escapeHtmlS(b.trigger) + '">' + escapeHtmlS(backupTagLabel(b.trigger)) + '</span>' +
+        '<div class="backup-item-left">' +
+          '<input type="checkbox" class="backup-item-checkbox" data-backup-id="' + escapeHtmlS(b.id) + '">' +
+          '<div class="backup-item-info">' +
+            '<span class="backup-item-date">' + escapeHtmlS(fmtTs(b.createdAt)) + '</span>' +
+            '<span class="backup-item-tag ' + escapeHtmlS(b.trigger) + '">' + escapeHtmlS(backupTagLabel(b.trigger)) + '</span>' +
+          '</div>' +
         '</div>' +
         '<button type="button" class="backup-restore-btn" data-backup-id="' + escapeHtmlS(b.id) + '" data-backup-date="' + escapeHtmlS(fmtTs(b.createdAt)) + '">Restore</button>' +
       '</div>';
@@ -947,6 +987,88 @@
         openRestoreModal(this.getAttribute('data-backup-id'), this.getAttribute('data-backup-date'));
       });
     }
+    var boxes = listEl.querySelectorAll('.backup-item-checkbox');
+    for (var k = 0; k < boxes.length; k++) {
+      boxes[k].addEventListener('change', updateBackupDeleteBar);
+    }
+  }
+
+  // ---- Bulk-delete (checkboxes + "Delete selected", Anton 20/08/2026) --
+  // separate from the 30-day automatic prune (pruneOldBackups in
+  // lib/backups.js), which he still wants running on its own; this is
+  // just a way to clear out old test-run backups himself without waiting
+  // on the clock. ----
+  function getSelectedBackupIds() {
+    var boxes = document.querySelectorAll('#backupList .backup-item-checkbox:checked');
+    var ids = [];
+    for (var i = 0; i < boxes.length; i++) ids.push(boxes[i].getAttribute('data-backup-id'));
+    return ids;
+  }
+  function updateBackupDeleteBar() {
+    var ids = getSelectedBackupIds();
+    var countEl = document.getElementById('backupDeleteCount');
+    var btn = document.getElementById('backupDeleteBtn');
+    countEl.textContent = ids.length ? (ids.length + ' selected') : '';
+    btn.disabled = !ids.length;
+  }
+  var pendingDeleteIds = [];
+  function openBackupDeleteModal() {
+    pendingDeleteIds = getSelectedBackupIds();
+    if (!pendingDeleteIds.length) return;
+    document.getElementById('backupDeleteError').classList.remove('show');
+    document.getElementById('backupDeleteProgress').classList.remove('show');
+    document.getElementById('backupDeleteSummary').textContent =
+      'Delete ' + pendingDeleteIds.length + ' backup' + (pendingDeleteIds.length === 1 ? '' : 's') + '?';
+    document.getElementById('backupDeleteConfirmBtn').disabled = false;
+    document.getElementById('backupDeleteBackdrop').classList.add('show');
+  }
+  function closeBackupDeleteModal() {
+    document.getElementById('backupDeleteBackdrop').classList.remove('show');
+  }
+  function executeBackupDelete() {
+    if (!pendingDeleteIds.length) return;
+    var btn = document.getElementById('backupDeleteConfirmBtn');
+    var errEl = document.getElementById('backupDeleteError');
+    var progEl = document.getElementById('backupDeleteProgress');
+    errEl.classList.remove('show'); errEl.textContent = '';
+    progEl.classList.add('show');
+    btn.disabled = true;
+    fetch('/api/admin/reset', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'backupDelete', backupIds: pendingDeleteIds })
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (!data || !data.success) throw new Error((data && data.error) || 'Delete failed -- please try again.');
+        progEl.classList.remove('show');
+        closeBackupDeleteModal();
+        pendingDeleteIds = [];
+        loadBackupList();
+        if (data.errors && data.errors.length) {
+          alert('Deleted ' + data.deleted.length + ' backup(s) -- ' + data.errors.length + ' failed, check manually.');
+        }
+      })
+      .catch(function (e) {
+        progEl.classList.remove('show');
+        errEl.classList.add('show');
+        errEl.textContent = e.message || 'Could not delete -- please try again.';
+        btn.disabled = false;
+      });
+  }
+  // Same mid-drag-click-outside guard every modal/lightbox in this project
+  // uses (see CLAUDE.md's standing instruction).
+  function initBackupDeleteModal() {
+    document.getElementById('backupDeleteBtn').addEventListener('click', openBackupDeleteModal);
+    document.getElementById('backupDeleteCancelBtn').addEventListener('click', closeBackupDeleteModal);
+    document.getElementById('backupDeleteConfirmBtn').addEventListener('click', executeBackupDelete);
+    var backdrop = document.getElementById('backupDeleteBackdrop');
+    var mouseDownOnBackdrop = false;
+    backdrop.addEventListener('mousedown', function (e) { mouseDownOnBackdrop = (e.target === backdrop); });
+    backdrop.addEventListener('click', function (e) {
+      if (e.target === backdrop && mouseDownOnBackdrop) closeBackupDeleteModal();
+      mouseDownOnBackdrop = false;
+    });
   }
 
   function loadBackupList() {
@@ -1064,6 +1186,7 @@
     initDataResetWidget();
     initBackupNowWidget();
     initRestoreModal();
+    initBackupDeleteModal();
     initSignOutWidget();
     initTxnSearch();
     initReverseModal();

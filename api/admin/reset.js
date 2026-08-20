@@ -20,6 +20,10 @@
 //       backupId: '<id>' }             -> whole-dataset restore from one
 //                                          backup (auto-snapshots the
 //                                          current live data first)
+//   - { action: 'backupDelete',
+//       backupIds: ['<id>', ...] }     -> manual bulk-delete (checkboxes +
+//                                          delete button on the Settings
+//                                          backup list, Anton 20/08/2026)
 // Deliberately NOT a new file/route: this project already hit Vercel
 // Hobby's 12-Serverless-Function cap once (see PROGRESS.md/
 // BUGFIX_HANDOFF.md's bike-photos-404 saga) consolidating routes into
@@ -32,7 +36,7 @@ const path = require('path');
 const { withDrive } = require('../../lib/apiAuth');
 const { writeJsonFile, ensureAppFolder, ensureYearFolder } = require('../../lib/googleDrive');
 const { isMonthSheetName } = require('../../lib/monthSheets');
-const { createBackup, listBackups, ensureDailyBackup, restoreBackup } = require('../../lib/backups');
+const { createBackup, listBackups, ensureDailyBackup, deleteBackups, restoreBackup } = require('../../lib/backups');
 
 const DATA_DIR = path.join(__dirname, '..', '..', 'data');
 
@@ -166,6 +170,17 @@ async function handleBackupAction(req, res, { drive, folderId }, action, body) {
   if (action === 'backupList') {
     const backups = await listBackups(drive, effectiveFolderId);
     sendJson(res, 200, { success: true, backups });
+    return;
+  }
+
+  if (action === 'backupDelete') {
+    const backupIds = body && body.backupIds;
+    if (!Array.isArray(backupIds) || !backupIds.length || !backupIds.every((id) => typeof id === 'string' && id)) {
+      sendJson(res, 400, { success: false, error: 'Missing/invalid "backupIds" (expected a non-empty array of strings).' });
+      return;
+    }
+    const result = await deleteBackups(drive, backupIds);
+    sendJson(res, 200, Object.assign({ success: true }, result));
     return;
   }
 
