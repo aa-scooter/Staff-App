@@ -6026,3 +6026,149 @@ new deleteBackups(), a new backupDelete action on api/admin/reset.js,
 and the UI in settings.html) -- bundled into this same push per Anton."
 git push
 ```
+
+### 3. Parallelizing the heavy sequential-write actions (started 2026-08-20)
+
+**Why:** `customerIntakeFromJson` in `lib/contractWrites.js` (contract.html's
+"Rent out") chained ~15 sequential Drive read/write round trips end to end,
+which routinely pushed past contract.html's 20s client-side save watchdog
+even though the write always actually landed server-side (confirmed live
+against Drive after Anton hit this exact symptom on a real Andrey Volkov
+booking). Fixed by grouping the steps by which Drive file(s) each touches
+and running the genuinely-independent groups concurrently via
+`Promise.all`, keeping same-file and data-dependent steps sequential
+within or across that block — see that function's own "PARALLELIZED
+20/08/2026" comment for the full file-by-file safety reasoning. Verified
+with a throwaway concurrency test (fake sheetIO enforcing the same
+optimistic-concurrency ConflictError as the real `writeJsonFile`, run 15x
+with randomized timing) before deploying: zero conflicts, correct result
+every time.
+
+Anton asked for the same treatment everywhere else this shape of problem
+exists. A research pass across every `lib/*Writes.js` file found these
+candidates (ranked by round-trip count; only functions with ≥5 sequential
+round trips included — anything lighter isn't worth the engineering risk).
+Working through this list one at a time, in this order, each with: read the
+function, map exactly which sheet(s) each step touches (same method as
+customerIntakeFromJson's comment), restructure into disjoint `Promise.all`
+groups only where truly safe, write/run a concurrency test against a fake
+sheetIO before touching the live file, deploy, verify the write stuck on
+Anton's device, update this checklist.
+
+- [x] `lib/contractWrites.js` — `customerIntakeFromJson` (action
+      `customerIntake`, contract.html's "Rent out") — DONE, deployed
+      2026-08-20, pending Anton's push.
+- [x] `lib/bikesWrites.js` — `swapBikeFromJson` (action `swapBike`) — ~line
+      1550, ~25-30 round trips, 6 sheets (customer, customer_notes,
+      Contract, bikes, current-month income, cash). Biggest remaining win.
+      DONE, deployed 2026-08-20 (4-way split: marker+ledger / Contract sync
+      -- kept strictly sequential internally, rename must land before the
+      other two Contract lookups can find the row by its new bike name --
+      / bikes sheet / upgrade income). 15/15-run concurrency test passed,
+      zero conflicts. Pending Anton's push.
+- [x] `lib/bikesWrites.js` — `earlyReturnBikeFromJson` (action
+      `earlyReturnBike`) — ~line 1069, ~20-25 round trips, same 6 sheets.
+      DONE, deployed 2026-08-20 (4-way split: marker+ledger / Contract --
+      sync-return-date, add-amount, flip-status, kept in original order,
+      no rename dependency this time so purely a same-file precaution /
+      bikes / refund income; dropped the refundAmount<=0 early-return
+      since it produced the identical response shape either way). 15/15
+      concurrency test runs passed, zero conflicts. Pending Anton's push.
+- [x] `lib/bikesWrites.js` — `extendBikeRowFromJson` (action `extendBike`)
+      — ~line 1869, ~20 round trips, same 6 sheets. DONE, deployed
+      2026-08-20 (4-way split: marker+ledger / Contract sync / income-cash-
+      deposit / bikes). 15/15 concurrency test runs passed, zero conflicts.
+      Pending Anton's push.
+- [x] `lib/bikesWrites.js` — `customerIntakeFromJson` (action
+      `customerIntake`, bikes.html's OWN duplicate of the function already
+      fixed in contractWrites.js) — ~line 2166, ~18-20 round trips, same 6
+      sheets. DONE, deployed 2026-08-20 -- reused the exact same chain
+      split from the contractWrites.js fix (marker+ledger / money sheets /
+      bikes / contract status, with the totals-backfill-sync step still
+      running after the parallel block since it needs both ledgerTotals
+      and the Rented flip). 15/15 concurrency test runs passed, zero
+      conflicts. Pending Anton's push.
+- [x] `lib/customersWrites.js` — `customerIntakeFromJson` (action
+      `customerIntake`, customers.html's THIRD near-identical copy of the
+      same function) — line 856, ~15-18 round trips, same 6 sheets. DONE,
+      deployed 2026-08-20 -- same 4-way split as the other two copies.
+      One wrinkle this copy had: `markCustomerNotesTxnIdFromJson` used to
+      be a standalone blocking `await` right after the row write, labeled
+      "before the cascade" -- checked its own body, it already swallows
+      its own errors internally and never rethrows, so folding it into
+      chain A changes nothing observable, just lets it run concurrently
+      with the other three chains instead of blocking them. 15/15
+      concurrency test runs passed, zero conflicts. Pending Anton's push.
+- [x] `lib/addBikesWrites.js` — `addBikeFromJson` (action `addBike`) —
+      line 535, ~9-11 round trips, 4 sheets (Parts_and_Oil_change,
+      Operation, bikes, Bike_Tax). DONE, deployed 2026-08-20 — flat 4-way
+      fan-out (Operation / bikes / Bike_Tax / idempotency marker), no data
+      dependency between the four at all since nothing computed by one step
+      feeds another; only the critical Parts_and_Oil_change write (dupe-name
+      guard + the insert every other step's own lookup relies on existing)
+      stays before the Promise.all. 15/15 concurrency test runs passed
+      (including an idempotent-replay check), zero conflicts. Write
+      confirmed on Anton's device (re-staged + grepped for
+      `await Promise.all([chainOperation(), chainBikesSheet(),
+      chainBikeTax(), chainMarker()]`). Pending Anton's push.
+- [x] `lib/addBikesWrites.js` — `editBikeFromJson` (action `editBike`) —
+      line 282, ~8 round trips, same 4 sheets as addBikeFromJson. DONE,
+      deployed 2026-08-20 — same flat fan-out shape (Operation / bikes /
+      Bike_Tax), each looks its row up independently by originalBikeName so
+      no dependency between them; the critical Parts_and_Oil_change
+      rename+dupe-check stays before the Promise.all. 15/15 concurrency test
+      runs passed, zero conflicts. Write confirmed on Anton's device
+      (re-staged + grepped for `await Promise.all([chainOperation(),
+      chainBikesSheet(), chainBikeTax()]`). Pending Anton's push.
+- [x] `lib/bikesWrites.js` — `performMarkReturned` (action `markReturned`)
+      — line 878, ~7 round trips, 3 sheets (customer_notes, customer,
+      Contract). Modest payoff but safe and cheap. DONE, deployed
+      2026-08-20 (marker + Contract-status-flip run concurrently, both
+      independent of each other). 15/15 concurrency test runs passed, zero
+      conflicts. Pending Anton's push.
+- [x] `lib/depositsWrites.js` — `addDepositEntryJson` / `editDepositEntryJson`
+      / `deleteDepositEntryJson` (lines ~525/589/632) — ~8-11 round trips
+      each, sheets: monthName, monthName_notes, cash, transactionLog. DONE,
+      deployed 2026-08-20. The primary deposit write to `monthName` stays
+      sequential and first in all three (the cascade recompute re-fetches
+      that sheet and needs to see the row that was just added/edited/
+      cleared), then: `addDepositEntryJson` gets a 3-way split (idempotency
+      marker on monthName_notes / cash+monthName recompute cascade, kept
+      internally sequential exactly as it already was / logTransactionB) —
+      the other two, which have no idempotency guard, get the same 2-way
+      split minus the marker lane. 12/12 concurrency test runs passed for
+      all three actions (36 total, including an idempotent-replay check for
+      addDeposit), zero conflicts — seeded a realistic monthName/cash sheet
+      layout so the recompute cascade genuinely ran end to end rather than
+      silently no-op'ing on missing labels. Writes confirmed on Anton's
+      device (re-staged + grepped for `await Promise.all([chainMarker(),
+      chainCascade(), chainLog()]` and the two 2-lane
+      `recomputeCurrentMonthSummaryCascadeB()` blocks). Pending Anton's
+      push.
+
+**Checked and deliberately NOT included** (same research pass, confirmed
+sequential-by-necessity or too light to bother):
+`lib/accountsWrites.js` is fully done already (dated 16/08/2026, all 8
+dispatched actions already have the same Promise.all-lanes split).
+`bikesWrites.js`'s `returnDepositFromJson` (~14-16 RT) repeatedly re-touches
+the same current-month sheet in sequence (clear → income → release/payout)
+— forced sequential, not a real candidate. `contractWrites.js`'s
+`addContractFromJson` (~5-7 RT, only Contract/Contract_notes, touched 3x)
+has a real ordering dependency (idempotency check must precede the write;
+the marker needs the new row number the write produces). `editContractFromJson`,
+`cancelContractFromJson`, `performUpdateReturnPickup`,
+`closeBikeForExtendFromJson`, `sellBikeFromJson`, `unsellBikeFromJson`,
+`deductCashDepositFromJson`: all under 5 round trips, not worth it.
+`depositsWrites.js`'s `deductDepositEntryFromJson` (~10 RT) has an explicit
+audit-safety comment (~line 966) requiring the deposit-balance write to land
+before the income-log write, and both hit the same monthName file anyway.
+
+**Status: ALL 9 CANDIDATES DONE** (2026-08-20). Every item above is coded,
+tested (15/15 or 12/12 randomized-timing concurrency runs, zero conflicts,
+each against a fake sheetIO enforcing the same optimistic-concurrency
+ConflictError as the real `writeJsonFile`), deployed to Anton's device, and
+write-confirmed via re-stage + grep. Still outstanding: none of this
+sweep's changes (`bikesWrites.js`, `customersWrites.js`,
+`addBikesWrites.js`, `depositsWrites.js` — `contractWrites.js` already got
+its own push earlier) have been pushed to git yet — that's the next and
+final step, a consolidated git command block for Anton to run himself.
