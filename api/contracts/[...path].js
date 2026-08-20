@@ -1,16 +1,19 @@
 // Single catch-all function for every /api/contracts/* route --
-// /documents, /confirmMatch, /upload, and /file/<fileId> -- dispatched by
-// path + method below, instead of one file per route (see git history for
-// the original 4-file version). Collapsed 2026-08-15: Vercel's Hobby plan
-// caps a deployment at 12 Serverless Functions total, and having these as
-// 4 separate files pushed this project to 15 and broke the deploy
-// (errorCode "exceeded_serverless_functions_per_deployment"). A catch-all
-// dynamic segment ([...path].js) still matches every one of these exact
-// URLs with NO client-side change needed in contract.html -- Vercel's
-// file-system router treats `/api/contracts/documents`,
-// `/api/contracts/confirmMatch`, `/api/contracts/upload`, and
-// `/api/contracts/file/<id>` as all landing on this one function, with the
-// matched segments available as req.query.path (an array).
+// /documents, /confirmMatch, /upload, /generate, and /file/<fileId> --
+// dispatched by path + method below, instead of one file per route (see git
+// history for the original 4-file version). Collapsed 2026-08-15: Vercel's
+// Hobby plan caps a deployment at 12 Serverless Functions total, and having
+// these as separate files pushed this project over the cap and broke the
+// deploy (errorCode "exceeded_serverless_functions_per_deployment"). A
+// catch-all dynamic segment ([...path].js) still matches every one of these
+// exact URLs with NO client-side change needed beyond the fetch() URL
+// itself -- Vercel's file-system router treats `/api/contracts/documents`,
+// `/api/contracts/confirmMatch`, `/api/contracts/upload`,
+// `/api/contracts/generate`, and `/api/contracts/file/<id>` as all landing
+// on this one function, with the matched segments available as
+// req.query.path (an array). `generate` (added 2026-08-20) follows this
+// same pattern deliberately -- a brand-new file here would have pushed the
+// count right back over the cap.
 //
 // Each route's own business logic below is otherwise UNCHANGED from its
 // original single-file version -- see each section's own comment for what
@@ -22,6 +25,7 @@ const {
   listAllFilesInFolder, getFileMetadata, getFileMediaBuffer, createImageFile
 } = require('../../lib/googleDrive');
 const { setSessionCookie } = require('../../lib/session');
+const { generateContractDocumentFromJson } = require('../../lib/contractDocGen');
 
 const SIDECAR_FILENAME = 'contract_docs.json';
 
@@ -246,6 +250,28 @@ async function handleUpload(req, res, { drive, folderId, session }) {
   sendJson(res, 200, { success: true, file: { id: created.id, name: created.name, mimeType: created.mimeType } }, session);
 }
 
+// ---- POST /api/contracts/generate -- body is the SAME shape
+// contract.html's buildRegenerateContractPayload already sends (name,
+// nationality, passport, number, bikeModel, rentingDateFrom, returnDate,
+// returnTime, deliverToHotel, totalPrice, deposit, depositAmount,
+// depositCurrency, deliveryFeeApplies, deliveryFee, helmet fields). Added
+// 2026-08-20, replacing contract.html's "View Contract"/"Update Contract"
+// buttons' old call to the now-decommissioned Code.gs Apps Script Web App
+// (`scriptUrl`, action 'regenerateContract') -- see lib/contractDocGen.js's
+// header comment for the full story. Deliberately returns just the new
+// PDF's file id, NOT a public "anyone with the link" Drive URL the way
+// Code.gs did -- the client opens it the same private way it already opens
+// a passport photo, via GET /api/contracts/file/<id> above, so a generated
+// contract never needs public link-sharing turned on at all. ----
+async function handleGenerate(req, res, ctx) {
+  if (req.method !== 'POST') { sendJson(res, 405, { success: false, error: 'Method not allowed.' }); return; }
+  const body = await readJsonBody(req);
+  if (!(body && body.name)) { sendJson(res, 400, { success: false, error: 'Missing "name".' }); return; }
+
+  const result = await generateContractDocumentFromJson(ctx, body);
+  sendJson(res, 200, result, ctx.session);
+}
+
 // ---- GET /api/contracts/file/<fileId> -- private-proxy stream, images +
 // PDFs. See the original file/[fileId].js's comment. ----
 async function handleFile(req, res, { drive }, fileId) {
@@ -298,6 +324,7 @@ module.exports = withDrive(async function handler(req, res, ctx) {
     if (route === 'documents') { await handleDocuments(req, res, ctx, url); return; }
     if (route === 'confirmMatch') { await handleConfirmMatch(req, res, ctx); return; }
     if (route === 'upload') { await handleUpload(req, res, ctx); return; }
+    if (route === 'generate') { await handleGenerate(req, res, ctx); return; }
     if (route === 'file') { await handleFile(req, res, ctx, pathParts[1]); return; }
     sendJson(res, 404, { success: false, error: 'Not found.' });
   } catch (err) {
