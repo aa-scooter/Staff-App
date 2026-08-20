@@ -471,25 +471,23 @@
       <button type="button" id="editReceiptBtn">Edit Receipt</button>
       <button type="button" id="editViewChecklistBtn">View Checklist</button>
     </div>
-    <!-- Send Contract + Receipt -- pulls both PDFs as real files (via the
-         backend, action:'getFilesForShare') and hands them to the phone's
-         native share sheet (Web Share API) so staff can pick WhatsApp
-         directly and send both as real attachments in one go. Falls back
-         to opening both PDFs as plain tabs when Web Share isn't available
-         or doesn't accept files -- true for most desktop browsers, since
-         WhatsApp generally isn't registered as a share target there even
-         when navigator.share itself exists -- see editSendDocsBtn's click
-         handler below for why: on desktop, staff attach the two opened
-         PDFs by hand from within WhatsApp instead.
-         REVERTED 2026-08-17 back to this Web Share approach (had briefly
-         been replaced with a download+WhatsApp-Web flow that wasn't
-         working reliably either -- see PROGRESS.md's "download+WhatsApp
-         Web" entry -- Anton asked to go back to this version, "it was
-         sort of working"). The original flakiness this button had is
-         believed to trace back to scriptUrl being blank (see this file's
-         own scriptUrl comment), not to Web Share itself -- that's fixed
-         separately now, so this should behave better than it did before
-         either rework. -->
+    <!-- Send Contract + Receipt -- SIMPLIFIED 2026-08-20 (Anton, live: "at
+         the moment it's only downloading the contract [not the receipt
+         too]"). This used to POST action:'getFilesForShare' to `scriptUrl`
+         (the Code.gs Apps Script Web App) to pull both PDFs as real bytes
+         for navigator.share -- Code.gs and its backing spreadsheet are now
+         fully decommissioned (see this file's other scriptUrl comments), so
+         that call always failed, falling straight to the "open both PDFs as
+         tabs" fallback. THAT fallback was the actual bug Anton hit: it
+         called window.open() twice in a row inside an async handler, and
+         mobile browsers only ever honor the FIRST window.open() after an
+         await as a genuine user gesture -- the second (the receipt) was
+         silently popup-blocked every time, which is exactly "only
+         downloading the contract." Replaced the whole Web Share/scriptUrl
+         path with a plain, reliable download of both files via temporary
+         <a download> clicks (see downloadContractFile_ below) -- not a
+         popup, so both go through every time. No more WhatsApp share-sheet
+         hand-off; staff now attach both files from Downloads instead. -->
     <div class="head-btn-row" id="editSendDocsRow" style="margin-bottom:14px;">
       <button type="button" id="editSendDocsBtn">Send Contract + Receipt</button>
     </div>
@@ -3731,6 +3729,20 @@ const editViewPdfBtn = document.getElementById('editViewPdfBtn');
 const editUpdateContractBtn = document.getElementById('editUpdateContractBtn');
 const editNoDocsMsg = document.getElementById('editNoDocsMsg');
 
+// CHANGED BACK 2026-08-20 (Anton, same day as the private-proxy fix
+// above): View Contract/View Receipt/View Checklist should open a real
+// Google Drive link, not the /api/contracts/file/<id> private proxy --
+// Anton wants these to hand off to the Drive app / Drive's own viewer on
+// Android "like before, because I know it works", instead of rendering
+// inside this app's own tab. These files are owner-only (no "anyone with
+// the link" sharing -- see lib/contractDocGen.js), so this only works
+// when the viewing browser is signed into the same Google account that
+// owns them (aascooterchiangmai@gmail.com) -- fine for Anton's own
+// devices, but flag it if a different staff login ever can't open one.
+function driveViewUrl(fileId) {
+  return 'https://drive.google.com/file/d/' + encodeURIComponent(fileId) + '/view';
+}
+
 // Contracts are PDF-only now (same as receipts -- the filled Google Doc is
 // only ever a temporary intermediate step on the backend, never kept).
 // Builds the payload POST /api/contracts/generate needs from this row's own
@@ -3786,11 +3798,13 @@ async function performContractRegeneration() {
     if (res.status === 401) throw new Error('Signed out -- please refresh to sign in again.');
     const data = await res.json().catch(() => ({}));
     if (!data.success) throw new Error(data.error || 'Unknown error');
-    // The new route deliberately returns just a Drive file id, not a public
-    // "anyone with the link" URL the way scriptUrl's regenerateContract
-    // used to -- opened the same private way "View Photo of Passport"
-    // already opens its own files, via the /api/contracts/file/<id> proxy.
-    currentEditRecord.contractPdfUrl = '/api/contracts/file/' + encodeURIComponent(data.pdfFileId);
+    // The new route returns just a Drive file id -- kept separately
+    // (contractPdfFileId) so "Send Contract + Receipt" can still force a
+    // download via the private proxy (?download=1) even though
+    // contractPdfUrl itself is now a plain Drive view link (see
+    // driveViewUrl() above).
+    currentEditRecord.contractPdfFileId = data.pdfFileId;
+    currentEditRecord.contractPdfUrl = driveViewUrl(data.pdfFileId);
     editStatusBox.textContent = 'Contract updated.';
     editStatusBox.className = 'status ok';
     return true;
@@ -3829,7 +3843,10 @@ async function viewContract() {
     const expectedName = 'Contract - ' + (currentEditRecord.name || 'Unnamed') + ' - ' + dateStr + '.pdf';
     const files = data.matched ? (data.files || []) : [];
     const match = files.find((f) => f.name === expectedName);
-    if (match) currentEditRecord.contractPdfUrl = '/api/contracts/file/' + encodeURIComponent(match.id);
+    if (match) {
+      currentEditRecord.contractPdfFileId = match.id;
+      currentEditRecord.contractPdfUrl = driveViewUrl(match.id);
+    }
 
     if (currentEditRecord.contractPdfUrl) {
       window.open(currentEditRecord.contractPdfUrl, '_blank', 'noopener');
@@ -4115,7 +4132,8 @@ function mapPaidByToMethod(paidBy) {
 // contract" -- same GET /api/contracts/documents lookup + expected-filename
 // match viewContract/viewChecklist already do, factored out here so View
 // Receipt (and Edit Receipt, and View Checklist further down) can use it
-// too. Returns the private-proxy URL ('/api/contracts/file/<id>') or null.
+// too. Returns { id, url } (url is a real Drive view link, see
+// driveViewUrl() above) or null.
 async function findExistingContractFile(expectedName) {
   if (!currentEditRecord) return null;
   try {
@@ -4126,7 +4144,7 @@ async function findExistingContractFile(expectedName) {
     if (!data.success) throw new Error(data.error || 'Unknown error');
     const files = data.matched ? (data.files || []) : [];
     const match = files.find((f) => f.name === expectedName);
-    return match ? ('/api/contracts/file/' + encodeURIComponent(match.id)) : null;
+    return match ? { id: match.id, url: driveViewUrl(match.id) } : null;
   } catch (err) {
     return null;
   }
@@ -4167,8 +4185,9 @@ editViewReceiptBtn.addEventListener('click', async () => {
   editViewReceiptBtn.textContent = originalText;
 
   if (found) {
-    currentEditRecord.receiptPdfUrl = found;
-    window.open(found, '_blank', 'noopener');
+    currentEditRecord.receiptPdfFileId = found.id;
+    currentEditRecord.receiptPdfUrl = found.url;
+    window.open(found.url, '_blank', 'noopener');
     return;
   }
 
@@ -4191,7 +4210,8 @@ editReceiptBtn.addEventListener('click', async () => {
     editReceiptBtn.disabled = false;
     editReceiptBtn.textContent = originalText;
     if (found) {
-      currentEditRecord.receiptPdfUrl = found;
+      currentEditRecord.receiptPdfFileId = found.id;
+      currentEditRecord.receiptPdfUrl = found.url;
     } else {
       const proceed = confirm('No receipt exists for this contract yet. Would you like to generate one?');
       if (!proceed) return;
@@ -4364,7 +4384,8 @@ receiptConfirmBtn.addEventListener('click', async () => {
     if (res.status === 401) throw new Error('Signed out -- please refresh to sign in again.');
     const data = await res.json();
     if (!data.success) throw new Error(data.error || 'Unknown error');
-    const pdfUrl = '/api/contracts/file/' + encodeURIComponent(data.pdfFileId);
+    currentEditRecord.receiptPdfFileId = data.pdfFileId;
+    const pdfUrl = driveViewUrl(data.pdfFileId);
     currentEditRecord.receiptPdfUrl = pdfUrl;
     receiptConfirmStatusBox.innerHTML = 'Receipt updated' + (data.receiptNo ? ' (No. ' + data.receiptNo + ')' : '') + '. ' +
       '<a href="' + pdfUrl + '" target="_blank" rel="noopener" style="color:inherit; text-decoration:underline; font-weight:600;">Open PDF</a>';
@@ -4380,114 +4401,54 @@ receiptConfirmBtn.addEventListener('click', async () => {
 });
 
 /* ---------------- Send Contract + Receipt ---------------- */
-// REVERTED 2026-08-17 back to the Web Share flow (see the HTML comment
-// above this button for the full "why" -- the download+WhatsApp-Web
-// rework that briefly replaced this wasn't working reliably either, and
-// Anton asked to go back to this version).
+// SIMPLIFIED 2026-08-20 -- see the HTML comment above this button for the
+// full "why" (scriptUrl/getFilesForShare is dead now that Code.gs is
+// decommissioned, and the old tabs-fallback popup-blocked the 2nd file).
 //
-// Converts a base64 string (as returned by the backend's
-// action:'getFilesForShare') into a real File object the Web Share API
-// can attach.
-function base64ToFile_(base64, filename, mimeType) {
-  const byteChars = atob(base64);
-  const byteNumbers = new Array(byteChars.length);
-  for (let i = 0; i < byteChars.length; i++) byteNumbers[i] = byteChars.charCodeAt(i);
-  const byteArray = new Uint8Array(byteNumbers);
-  return new File([byteArray], filename, { type: mimeType || 'application/pdf' });
+// Triggers a same-page file download via a temporary anchor click. This is
+// NOT window.open() -- an <a download> click is never treated as a popup
+// by mobile/desktop browsers, so calling this twice in a row (contract,
+// then receipt) reliably downloads BOTH, unlike the old window.open()-per-
+// file approach that only ever got the first one through. Goes straight at
+// the private proxy with ?download=1 so the response comes back as a
+// forced attachment (Content-Disposition) instead of the plain inline
+// response "View Photo of Passport" uses.
+function downloadContractFile_(fileId, filename) {
+  const a = document.createElement('a');
+  a.href = '/api/contracts/file/' + encodeURIComponent(fileId) + '?download=1';
+  a.download = filename;
+  a.rel = 'noopener';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
 }
 
-// Fallback for whenever Web Share isn't usable here -- most desktop
-// browsers (navigator.share/canShare either don't exist, or canShare
-// returns false for a files-share on this device), or a real share
-// attempt that failed for some reason other than the user cancelling it.
-// Just opens both PDFs as plain tabs so staff can still get to them, even
-// though there's no way to hand them straight to WhatsApp from here.
-function openDocsFallback_(contractUrl, receiptUrl) {
-  if (contractUrl) window.open(contractUrl, '_blank', 'noopener');
-  if (receiptUrl) window.open(receiptUrl, '_blank', 'noopener');
-}
-
-// Click handler. Pulls both PDFs as real bytes from the backend
-// (action:'getFilesForShare', which reads them straight off Drive
-// server-side -- see that action's own comment in Code.gs), converts them
-// to File objects, and hands them to navigator.share so staff can pick
-// WhatsApp from the phone's native share sheet and send both as real
-// attachments in one go. Falls back to openDocsFallback_ (open both PDFs
-// as tabs) if Web Share isn't available, isn't willing to share files on
-// this device, or the share itself fails for a reason other than the user
-// simply cancelling the share sheet (AbortError -- not treated as an
-// error). Still does NOT try to generate either document on the fly if
+// Click handler. Does NOT try to generate either document on the fly if
 // missing -- the contract could be regenerated silently, but the receipt
 // can't be (Edit Receipt needs amounts typed in by hand), and having the
 // same button silently do one but not the other would be a confusing
 // half-measure. So: if either is missing, say exactly which one and stop.
 const editSendDocsBtn = document.getElementById('editSendDocsBtn');
-editSendDocsBtn.addEventListener('click', async () => {
+editSendDocsBtn.addEventListener('click', () => {
   if (!currentEditRecord) return;
   editStatusBox.className = 'status';
   editStatusBox.textContent = '';
 
   const missing = [];
-  if (!currentEditRecord.contractPdfUrl) missing.push('the contract (use "View Contract" above to generate it)');
-  if (!currentEditRecord.receiptPdfUrl) missing.push('the receipt (use "Edit Receipt" above to generate it)');
+  if (!currentEditRecord.contractPdfFileId) missing.push('the contract (use "View Contract" above to generate it)');
+  if (!currentEditRecord.receiptPdfFileId) missing.push('the receipt (use "Edit Receipt" above to generate it)');
   if (missing.length) {
     editStatusBox.textContent = 'Cannot send yet -- missing ' + missing.join(' and ') + '.';
     editStatusBox.className = 'status err';
     return;
   }
 
-  const contractUrl = currentEditRecord.contractPdfUrl;
-  const receiptUrl = currentEditRecord.receiptPdfUrl;
-  const originalText = editSendDocsBtn.textContent;
-  editSendDocsBtn.disabled = true;
-  editSendDocsBtn.textContent = 'Preparing…';
-  editStatusBox.innerHTML = '<span class="status-spinner"></span><span>Fetching files…</span>';
-  editStatusBox.className = 'status progress';
+  const nameForFile = (currentEditRecord.name || 'AA Scooters').trim();
+  downloadContractFile_(currentEditRecord.contractPdfFileId, 'Contract - ' + nameForFile + '.pdf');
+  downloadContractFile_(currentEditRecord.receiptPdfFileId, 'Receipt - ' + nameForFile + '.pdf');
 
-  try {
-    const res = await fetch(scriptUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({ action: 'getFilesForShare', fileUrls: [contractUrl, receiptUrl] })
-    });
-    const data = await res.json();
-    if (!data.success) throw new Error(data.error || 'Unknown error');
-
-    const files = (data.files || []).map(f => base64ToFile_(f.base64, f.filename, f.mimeType));
-
-    if (navigator.canShare && navigator.canShare({ files })) {
-      try {
-        await navigator.share({
-          files,
-          title: 'Contract + Receipt',
-          text: 'Contract and receipt from AA Scooters.'
-        });
-        editStatusBox.textContent = 'Shared.';
-        editStatusBox.className = 'status ok';
-      } catch (shareErr) {
-        if (shareErr && shareErr.name === 'AbortError') {
-          // Staff cancelled the share sheet themselves -- not a failure.
-          editStatusBox.textContent = '';
-          editStatusBox.className = 'status';
-        } else {
-          openDocsFallback_(contractUrl, receiptUrl);
-          editStatusBox.textContent = 'Could not share directly, so opened both PDFs as tabs instead -- attach them from there.';
-          editStatusBox.className = 'status warn';
-        }
-      }
-    } else {
-      openDocsFallback_(contractUrl, receiptUrl);
-      editStatusBox.textContent = 'Opened both PDFs as tabs -- attach them from there (this device/browser can\'t share files directly).';
-      editStatusBox.className = 'status warn';
-    }
-  } catch (err) {
-    openDocsFallback_(contractUrl, receiptUrl);
-    editStatusBox.textContent = 'Could not fetch the files to share (' + err.message + ') -- opened both PDFs as tabs instead.';
-    editStatusBox.className = 'status warn';
-  } finally {
-    editSendDocsBtn.disabled = false;
-    editSendDocsBtn.textContent = originalText;
-  }
+  editStatusBox.textContent = 'Downloaded the contract and receipt -- attach them from Downloads.';
+  editStatusBox.className = 'status ok';
 });
 
 /* ---------------- View Checklist ---------------- */
@@ -4529,8 +4490,9 @@ async function viewChecklist() {
 
   const found = await findExistingContractFile(expectedChecklistFileName());
   if (found) {
-    currentEditRecord.checklistPdfUrl = found;
-    window.open(found, '_blank', 'noopener');
+    currentEditRecord.checklistPdfFileId = found.id;
+    currentEditRecord.checklistPdfUrl = found.url;
+    window.open(found.url, '_blank', 'noopener');
     editViewChecklistBtn.disabled = false;
     editViewChecklistBtn.textContent = originalText;
     return;
@@ -4557,7 +4519,8 @@ async function viewChecklist() {
     if (res.status === 401) throw new Error('Signed out -- please refresh to sign in again.');
     const data = await res.json();
     if (!data.success) throw new Error(data.error || 'Unknown error');
-    currentEditRecord.checklistPdfUrl = '/api/contracts/file/' + encodeURIComponent(data.pdfFileId);
+    currentEditRecord.checklistPdfFileId = data.pdfFileId;
+    currentEditRecord.checklistPdfUrl = driveViewUrl(data.pdfFileId);
     editStatusBox.textContent = 'Checklist generated.';
     editStatusBox.className = 'status ok';
   } catch (err) {

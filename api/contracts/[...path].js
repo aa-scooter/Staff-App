@@ -314,7 +314,7 @@ async function handleGenerateChecklist(req, res, ctx) {
 
 // ---- GET /api/contracts/file/<fileId> -- private-proxy stream, images +
 // PDFs. See the original file/[fileId].js's comment. ----
-async function handleFile(req, res, { drive }, fileId) {
+async function handleFile(req, res, { drive }, fileId, url) {
   if (req.method !== 'GET') { sendJson(res, 405, { success: false, error: 'Method not allowed.' }); return; }
   if (!fileId) { sendJson(res, 400, { success: false, error: 'Missing file id.' }); return; }
 
@@ -334,16 +334,19 @@ async function handleFile(req, res, { drive }, fileId) {
   res.statusCode = 200;
   res.setHeader('Content-Type', meta.mimeType);
   res.setHeader('Cache-Control', 'private, max-age=3600');
-  // PDFs (contracts/receipts/checklists): force a real download instead of
-  // rendering inline. Without this, mobile Chrome's built-in PDF viewer
-  // swallows the response and the file never leaves the browser tab --
-  // Anton wants these to hand off to Drive/a native PDF app instead, same
-  // as before this route existed. `attachment` is what makes a browser
-  // treat the response as a file to save/open rather than a page to
-  // display, which is what triggers Android's "Open with" chooser (or the
-  // user's default PDF app) once the download finishes. Images (passport
-  // photos) are left as `inline` -- those should still preview in-browser.
-  if (meta.mimeType === 'application/pdf') {
+  // REVERTED 2026-08-20 (Anton): PDFs used to always force-download here
+  // (Content-Disposition: attachment) so they'd hand off to a native PDF
+  // app instead of Chrome's inline viewer. Anton changed his mind the same
+  // day -- "View Contract"/"View Receipt"/"View Checklist" should now open
+  // via a real Google Drive link instead (see contract.html's
+  // driveViewUrl()), which never even reaches this route anymore for those
+  // buttons. This route stays plain `inline` (the default -- no header) by
+  // default so it still works for anything that DOES still hit it directly
+  // (e.g. "View Photo of Passport"). Forced download is now opt-in via
+  // ?download=1, used only by "Send Contract + Receipt" (downloadContractFile_
+  // in contract.html) so both files land in Downloads instead of opening tabs.
+  const wantsDownload = (req.query && req.query.download === '1') || (url && url.searchParams.get('download') === '1');
+  if (wantsDownload) {
     const safeName = (meta.name || 'document.pdf').replace(/[\r\n"]/g, '');
     res.setHeader(
       'Content-Disposition',
@@ -383,7 +386,7 @@ module.exports = withDrive(async function handler(req, res, ctx) {
     if (route === 'generate') { await handleGenerate(req, res, ctx); return; }
     if (route === 'generateReceipt') { await handleGenerateReceipt(req, res, ctx); return; }
     if (route === 'generateChecklist') { await handleGenerateChecklist(req, res, ctx); return; }
-    if (route === 'file') { await handleFile(req, res, ctx, pathParts[1]); return; }
+    if (route === 'file') { await handleFile(req, res, ctx, pathParts[1], url); return; }
     sendJson(res, 404, { success: false, error: 'Not found.' });
   } catch (err) {
     sendJson(res, 500, { success: false, error: err.message });
