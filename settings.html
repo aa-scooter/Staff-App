@@ -168,6 +168,30 @@
   }
   .load-status.show{ display:block; }
 
+  /* Backups */
+  .backup-item{
+    display:flex; align-items:center; justify-content:space-between; gap:10px;
+    padding:10px 0; border-bottom:1px solid var(--line);
+  }
+  .backup-item:last-child{ border-bottom:none; }
+  .backup-item-info{ min-width:0; }
+  .backup-item-date{ font-size:13.5px; color:var(--ink); font-weight:500; }
+  .backup-item-tag{
+    display:inline-block; margin-left:7px; padding:1px 7px; border-radius:10px;
+    font-size:10.5px; font-weight:600; text-transform:uppercase; letter-spacing:.03em;
+    background:#EFEAE0; color:var(--muted); vertical-align:middle;
+  }
+  .backup-item-tag.auto{ background:#E9F2F1; color:var(--petrol-light); }
+  .backup-item-tag.manual{ background:#FFF3E6; color:#B36A2E; }
+  .backup-item-tag.pre-restore{ background:#FCEBEB; color:var(--bad); }
+  .backup-restore-btn{
+    all:unset; box-sizing:border-box; flex-shrink:0; padding:7px 12px; border-radius:8px; cursor:pointer;
+    background:#FBFAF7; border:1px solid var(--line); color:var(--petrol);
+    font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:11.5px;
+    letter-spacing:.03em; text-transform:uppercase;
+  }
+  .backup-restore-btn:active{ transform:scale(.98); }
+
   /* Modal (same pattern used across the app) */
   .modal-backdrop{
     position:fixed; inset:0; background:rgba(15,36,33,.45);
@@ -305,6 +329,25 @@
     <div class="txn-count-hint" id="txnCountHint"></div>
   </div>
 
+  <div class="settings-section">
+    <h2>Backups</h2>
+    <div class="desc">
+      A snapshot of all the live data, kept for 30 days so you can recover from a bad edit or
+      corrupted data -- separate from the "Data (testing)" reset below, which only ever restores
+      the original seed data, not a real point-in-time copy. Runs automatically about once a day,
+      the first time the app is used that day -- or trigger one right now below, e.g. before doing
+      something risky.
+    </div>
+    <button type="button" class="settings-action-btn" id="backupNowBtn">Backup now</button>
+    <div class="settings-status" id="backupNowStatus"></div>
+
+    <div class="api-key-block">
+      <label style="display:block; font-size:11px; font-weight:600; color:var(--muted); margin-bottom:8px; text-transform:uppercase; letter-spacing:.04em;">Restore from a backup</label>
+      <div class="load-status" id="backupListStatus"></div>
+      <div id="backupList"><div class="empty-hint">Loading…</div></div>
+    </div>
+  </div>
+
   <div class="settings-section danger">
     <h2>Data (testing)</h2>
     <div class="desc">Overwrites the live Drive data with whatever's bundled in the current deploy. Use to recover from bad test data -- stop using this once you trust the live data.</div>
@@ -332,6 +375,25 @@
     <div class="modal-btn-row">
       <button type="button" class="btn-cancel" id="reverseCancelBtn">Cancel</button>
       <button type="button" class="btn-delete" id="reverseConfirmBtn">Reverse</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="restoreBackdrop">
+  <div class="modal-sheet">
+    <h3>Restore this backup?</h3>
+    <div class="modal-error" id="restoreError"></div>
+    <div class="modal-progress" id="restoreProgress"><span class="modal-progress-spinner"></span><span>Restoring…</span></div>
+    <div class="reverse-summary" id="restoreSummary"></div>
+    <div class="reverse-warning">
+      This replaces ALL live data with this backup's snapshot -- every sheet, not just one. A
+      fresh backup of the current live data is taken automatically first, so this itself can be
+      undone by restoring that one if it turns out to be a mistake. Reversible transaction-history
+      entries from before this restore will no longer apply, and get cleared.
+    </div>
+    <div class="modal-btn-row">
+      <button type="button" class="btn-cancel" id="restoreCancelBtn">Cancel</button>
+      <button type="button" class="btn-delete" id="restoreConfirmBtn">Restore</button>
     </div>
   </div>
 </div>
@@ -849,14 +911,164 @@
     });
   }
 
+  // =====================================================================
+  // Backups -- manual "Backup now" button + restore-from-backup list.
+  // Both talk to the same /api/admin/reset endpoint the "Data (testing)"
+  // reset button above already uses, via an `action` field in the POST
+  // body -- see that file's own header comment for why this rides on the
+  // existing endpoint instead of a new one. See lib/backups.js's header
+  // comment for the full feature design (storage layout, why there's no
+  // separate cron, retention, etc.).
+  // =====================================================================
+  function backupTagLabel(trigger) {
+    if (trigger === 'auto') return 'Auto';
+    if (trigger === 'pre-restore') return 'Pre-restore';
+    return 'Manual';
+  }
+
+  function renderBackupList(backups) {
+    var listEl = document.getElementById('backupList');
+    if (!backups.length) { listEl.innerHTML = '<div class="empty-hint">No backups yet.</div>'; return; }
+    var html = '';
+    for (var i = 0; i < backups.length; i++) {
+      var b = backups[i];
+      html += '<div class="backup-item">' +
+        '<div class="backup-item-info">' +
+          '<span class="backup-item-date">' + escapeHtmlS(fmtTs(b.createdAt)) + '</span>' +
+          '<span class="backup-item-tag ' + escapeHtmlS(b.trigger) + '">' + escapeHtmlS(backupTagLabel(b.trigger)) + '</span>' +
+        '</div>' +
+        '<button type="button" class="backup-restore-btn" data-backup-id="' + escapeHtmlS(b.id) + '" data-backup-date="' + escapeHtmlS(fmtTs(b.createdAt)) + '">Restore</button>' +
+      '</div>';
+    }
+    listEl.innerHTML = html;
+    var btns = listEl.querySelectorAll('.backup-restore-btn');
+    for (var j = 0; j < btns.length; j++) {
+      btns[j].addEventListener('click', function () {
+        openRestoreModal(this.getAttribute('data-backup-id'), this.getAttribute('data-backup-date'));
+      });
+    }
+  }
+
+  function loadBackupList() {
+    var statusEl = document.getElementById('backupListStatus');
+    statusEl.classList.remove('show'); statusEl.textContent = '';
+    fetch('/api/admin/reset', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'backupList' })
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (!data || !data.success) throw new Error((data && data.error) || 'Could not load backups.');
+        renderBackupList(data.backups || []);
+      })
+      .catch(function (err) {
+        statusEl.classList.add('show');
+        statusEl.textContent = 'Could not load backups: ' + err.message;
+        document.getElementById('backupList').innerHTML = '';
+      });
+  }
+
+  function initBackupNowWidget() {
+    var btn = document.getElementById('backupNowBtn');
+    if (!btn) return;
+    btn.addEventListener('click', function () {
+      var statusEl = document.getElementById('backupNowStatus');
+      function setStatus(msg, isError) {
+        statusEl.classList.toggle('show', !!msg);
+        statusEl.textContent = msg || '';
+        statusEl.style.color = isError ? '#c0392b' : '#2F855A';
+      }
+      btn.disabled = true;
+      setStatus('Backing up…', false);
+      fetch('/api/admin/reset', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'backupCreate' })
+      })
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          if (!data || !data.success) { setStatus((data && data.error) || 'Backup failed -- please try again.', true); return; }
+          var b = data.backup;
+          var errNote = (b.errors && b.errors.length) ? (' (' + b.errors.length + ' file(s) failed -- check manually)') : '';
+          setStatus('Backed up ' + b.fileCount + ' file(s) at ' + fmtTs(b.createdAt) + errNote, !!(b.errors && b.errors.length));
+          loadBackupList();
+        })
+        .catch(function (err) { setStatus('Backup failed: ' + err.message, true); })
+        .finally(function () { btn.disabled = false; });
+    });
+  }
+
+  var pendingRestoreId = null;
+  function openRestoreModal(backupId, dateLabel) {
+    pendingRestoreId = backupId;
+    document.getElementById('restoreError').classList.remove('show');
+    document.getElementById('restoreProgress').classList.remove('show');
+    document.getElementById('restoreSummary').textContent = 'Restore the ' + dateLabel + ' backup?';
+    document.getElementById('restoreConfirmBtn').disabled = false;
+    document.getElementById('restoreBackdrop').classList.add('show');
+  }
+  function closeRestoreModal() {
+    document.getElementById('restoreBackdrop').classList.remove('show');
+    pendingRestoreId = null;
+  }
+  function executeRestore() {
+    if (!pendingRestoreId) return;
+    var btn = document.getElementById('restoreConfirmBtn');
+    var errEl = document.getElementById('restoreError');
+    var progEl = document.getElementById('restoreProgress');
+    errEl.classList.remove('show'); errEl.textContent = '';
+    progEl.classList.add('show');
+    btn.disabled = true;
+    fetch('/api/admin/reset', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'backupRestore', backupId: pendingRestoreId })
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (!data || !data.success) throw new Error((data && data.error) || 'Restore failed -- please try again.');
+        progEl.classList.remove('show');
+        closeRestoreModal();
+        loadBackupList();
+        loadTransactionLog(true);
+        var errNote = (data.errors && data.errors.length) ? (' -- ' + data.errors.length + ' file(s) failed, check manually') : '';
+        alert('Restored ' + data.restoredFiles.length + ' file(s).' + errNote + ' Reload any open page to see the restored data.');
+      })
+      .catch(function (e) {
+        progEl.classList.remove('show');
+        errEl.classList.add('show');
+        errEl.textContent = e.message || 'Could not restore -- please try again.';
+        btn.disabled = false;
+      });
+  }
+  // Same mid-drag-click-outside guard every modal/lightbox in this project
+  // uses (see CLAUDE.md's standing instruction) -- a mousedown that started
+  // INSIDE the sheet (e.g. selecting text) but happens to release over the
+  // backdrop must not close this.
+  function initRestoreModal() {
+    document.getElementById('restoreCancelBtn').addEventListener('click', closeRestoreModal);
+    document.getElementById('restoreConfirmBtn').addEventListener('click', executeRestore);
+    var backdrop = document.getElementById('restoreBackdrop');
+    var mouseDownOnBackdrop = false;
+    backdrop.addEventListener('mousedown', function (e) { mouseDownOnBackdrop = (e.target === backdrop); });
+    backdrop.addEventListener('click', function (e) {
+      if (e.target === backdrop && mouseDownOnBackdrop) closeRestoreModal();
+      mouseDownOnBackdrop = false;
+    });
+  }
+
   function init() {
     initProviderWidget();
     initApiKeysWidget();
     initDataResetWidget();
+    initBackupNowWidget();
+    initRestoreModal();
     initSignOutWidget();
     initTxnSearch();
     initReverseModal();
     loadTransactionLog(false);
+    loadBackupList();
   }
 
   if (document.readyState === 'loading') {

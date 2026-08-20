@@ -5692,3 +5692,133 @@ for all 6 fixes to be live-verified. Full detail in TESTING.md's
 `api/contracts/[...path].js`. Every file re-read back from the real
 device and grepped for the `2026-08-19` marker comment after writing,
 per CLAUDE.md's standing instruction.
+
+## 🚀 ROLLOUT (2026-08-20) — shipped with bug #2 (bike photos / passport
+## viewing 404) deliberately deprioritized
+
+Anton decided to roll out with the photo/passport-viewing 404 left
+unpushed (not urgent) rather than block on it — see project memory
+`aa-scooters-rollout-2026-08.md` for the full rationale and status of all
+7 original bugs at rollout time. The `vercel.json` rewrite fix from the
+pass above is still sitting on disk, written and verified, just not
+committed/pushed. Don't chase it proactively; Anton will ask when ready.
+
+## 📋 BACKLOG (queued 2026-08-20, not started) — reproduce the spreadsheet
+## from JSON data
+
+Anton wants an option to regenerate the original Excel spreadsheet
+(`AA Scooter Account 2026.xlsx`, sits in the project root one level above
+`vercel-site/`) FROM the live JSON data (the same JSON files this app
+reads/writes via `/api/data/<sheet>`), rather than the spreadsheet being
+the source of truth it used to be back when `Code.gs` drove everything.
+Explicitly deferred — discussed in the same conversation as the daily
+JSON backup feature (see the entry right below/above, whichever lands
+first) but Anton was clear this one is NOT being worked on yet, just
+wants it on record so it isn't lost. No design discussion has happened
+yet for this one — start there next time it's picked up (what triggers
+a regenerate — on demand button vs. scheduled; which sheet tabs map to
+which JSON files; whether formulas/formatting need to be preserved or
+it's a plain data dump; where the generated file should land — Drive,
+download, or written back into the project folder).
+
+## ✅ DONE, tested, awaiting Anton's push — daily/manual JSON data backups
+## + restore-from-backup (2026-08-20)
+
+Built per Anton's request: a real point-in-time backup/restore on top of
+the existing "Reset data from latest deploy" button (which only restores
+the static SEED snapshot, never real live data). New `lib/backups.js` +
+extended `api/admin/reset.js` + small additions to `nav.js`/`settings.html`.
+
+**Design decisions made with Anton before building (see conversation):**
+- Restore is always whole-dataset (same "replace everything" shape as the
+  existing reset button), not per-sheet -- Anton: "we'll just do the
+  whole sheet... you can reenter what's happened."
+- Retention: 30 days rolling, oldest auto-pruned (soft-deleted, same as
+  every other delete in this app) after each successful backup.
+- Storage: a `Backups/<timestamp>/` subfolder tree inside the app's own
+  Drive folder, plain per-file copies (via `drive.files.copy`, not a zip)
+  -- fast, and restore just reads them back through the exact same
+  `readJsonFile`/`writeJsonFile` path every other save already uses.
+- **No new cron, no new stored automation credential.** Traced how the
+  EXISTING daily cron (the calendar sweep) authenticates headlessly and
+  found it only carries `drive.readonly` scope -- it literally can't
+  write anything, which likely also means that cron's own occasional
+  customer/Contract write-back has been silently failing this whole time
+  (a separate, not-yet-investigated finding, flagged to Anton, not fixed
+  here). Setting up a second stored write-scoped credential just for this
+  was considered and explicitly rejected in favor of piggybacking on
+  whichever staff Drive session is already logged in: `nav.js` now fires
+  a silent "has it been a while since the last backup" check once per
+  page load AND on an hourly timer (Anton uses the app open in a phone
+  browser tab for days at a stretch without reloading, so a load-only
+  check would miss every day after the first). If nobody's logged in for
+  a few days, nothing's changing in the live data either, so nothing is
+  lost by not backing up those days -- confirmed with Anton this is fine.
+- Manual "Backup now" button in Settings, for on-demand snapshots and
+  testing, plus a restore list showing the last up-to-30 backups
+  (date/time + Auto/Manual/Pre-restore tag) with a Restore button per row.
+- Restoring a backup auto-snapshots the CURRENT live data first (tagged
+  `pre-restore`) before overwriting anything -- a restore is itself
+  always undoable. Clears `transactionLog.json` afterward, same reasoning
+  as the existing reset button (stale reversible-entry pointers would
+  silently corrupt the restored data if reversed).
+- Excludes `ai_provider.json`/`ai_keys.json`/`calendar_auth.json` from
+  backup/restore scope -- config/credentials, not "data," and restoring
+  an old one over a newer one could silently break a working integration.
+  Every other `.json` file in the app folder (root + every year
+  subfolder) is included by default, so a brand-new sheet added later is
+  automatically covered without this needing an update.
+
+**Deliberately NOT a new `/api/` file** -- this project already hit
+Vercel Hobby's 12-Serverless-Function cap once (the still-unpushed
+bike-photos-404 saga -- see the entries above). All 4 new actions
+(`backupCreate`/`backupEnsureDaily`/`backupList`/`backupRestore`) are
+dispatched via an `action` field in `POST /api/admin/reset`'s body --
+same file, same URL, backward-compatible with the existing button's
+body-less POST (still runs the unchanged legacy reset path).
+
+**Tested (standalone Node harnesses, no real Drive access needed, per
+this project's standing "every write action needs a vm-run test harness"
+rule):** a fake in-memory Drive client (files.list/create/copy/get/update)
+exercising `lib/backups.js` directly -- source collection excludes config
+files and includes year-folder files correctly; backup copies match
+source content byte-for-byte; `listBackups` sorts newest-first;
+`ensureDailyBackup` correctly no-ops when recent and creates when stale
+(simulated via rewritten `createdTime`, not a real 20h wait); `pruneOldBackups`
+trashes only >30-day-old entries; `restoreBackup` restores both a global
+file (`cash.json`) and a year-scoped file (`August_2026.json`, correctly
+inferred back into the `2026` folder from its filename suffix) over
+deliberately-mutated live data, auto-snapshots first, clears the
+transaction log. A second harness drives the REAL `api/admin/reset.js`
+handler end-to-end (fake `withDrive`/Drive, real `lib/backups.js`) to
+confirm the dispatch wiring itself: GET still 405s, an empty/no body
+still runs the legacy reset unchanged, each of the 4 new actions responds
+correctly, a missing `backupId` on restore is a clean 400 (not a crash),
+and an unknown action is a clean 400 too. All passed.
+
+No `Code.gs` changes -- this app is fully JSON/Drive-backed, same as
+every other pass in this project recently.
+
+**Files touched:** `lib/backups.js` (new), `api/admin/reset.js`,
+`nav.js`, `settings.html`. Every file re-read back from the real device
+after writing and grepped for a distinctive marker before being reported
+here as done, per CLAUDE.md's standing instruction.
+
+**Not yet done:**
+1. Anton reviews the diff and pushes (git commands below).
+2. Live smoke test once deployed: click "Backup now" in Settings, confirm
+   a `Backups/<timestamp>` folder appears in Drive with the expected
+   files; leave a tab open and confirm the hourly check doesn't spam
+   duplicate backups; try a real Restore on a throwaway/test backup and
+   confirm the pre-restore safety snapshot shows up too.
+
+```
+cd "/Users/anton/AA-Scooters-Project Database/vercel-site"
+git status                                  # review everything below first
+git add lib/backups.js api/admin/reset.js nav.js settings.html PROGRESS.md
+git commit -m "Add daily/manual JSON data backups + restore-from-backup
+
+Piggybacks on the existing staff Drive session instead of a new cron/
+credential -- see lib/backups.js and PROGRESS.md for the full design."
+git push
+```

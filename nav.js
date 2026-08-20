@@ -812,6 +812,44 @@
     // qualifies, and lets an item that was too young to touch on the
     // first pass become eligible without needing a reload.
     setInterval(function () { refreshSaveStrip(); recoverOrphanedSaves(); }, 2500);
+
+    // See checkDailyBackup()'s own comment below for what this does and why.
+    checkDailyBackup();
+    setInterval(checkDailyBackup, BACKUP_CHECK_INTERVAL_MS);
+  }
+
+  // =====================================================================
+  // Silent daily data backup (added 2026-08-20, per Anton -- see
+  // lib/backups.js's header comment for the full design/why). Runs once
+  // per page load PLUS on a recurring hourly timer, both calling the same
+  // "create a backup only if it's been a while since the last one"
+  // endpoint action through whichever staff session is ALREADY logged
+  // into this tab -- no separate stored credential, no cron.
+  //
+  // The hourly timer specifically exists for Anton's own workflow: he
+  // often leaves the app open in a browser tab on his phone for two or
+  // three days straight without closing/reopening it, so a check that
+  // only ran once at page-load time would miss every day after the
+  // first. An hourly re-check while the tab stays open catches a new day
+  // rolling over within about an hour, without needing a reload. If the
+  // tab genuinely isn't open for a few days, nothing's changing in the
+  // live data either, so there's nothing lost by not backing up on those
+  // days -- the next time the tab IS open, this check catches up.
+  //
+  // Deliberately silent/best-effort throughout: this is a background
+  // safety net, never something a staff member should have to notice,
+  // wait for, or be interrupted by. A failure here (signed out, offline,
+  // Drive hiccup) is swallowed exactly like recoverOrphanedSaves()'s own
+  // background retries above -- the NEXT check (next page load, or next
+  // hourly tick) just tries again.
+  // =====================================================================
+  var BACKUP_CHECK_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
+  function checkDailyBackup() {
+    fetch('/api/admin/reset', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'backupEnsureDaily' })
+    }).catch(function () { /* best-effort, see comment above */ });
   }
 
   // =====================================================================
