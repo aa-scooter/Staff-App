@@ -1,22 +1,23 @@
 // Single catch-all function for every /api/contracts/* route --
 // /documents, /confirmMatch, /upload, /generate, /generateReceipt,
-// /generateChecklist, and /file/<fileId> -- dispatched by path + method
-// below, instead of one file per route (see git history for the original
-// 4-file version). Collapsed 2026-08-15: Vercel's Hobby plan caps a
-// deployment at 12 Serverless Functions total, and having these as
-// separate files pushed this project over the cap and broke the deploy
-// (errorCode "exceeded_serverless_functions_per_deployment"). A catch-all
-// dynamic segment ([...path].js) still matches every one of these exact
-// URLs with NO client-side change needed beyond the fetch() URL itself --
-// Vercel's file-system router treats `/api/contracts/documents`,
+// /generateChecklist, /makeContractPublic, and /file/<fileId> --
+// dispatched by path + method below, instead of one file per route (see
+// git history for the original 4-file version). Collapsed 2026-08-15:
+// Vercel's Hobby plan caps a deployment at 12 Serverless Functions total,
+// and having these as separate files pushed this project over the cap and
+// broke the deploy (errorCode "exceeded_serverless_functions_per_deployment").
+// A catch-all dynamic segment ([...path].js) still matches every one of
+// these exact URLs with NO client-side change needed beyond the fetch()
+// URL itself -- Vercel's file-system router treats `/api/contracts/documents`,
 // `/api/contracts/confirmMatch`, `/api/contracts/upload`,
 // `/api/contracts/generate`, `/api/contracts/generateReceipt`,
-// `/api/contracts/generateChecklist`, and `/api/contracts/file/<id>` as
-// all landing on this one function, with the matched segments available
-// as req.query.path (an array). `generate` (added 2026-08-20) and
-// `generateReceipt`/`generateChecklist` (added later the same day) all
-// follow this same pattern deliberately -- a brand-new file for any of
-// these would have pushed the count right back over the cap.
+// `/api/contracts/generateChecklist`, `/api/contracts/makeContractPublic`,
+// and `/api/contracts/file/<id>` as all landing on this one function, with
+// the matched segments available as req.query.path (an array). `generate`
+// (added 2026-08-20) and `generateReceipt`/`generateChecklist`/
+// `makeContractPublic` (added later the same day) all follow this same
+// pattern deliberately -- a brand-new file for any of these would have
+// pushed the count right back over the cap.
 //
 // Each route's own business logic below is otherwise UNCHANGED from its
 // original single-file version -- see each section's own comment for what
@@ -25,7 +26,8 @@ const { withDrive } = require('../../lib/apiAuth');
 const {
   ensureAppFolder, ensureContractsRootFolder, ensureContractCustomerFolder,
   readJsonFile, writeJsonFile, buildContractMatchKey, findContractFolderMatches,
-  listAllFilesInFolder, getFileMetadata, getFileMediaBuffer, createImageFile
+  listAllFilesInFolder, getFileMetadata, getFileMediaBuffer, createImageFile,
+  ensureFilePubliclyViewable
 } = require('../../lib/googleDrive');
 const { setSessionCookie } = require('../../lib/session');
 const {
@@ -312,6 +314,31 @@ async function handleGenerateChecklist(req, res, ctx) {
   sendJson(res, 200, result, ctx.session);
 }
 
+// ---- POST /api/contracts/makeContractPublic -- body { fileId }. Grants
+// "anyone with the link, view only" on a Contract PDF so contract.html's
+// viewContract() (which now opens a real drive.google.com/file/d/<id>/view
+// link -- see driveViewUrl() there) works regardless of which Google
+// account is signed into the viewer's browser. Added 2026-08-20 (Anton,
+// live: a Chrome profile on a different Google account than the file owner
+// got Drive's "you need permission" screen). generateContractDocumentFromJson
+// already sets this at generation time for anything created from now on --
+// this route is the backstop for a contract PDF that already existed
+// before that, letting viewContract() fix it retroactively the next time
+// it's opened. DELIBERATELY scoped to Contract PDFs only by which callers
+// invoke it (contract.html never calls this for receipts/checklists/photos)
+// -- do not wire this up to any other document type without asking Anton
+// first, since passport photos in particular must stay private. ----
+async function handleMakeContractPublic(req, res, { drive }) {
+  if (req.method !== 'POST') { sendJson(res, 405, { success: false, error: 'Method not allowed.' }); return; }
+  const body = await readJsonBody(req);
+  const fileId = (body.fileId || '').toString().trim();
+  if (!fileId) { sendJson(res, 400, { success: false, error: 'Missing "fileId".' }); return; }
+  try {
+    await ensureFilePubliclyViewable(drive, fileId);
+  } catch (e) { /* best-effort -- don't block the view over a sharing-permission hiccup */ }
+  sendJson(res, 200, { success: true });
+}
+
 // ---- GET /api/contracts/file/<fileId> -- private-proxy stream, images +
 // PDFs. See the original file/[fileId].js's comment. ----
 async function handleFile(req, res, { drive }, fileId, url) {
@@ -386,6 +413,7 @@ module.exports = withDrive(async function handler(req, res, ctx) {
     if (route === 'generate') { await handleGenerate(req, res, ctx); return; }
     if (route === 'generateReceipt') { await handleGenerateReceipt(req, res, ctx); return; }
     if (route === 'generateChecklist') { await handleGenerateChecklist(req, res, ctx); return; }
+    if (route === 'makeContractPublic') { await handleMakeContractPublic(req, res, ctx); return; }
     if (route === 'file') { await handleFile(req, res, ctx, pathParts[1], url); return; }
     sendJson(res, 404, { success: false, error: 'Not found.' });
   } catch (err) {

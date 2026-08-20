@@ -3815,10 +3815,44 @@ async function performContractRegeneration() {
   }
 }
 
+// Added 2026-08-20 (Anton, live): opening a contract's Drive link from a
+// Chrome profile signed into a DIFFERENT Google account than the file
+// owner showed Drive's own "you need permission, request access" screen.
+// Fixes it by asking the backend (POST /api/contracts/makeContractPublic,
+// which has authenticated Drive access) to grant "anyone with the link,
+// view only" on this specific fileId -- awaited so the permission is
+// actually in place before the Drive tab opens. Best-effort: any failure
+// here still lets the Drive link open, just possibly back to today's
+// prompt rather than a hard error. Scoped to Contract PDFs only -- never
+// call this for receipts/checklists/photos (see the route's own comment).
+async function ensureContractFilePublic_(fileId) {
+  if (!fileId) return;
+  try {
+    await fetch('/api/contracts/makeContractPublic', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fileId })
+    });
+  } catch (e) { /* best-effort */ }
+}
+
 async function viewContract() {
   if (!currentEditRecord) return;
   if (currentEditRecord.contractPdfUrl) {
+    // window.open() FIRST, before any await -- this branch has nothing
+    // else to fetch, so it's the one case where the click handler can
+    // still open the tab as a direct, synchronous result of the user's
+    // click. ensureContractFilePublic_ fires after, NOT awaited first --
+    // awaiting it here would put window.open() behind a network round
+    // trip and risk exactly the "browser only honors the popup if it's
+    // close enough to the original gesture" block that turned out to be
+    // the Send Contract + Receipt bug (see downloadContractFile_'s
+    // comment). Worst case from not awaiting: the very first time an
+    // older, not-yet-public contract is opened this way, Drive may still
+    // show its permission prompt once -- clicking "View Contract" again
+    // right after works, since by then the permission call has landed.
     window.open(currentEditRecord.contractPdfUrl, '_blank', 'noopener');
+    ensureContractFilePublic_(currentEditRecord.contractPdfFileId);
     return;
   }
 
@@ -3849,6 +3883,11 @@ async function viewContract() {
     }
 
     if (currentEditRecord.contractPdfUrl) {
+      // Already past an await (the search fetch above), so one more
+      // await here doesn't change the popup-safety picture -- and this is
+      // exactly the legacy-file case ensureContractFilePublic_ exists for,
+      // so it's worth actually waiting for it to land before opening.
+      await ensureContractFilePublic_(currentEditRecord.contractPdfFileId);
       window.open(currentEditRecord.contractPdfUrl, '_blank', 'noopener');
       editViewPdfBtn.disabled = false;
       editViewPdfBtn.textContent = originalText;
