@@ -135,12 +135,20 @@
   <div class="sub">Pick a tool to get started</div>
 </div>
 
-<!-- TEMP/TEST -- month-end rollover, step 1 (sheet creation only). To be
-     removed once this is confirmed working and wired to run automatically
-     instead. See createMonthSheetFromTemplate in Code.gs. -->
+<!-- Month-end rollover, manual trigger (reconnected 2026-08-21 -- see
+     lib/monthRollover.js and CODE_GS_PARITY_AUDIT_2026-08-21.md finding #2 /
+     FORMULA_CASCADE_AUDIT_2026-08-14.md finding #6). Ports Code.gs's
+     createMonthSheetFromTemplate + carryForwardMonthFigures_ -- creates next
+     month's sheet from Template and carries forward the cash/wise/revolut/
+     bike-bank starting balances plus any still-open security deposits. Also
+     runs automatically every night via Vercel Cron (see vercel.json), which
+     only actually does anything when tomorrow is the 1st -- this button is
+     the manual fallback/backstop for that, same as before, not a duplicate
+     of a "test" feature. Safe to click any time: refuses (rather than
+     overwriting) if next month's sheet already exists. -->
 <div style="max-width:520px; margin:0 auto 18px; padding:0 16px;">
-  <button type="button" id="createMonthSheetBtn" style="width:100%; padding:12px; border:1px dashed var(--cone); border-radius:10px; background:#FFF3EC; color:var(--cone); font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:14px; letter-spacing:.04em; text-transform:uppercase; cursor:pointer;">
-    TEST: Create Next Month Sheet
+  <button type="button" id="createMonthSheetBtn" style="width:100%; padding:12px; border:1px solid var(--cone); border-radius:10px; background:#FFF3EC; color:var(--cone); font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:14px; letter-spacing:.04em; text-transform:uppercase; cursor:pointer;">
+    Create Next Month Sheet
   </button>
   <div id="createMonthSheetStatus" style="font-size:12.5px; margin-top:8px; text-align:center;"></div>
 </div>
@@ -235,10 +243,10 @@
 </main>
 
 <script>
-// TEMP/TEST -- see the comment on the button above and on
-// createMonthSheetFromTemplate in Code.gs.
-const scriptUrl = ''; // DISCONNECTED: this Vercel copy is intentionally not wired to the live backend (dev/testing only, see project CLAUDE.md)
-
+// Reconnected 2026-08-21 -- was wired to a deliberately-blank scriptUrl
+// (dev/test only) with no real backend behind it at all. Now calls the
+// real POST /api/admin/reset {action:'createNextMonthSheet'} route (see
+// api/admin/reset.js and lib/monthRollover.js).
 document.getElementById('createMonthSheetBtn').addEventListener('click', () => {
   const btn = document.getElementById('createMonthSheetBtn');
   const status = document.getElementById('createMonthSheetStatus');
@@ -246,15 +254,15 @@ document.getElementById('createMonthSheetBtn').addEventListener('click', () => {
   btn.textContent = 'Creating…';
   status.textContent = '';
 
-  fetch(scriptUrl, {
+  fetch('/api/admin/reset', {
     method: 'POST',
-    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify({ action: 'createMonthSheetFromTemplate' })
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'createNextMonthSheet' })
   })
     .then(res => res.json())
     .then(data => {
       btn.disabled = false;
-      btn.textContent = 'TEST: Create Next Month Sheet';
+      btn.textContent = 'Create Next Month Sheet';
       if (!data.success) throw new Error(data.error || 'Unknown error');
       if (data.warning) {
         status.style.color = '#B7791F';
@@ -266,7 +274,7 @@ document.getElementById('createMonthSheetBtn').addEventListener('click', () => {
     })
     .catch(err => {
       btn.disabled = false;
-      btn.textContent = 'TEST: Create Next Month Sheet';
+      btn.textContent = 'Create Next Month Sheet';
       status.style.color = '#C53030';
       status.textContent = 'Could not create: ' + err.message;
     });

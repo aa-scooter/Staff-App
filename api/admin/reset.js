@@ -24,6 +24,34 @@
 //       backupIds: ['<id>', ...] }     -> manual bulk-delete (checkboxes +
 //                                          delete button on the Settings
 //                                          backup list, Anton 20/08/2026)
+//
+// EXTENDED 2026-08-21 to also carry the month-end rollover (see
+// lib/monthRollover.js's own header comment for the full design/why --
+// ports Code.gs's createMonthSheetFromTemplate/carryForwardMonthFigures_/
+// checkForMonthEndRollover, which had no Vercel equivalent at all until
+// now, confirmed to actually break every accounts.html write the moment a
+// new month's file doesn't exist):
+//   - { action: 'createNextMonthSheet' }            -> manual trigger, same
+//                                                       "one click does
+//                                                       both steps" as the
+//                                                       old index.html
+//                                                       button, now wired
+//                                                       to something real
+//   - { action: 'createNextMonthSheet',
+//       dryRun: true }                              -> preview only, writes
+//                                                       nothing
+// Also handles GET .../api/admin/reset?cron=monthRollover -- the automatic,
+// unattended nightly check (see vercel.json's `crons` entry and
+// lib/monthRollover.js's checkForMonthEndRolloverJson). Same CRON_SECRET
+// bearer-token auth, and the same "no staff session -> borrow the calendar
+// automation account's Drive access" trick api/contract/write.js's own
+// `?cron=dailySweep` handler already established -- see that file's header
+// comment and lib/googleCalendarAuth.js's automationClientsFromEnv for the
+// full "why". Reusing it here means zero new setup for Anton IF the
+// calendar automation is already connected+shared; if it isn't, this skips
+// quietly (same as dailySweep does) rather than failing loudly -- the
+// manual button above is the reliable fallback either way.
+//
 // Deliberately NOT a new file/route: this project already hit Vercel
 // Hobby's 12-Serverless-Function cap once (see PROGRESS.md/
 // BUGFIX_HANDOFF.md's bike-photos-404 saga) consolidating routes into
@@ -37,6 +65,7 @@ const { withDrive } = require('../../lib/apiAuth');
 const { writeJsonFile, ensureAppFolder, ensureYearFolder } = require('../../lib/googleDrive');
 const { isMonthSheetName } = require('../../lib/monthSheets');
 const { createBackup, listBackups, ensureDailyBackup, deleteBackups, restoreBackup } = require('../../lib/backups');
+const { createNextMonthSheetFromJson, checkForMonthEndRolloverJson } = require('../../lib/monthRollover');
 
 const DATA_DIR = path.join(__dirname, '..', '..', 'data');
 
@@ -198,7 +227,100 @@ async function handleBackupAction(req, res, { drive, folderId }, action, body) {
   sendJson(res, 400, { success: false, error: `Unknown action "${action}".` });
 }
 
-module.exports = withDrive(async function handler(req, res, ctx) {
+// ---- Builds the {fetchSheetWithMeta, writeSheetJson} shape
+// lib/monthRollover.js's functions expect -- same year-scoped filename
+// convention as every other sheetIO in this project (accountsWrites.js's
+// own createSheetIO, api/data/[sheet].js's resolveYearFolderId), just a
+// local copy rather than an import (see monthRollover.js's own comment on
+// why: same tradeoff this project already makes for DEPOSITS_MONTH_NAMES).
+// No session-based folder-id caching here -- this only ever runs once per
+// request (a button click or a once-a-day cron tick), so there's no
+// repeat-call cost worth optimizing for, unlike accountsWrites.js's
+// version which can touch 6+ sheets in one request. ----
+function buildMonthSheetIO(drive, appFolderId) {
+  const yearFolderCache = {};
+  async function resolveFolderAndFilename(sheetName, year) {
+    if (!year) return { folderId: appFolderId, filename: `${sheetName}.json` };
+    const yearStr = String(year);
+    if (!yearFolderCache[yearStr]) {
+      yearFolderCache[yearStr] = await ensureYearFolder(drive, appFolderId, yearStr);
+    }
+    return { folderId: yearFolderCache[yearStr], filename: `${sheetName}_${yearStr}.json` };
+  }
+  return {
+    async fetchSheetWithMeta(sheetName, year) {
+      const { readJsonFile } = require('../../lib/googleDrive');
+      const { folderId, filename } = await resolveFolderAndFilename(sheetName, year);
+      const { data, modifiedTime } = await readJsonFile(drive, folderId, filename);
+      return { rows: data || [], modifiedTime: modifiedTime || null };
+    },
+    async writeSheetJson(sheetName, rows, expectedModifiedTime, year) {
+      const { folderId, filename } = await resolveFolderAndFilename(sheetName, year);
+      const { modifiedTime } = await writeJsonFile(drive, folderId, filename, rows, expectedModifiedTime || null, false);
+      return { modifiedTime };
+    }
+  };
+}
+
+// ---- New 2026-08-21 month-rollover action (manual trigger). ----
+async function handleMonthRolloverAction(req, res, { drive, folderId }, body) {
+  const effectiveFolderId = folderId || await ensureAppFolder(drive);
+  const sheetIO = buildMonthSheetIO(drive, effectiveFolderId);
+  const result = await createNextMonthSheetFromJson(sheetIO, { dryRun: !!(body && body.dryRun) });
+  sendJson(res, result.success ? 200 : 400, result);
+}
+
+// ---- GET .../api/admin/reset?cron=monthRollover (added 21/08/2026) --
+// Vercel Cron's daily hit for the automatic month-end check. Handled BEFORE
+// withDrive below, deliberately -- same reasoning as api/contract/write.js's
+// own `?cron=dailySweep` handler: Vercel Cron has no browser, so there's no
+// staff session cookie for withDrive to check. Authenticates itself instead
+// by checking Vercel's own Authorization: Bearer <CRON_SECRET> header
+// against the CRON_SECRET env var. ----
+async function handleMonthRolloverCron(req, res) {
+  const cronSecret = process.env.CRON_SECRET;
+  const authHeader = (req.headers && req.headers['authorization']) || '';
+  if (!cronSecret || authHeader !== `Bearer ${cronSecret}`) {
+    sendJson(res, 401, { success: false, error: 'Unauthorized.' });
+    return;
+  }
+  try {
+    const { automationClientsFromEnv } = require('../../lib/googleCalendarAuth');
+    const { findNamedFolderAnywhere, APP_FOLDER_NAME } = require('../../lib/googleDrive');
+    const automation = automationClientsFromEnv();
+    if (!automation) {
+      sendJson(res, 200, {
+        success: true, skipped: true,
+        reason: 'CALENDAR_AUTOMATION_REFRESH_TOKEN is not set yet -- see lib/googleCalendarAuth.js. ' +
+          'The "Create Next Month Sheet" button on the home page still works manually in the meantime.'
+      });
+      return;
+    }
+    // NOT ensureAppFolder here -- same gotcha api/contract/write.js's own
+    // dailySweep already documents: the automation account doesn't OWN the
+    // app's Drive folder, it only has it SHARED with it.
+    const found = await findNamedFolderAnywhere(automation.drive, APP_FOLDER_NAME);
+    if (!found) {
+      sendJson(res, 200, {
+        success: true, skipped: true,
+        reason: `Could not find the "${APP_FOLDER_NAME}" Drive folder from the connected calendar account -- ` +
+          'has it been shared (Viewer) with that account\'s email yet? See lib/googleCalendarAuth.js\'s header comment. ' +
+          'The "Create Next Month Sheet" button on the home page still works manually in the meantime.'
+      });
+      return;
+    }
+    const sheetIO = buildMonthSheetIO(automation.drive, found.id);
+    const result = await checkForMonthEndRolloverJson(sheetIO);
+    sendJson(res, 200, result);
+  } catch (err) {
+    sendJson(res, 500, { success: false, error: err.message });
+  }
+}
+
+// Same "define the withDrive-wrapped handler once at module scope" shape
+// api/contract/write.js's own postHandler uses -- avoids rebuilding the
+// wrapper closure on every request.
+const postHandler = withDrive(async function handler(req, res, ctx) {
   if (req.method !== 'POST') {
     sendJson(res, 405, { success: false, error: 'Method not allowed.' });
     return;
@@ -211,8 +333,19 @@ module.exports = withDrive(async function handler(req, res, ctx) {
       await handleLegacyReset(req, res, ctx);
       return;
     }
+    if (action === 'createNextMonthSheet') {
+      await handleMonthRolloverAction(req, res, ctx, body);
+      return;
+    }
     await handleBackupAction(req, res, ctx, action, body);
   } catch (err) {
     sendJson(res, 500, { success: false, error: err.message });
   }
 });
+
+module.exports = async function handler(req, res) {
+  if (req.method === 'GET' && req.query && req.query.cron === 'monthRollover') {
+    return handleMonthRolloverCron(req, res);
+  }
+  return postHandler(req, res);
+};
