@@ -1,10 +1,125 @@
 # AA Scooters — JSON-parity rewrite progress tracker
 
-Last updated: 2026-08-20. Keep this file current — whenever a page's write
+Last updated: 2026-08-21. Keep this file current — whenever a page's write
 layer gets ported/tested/pushed, update its row below in the same commit.
 This exists because work on this project gets picked up across multiple
 Claude sessions/accounts with no shared memory between them — this file is
 the handoff.
+
+## ✅ contract.html + lib/contractWrites.js: Revolut added as a Deposit
+## option; deposit-method-change ledger sync ported from Code.gs — CODED,
+## UNIT-TESTED (5/5 scenarios against a mocked sheetIO), NOT YET DEPLOYED
+## (2026-08-21)
+
+Two related fixes from the same session, requested by Anton:
+
+1. **Revolut was missing from the security-deposit dropdown.** "Paid by"
+   and the receipt's payment method already had Revolut; the "Deposit"
+   field (what the customer's security deposit was actually taken in)
+   only offered Scan/Cash/Wise/Passport. Added `<option value="Revolut">`
+   to both `#deposit` (intake) and `#e_deposit` (edit) in `contract.html`.
+   Also fixed a related bug in the edit form's `depositOptions` allow-list
+   (used to decide whether to preserve a contract's existing deposit value
+   when the edit modal opens) — it didn't include Revolut either, which
+   would have silently blanked the field for any contract that already had
+   one. No backend change needed for this half — `lib/contractWrites.js`
+   already fully supported `revolut` at both creation and edit time.
+
+2. **Changing a contract's deposit method on edit never touched the
+   ledger.** `editContractFromJson` only pushed a "not ported yet, adjust
+   by hand" warning whenever `data.originalDeposit !== data.deposit` --
+   this was flagged in a comment as a known gap from the Code.gs -> Vercel
+   port. Anton's main use case: staff switch a Wise/Scan/Revolut deposit
+   back to Cash once it's actually handed back, and the monthly
+   Bank/Wise/Revolut ledger sheet needs to follow. Ported
+   `removeSecurityDepositByNameAndAmount_` from Code.gs as
+   `removeSecurityDepositByNameAndAmountFromJson` (same best-effort
+   name+amount match within the current month's sheet only -- a Contract
+   row has no stored link back to its own ledger row) and wired it into
+   `editContractFromJson` alongside the existing `logSecurityDepositFromJson`,
+   mirroring Code.gs's four-case logic (Passport/Cash <-> Passport/Cash
+   no-op; Passport/Cash -> Scan/Wise/Revolut logs a new row; Scan/Wise/
+   Revolut -> Passport/Cash clears the old row; Scan/Wise/Revolut -> a
+   different one of those three does both). Each half wrapped in its own
+   try/catch so a failed match (e.g. no matching ledger row found) only
+   ever produces a warning, never blocks the contract save.
+
+   Tested against a mocked `sheetIO` (in-memory, no real Drive calls) --
+   5/5 scenarios pass: no-op, Wise->Cash (clears), Passport->Revolut
+   (logs), Wise->Revolut (both), and Wise->Cash with no matching ledger
+   row (warns without touching unrelated data). NOT run against the real
+   spreadsheet/Drive data -- worth a live smoke test after deploy (create
+   a Wise-deposit contract, edit it to Cash, check the current month's
+   Deposits page).
+
+## ✅ contract.html: View Contract/Receipt/Checklist back to Drive links;
+## Send Contract + Receipt fixed to actually download both files; Contract
+## PDFs shared "anyone with the link" — DEPLOYED 2026-08-20 (commits
+## db3f633, 72d4fa4)
+
+Same-day follow-up to the "receipt + checklist auto-generation" entry
+below, three more round trips with Anton, all live:
+
+1. **PDFs forced-download, then un-forced.** First pass made every PDF
+   served through `/api/contracts/file/<id>` force-download
+   (`Content-Disposition: attachment`) so mobile Chrome would hand off to
+   a native PDF app instead of its own inline viewer. Anton then asked to
+   go back to opening View Contract/View Receipt/View Checklist "in Google
+   Drive like before, because I know it works." Net result:
+   `api/contracts/[...path].js`'s `handleFile` route no longer force-
+   downloads by default — that's now opt-in via `?download=1` — and
+   `contract.html` gained a `driveViewUrl(fileId)` helper so View
+   Contract/Receipt/Checklist open a real `drive.google.com/file/d/<id>/view`
+   link instead of the private proxy. `currentEditRecord` now tracks a
+   parallel `*PdfFileId` (contractPdfFileId/receiptPdfFileId/
+   checklistPdfFileId) alongside each `*PdfUrl`, since the raw Drive file
+   id is still needed for downloads even though the URL shown/opened is
+   now a Drive link, not the proxy.
+
+2. **"Send Contract + Receipt" was only ever downloading the contract.**
+   Root cause: that button still called `action:'getFilesForShare'` on the
+   decommissioned Code.gs `scriptUrl` (always failed now), falling through
+   to a tabs-fallback that called `window.open()` twice in a row inside an
+   async handler — mobile/desktop browsers only honor the FIRST
+   `window.open()` after an `await` as a genuine user gesture, silently
+   blocking the second (the receipt) every time. Replaced the whole Web
+   Share/scriptUrl path with `downloadContractFile_(fileId, filename)` —
+   a temporary `<a download>` click against `/api/contracts/file/<id>?download=1`
+   — called twice back-to-back; an anchor download isn't a popup, so both
+   go through reliably now. No more WhatsApp share-sheet hand-off; staff
+   attach both files from Downloads instead.
+
+3. **Contract PDFs now shared "anyone with the link, view only."** Anton
+   hit Drive's "you need permission, request access" screen viewing a
+   contract from a Chrome profile signed into a different Google account
+   than the file owner (`aascooterchiangmai@gmail.com`) — a direct
+   consequence of #1 above switching View Contract to a real Drive link.
+   New `ensureFilePubliclyViewable(drive, fileId)` in `lib/googleDrive.js`
+   (checks existing permissions first so repeat calls don't pile up
+   duplicate "anyone" grants) is called two ways: automatically at the end
+   of `generateContractDocumentFromJson` (`lib/contractDocGen.js`) for
+   every contract generated/regenerated from now on, and via a new
+   `POST /api/contracts/makeContractPublic {fileId}` route that
+   `contract.html`'s `viewContract()` calls as a backstop for contracts
+   that already existed before this fix — fires it fire-and-forget (not
+   awaited) on the already-cached-URL fast path to avoid re-introducing
+   the popup-block issue from #2, but does await it on the two paths that
+   already have a preceding `await` (search-fallback match, and generate-
+   then-open) since those are the actual legacy-file case this exists for.
+   **Deliberately NOT applied to receipts/checklists/passport photos** —
+   Anton confirmed those already open fine, and passport photos in
+   particular must stay private. `/api` is still exactly at Vercel's
+   12-function cap (unaffected — `makeContractPublic` rides inside the
+   existing `api/contracts/[...path].js` catch-all, no new file).
+
+**Verification:** `node --check` on all 4 touched files
+(`contract.html`'s 2 extracted `<script>` blocks, `api/contracts/[...path].js`,
+`lib/googleDrive.js`, `lib/contractDocGen.js`) — all pass. Re-confirmed
+each write held on the on-device copy 15s after writing (per this file's
+own "verify a write actually stuck" standing caution). **Anton should do
+one live test of each:** View Contract from a non-owner Google login (should
+no longer prompt, or self-heal on a second click for an old contract);
+Send Contract + Receipt (should download 2 files, not 1).
 
 ## ✅ bikes.html: page now auto-refreshes after Extend/Return/Swap/Adjust
 ## Pickup instead of needing a manual reload — DEPLOYED 2026-08-20
