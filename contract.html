@@ -628,6 +628,7 @@
         <option value="Scan">Scan</option>
         <option value="Cash">Cash</option>
         <option value="Wise">Wise</option>
+        <option value="Revolut">Revolut</option>
         <option value="Passport">Passport</option>
       </select>
       <input id="e_depositAmount" type="number" min="0" step="1" placeholder="Deposit amount (฿)" class="hidden" style="margin-top:8px;">
@@ -916,6 +917,7 @@
         <option value="Scan">Scan</option>
         <option value="Cash">Cash</option>
         <option value="Wise">Wise</option>
+        <option value="Revolut">Revolut</option>
         <option value="Passport">Passport</option>
       </select>
       <input id="depositAmount" type="number" min="0" step="1" placeholder="Deposit amount (฿)" class="hidden" style="margin-top:8px;">
@@ -4709,7 +4711,7 @@ function openEditModal(r) {
   document.getElementById('e_paidBy').value = paidByOptions.includes(paidByLower) ? paidByLower : '';
   document.getElementById('e_dealCheckbox').checked = String(r.isDeal).toUpperCase() === 'TRUE';
 
-  const depositOptions = ['Scan', 'Cash', 'Wise', 'Passport'];
+  const depositOptions = ['Scan', 'Cash', 'Wise', 'Revolut', 'Passport'];
   e_deposit.value = depositOptions.includes(r.deposit) ? r.deposit : '';
   refreshEditDepositAmountVisibility(); // also resets the currency toggle off/blank
   if (e_depositNeedsAmount()) {
