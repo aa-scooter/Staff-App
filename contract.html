@@ -1057,17 +1057,18 @@
 </main>
 
 <script>
-// RECONNECTED 2026-08-17: was blanked during the JSON-backed-data migration
-// (see the comment block just below) -- but several actions on this page
-// were deliberately left un-migrated (generateReceipt, getFilesForShare,
-// findChecklistDocument, uploadPassportPhoto, readPassportWithAI,
-// addCalendarReminder, etc.) and still need a real Apps Script backend to
-// reach. Blanking scriptUrl broke ALL of those with no obvious cause
-// (fetch('') resolves to POSTing back to this same page, which returns an
-// empty non-JSON body -- "Unexpected end of JSON input"). Value below is
-// the same live deployment URL every other page on the Hostgator copy of
-// this site already uses (see e.g. upload to hostgator/contract.html).
-const scriptUrl = 'https://script.google.com/macros/s/AKfycbztdtViH9qFCZ755EefaZqiZWzKK_yTOWkwaFLqZJm271wzDIVMgGoaYGFaSrd20OGsnQ/exec';
+// CLEANED UP 2026-08-21: this used to reconnect a `scriptUrl` constant
+// pointing at the old Code.gs Apps Script Web App, for the handful of
+// actions (generateReceipt, getFilesForShare, findChecklistDocument,
+// uploadPassportPhoto, readPassportWithAI, addCalendarReminder, etc.) that
+// hadn't been ported off it yet. All of those have since been re-pointed at
+// real Vercel routes (see this file's other scriptUrl comments -- the ones
+// left below are historical "used to POST to scriptUrl" notes, not live
+// code) -- confirmed via a grep of this whole file: zero real
+// `fetch(scriptUrl` calls remain. Code.gs and its backing spreadsheet are
+// fully decommissioned; the dead constant and its now-inaccurate comment
+// were removed rather than left to mislead the next person into thinking
+// this page still depends on it.
 
 // ================== JSON-backed data layer (ported 13/08/2026) ==================
 // Replaces this page's three fetch(scriptUrl + '?action=...') READS
