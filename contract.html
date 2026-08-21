@@ -674,6 +674,31 @@
      Confirm/Back, shown after the form is submitted). Confirming replaces
      the existing receipt PDF for this contract -- see
      generateReceiptDocument in Code.gs. -->
+
+<!-- "Pick the right deposit" modal (added 21/08/2026) -- offered as a
+     follow-up after saving the Edit form whenever the response warns that
+     a changed deposit method's old ledger entry couldn't be matched
+     automatically (see maybeOfferDepositPicker below, and
+     lib/contractWrites.js's clearSecurityDepositByRefFromJson comment for
+     the full design). Lists that category's open entries on the current
+     month's Deposits sheet (action:'listOpenSecurityDeposits') so staff
+     click the actual right one instead of it being guessed or left stuck;
+     picking one calls the dedicated action:'resolveDepositLedgerPick'
+     (deliberately NOT a re-submit of editContract -- see that action's own
+     comment for why). Same click-outside-to-close guard as every other
+     modal in this project -- see CLAUDE.md. -->
+<div class="modal-backdrop" id="depositPickBackdrop">
+  <div class="modal-card" id="depositPickCard">
+    <div class="modal-head">
+      <h2>Which deposit is this?</h2>
+      <button type="button" class="modal-close" id="depositPickCloseBtn">&times;</button>
+    </div>
+    <div id="depositPickSub" style="margin-bottom:14px; font-size:13.5px; line-height:1.5;"></div>
+    <div id="depositPickList"></div>
+    <div class="status" id="depositPickStatusBox"></div>
+  </div>
+</div>
+
 <div class="modal-backdrop" id="receiptBackdrop">
   <div class="modal-card" id="receiptCard">
     <div class="modal-head">
@@ -4763,6 +4788,96 @@ function closeEditModal() {
 // the same columns with the same values every time, so a retry converges
 // to the same end state on its own (see lib/contractWrites.js's file
 // header comment) -- no guard needed for that to be safe.
+// ---- "Pick the right deposit" fallback (added 21/08/2026) -- see the
+// #depositPickBackdrop markup's own comment for the full design. Offered
+// after a successful editContract save whose warning matches the "could
+// not be matched automatically" pattern from
+// clearSecurityDepositByRefFromJson in lib/contractWrites.js. ----
+const depositPickBackdrop = document.getElementById('depositPickBackdrop');
+const depositPickCloseBtn = document.getElementById('depositPickCloseBtn');
+const depositPickSub = document.getElementById('depositPickSub');
+const depositPickList = document.getElementById('depositPickList');
+const depositPickStatusBox = document.getElementById('depositPickStatusBox');
+const DEPOSIT_METHOD_TO_LEDGER_CATEGORY_CLIENT = { scan: 'bank', wise: 'wise', revolut: 'revolut' };
+
+function closeDepositPickModal() {
+  depositPickBackdrop.classList.remove('show');
+  depositPickList.innerHTML = '';
+  depositPickStatusBox.textContent = '';
+  depositPickStatusBox.className = 'status';
+}
+
+// Same click-outside-to-close guard as every other modal in this project
+// (see CLAUDE.md) -- only close if BOTH the mousedown and the click landed
+// on the backdrop itself, so a click-drag text selection ending over the
+// backdrop can't accidentally close this.
+let depositPickMouseDownOnBackdrop = false;
+depositPickBackdrop.addEventListener('mousedown', (e) => {
+  depositPickMouseDownOnBackdrop = (e.target === depositPickBackdrop);
+});
+depositPickBackdrop.addEventListener('click', (e) => {
+  if (e.target === depositPickBackdrop && depositPickMouseDownOnBackdrop) closeDepositPickModal();
+  depositPickMouseDownOnBackdrop = false;
+});
+depositPickCloseBtn.addEventListener('click', closeDepositPickModal);
+
+// rowNumber/customerName are passed separately from originalPayload
+// (rather than read back off it) so this still works correctly if the
+// payload shape upstream ever changes -- this only ever needs those two
+// values plus the OLD deposit method.
+async function maybeOfferDepositPicker(warningText, rowNumber, customerName, originalDepositMethod) {
+  if (!warningText || !/could not be matched automatically/.test(warningText)) return;
+  const oldCategory = DEPOSIT_METHOD_TO_LEDGER_CATEGORY_CLIENT[(originalDepositMethod || '').toString().trim().toLowerCase()];
+  if (!oldCategory) return;
+
+  depositPickSub.textContent = 'Loading this month’s open ' + oldCategory + ' deposits…';
+  depositPickList.innerHTML = '';
+  depositPickStatusBox.textContent = '';
+  depositPickStatusBox.className = 'status';
+  depositPickBackdrop.classList.add('show');
+
+  let res;
+  try {
+    res = await ctDispatchWithRetry('listOpenSecurityDeposits', { category: oldCategory });
+  } catch (err) {
+    depositPickSub.textContent = 'Could not load the deposit list (' + err.message + '). Please clear it by hand on the Deposits page instead.';
+    return;
+  }
+
+  const entries = (res && res.entries) || [];
+  if (!entries.length) {
+    depositPickSub.textContent = 'No open ' + ((res && res.catLabel) || oldCategory) + ' entries found on the ' +
+      ((res && res.monthName) || 'current month') + ' sheet. It may already be cleared, or logged in a different month -- please check the Deposits page by hand.';
+    return;
+  }
+
+  depositPickSub.textContent = 'The old ' + res.catLabel + ' deposit for ' + (customerName || 'this customer') +
+    ' couldn’t be matched automatically. Pick which one it actually is on the ' + res.monthName +
+    ' sheet, or close this to leave it for the Deposits page:';
+
+  entries.forEach((entry) => {
+    const amountText = (typeof entry.amount === 'number') ? ('฿' + entry.amount.toLocaleString('en-US')) : (entry.amount || '');
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.style.cssText = 'display:block; width:100%; text-align:left; padding:10px 12px; margin-bottom:8px; border:1px solid #ddd; border-radius:8px; background:#fff; cursor:pointer; font-size:13.5px;';
+    btn.innerHTML = '<b>' + (entry.name || '(no name)') + '</b> — ' + amountText + ' — ' + (entry.date || '');
+    btn.addEventListener('click', async () => {
+      depositPickStatusBox.className = 'status progress';
+      depositPickStatusBox.innerHTML = '<span class="status-spinner"></span><span>Saving…</span>';
+      try {
+        await ctDispatchWithRetry('resolveDepositLedgerPick', { rowNumber, category: oldCategory, row: entry.row });
+        depositPickStatusBox.className = 'status ok';
+        depositPickStatusBox.textContent = 'Done — that deposit is cleared.';
+        setTimeout(() => { closeDepositPickModal(); ctReloadAndRerender(); }, 900);
+      } catch (err) {
+        depositPickStatusBox.className = 'status err';
+        depositPickStatusBox.textContent = err.message;
+      }
+    });
+    depositPickList.appendChild(btn);
+  });
+}
+
 editForm.addEventListener('submit', (e) => {
   e.preventDefault();
   if (!currentEditRecord) return;
@@ -4820,7 +4935,11 @@ editForm.addEventListener('submit', (e) => {
     rows: [rowNumber],
     requests: [{ action: 'editContract', payload }],
     onAllSuccess: (results) => {
-      if (results[0] && results[0].warning) alert('Saved, but: ' + results[0].warning);
+      const warning = results[0] && results[0].warning;
+      if (warning) {
+        alert('Saved, but: ' + warning);
+        maybeOfferDepositPicker(warning, rowNumber, payload.name, payload.originalDeposit);
+      }
       ctReloadAndRerender();
     }
   });

@@ -6,6 +6,87 @@ This exists because work on this project gets picked up across multiple
 Claude sessions/accounts with no shared memory between them — this file is
 the handoff.
 
+## ✅ contract.html + lib/contractWrites.js: deposit now stores a direct
+## reference to its own ledger row instead of best-effort name/amount
+## matching, with a manual picker fallback — CODED, UNIT-TESTED (8/8
+## scenarios against a mocked sheetIO), NOT YET DEPLOYED (2026-08-21)
+
+Redesign of the deposit-method-change-on-edit fix directly below, same
+day. Anton flagged that clearing the OLD ledger entry by matching
+name+amount within the current month's sheet (no direct link) was too
+risky for real money — asked instead for the contract to carry an actual
+pointer to its own deposit-ledger row, and for a manual picker (never a
+silent guess) whenever a contract has no stored pointer yet. Confirmed via
+AskUserQuestion: the picker fallback always shows, it never falls back to
+auto-matching.
+
+1. **Reference format.** `CONTRACT_KEYS_B` (the Contract sheet's 36 named
+   columns) has an unused 37th column (index 36) across all 1289 existing
+   rows — confirmed by inspecting the real `data/Contract.json` seed, no
+   migration needed. That column now stores a plain string
+   `"monthName|year|categoryKey|row"` (e.g. `"August|2026|revolut|3"`),
+   built/parsed by new `buildDepositRefB()` / `parseDepositRefB()` in
+   `lib/contractWrites.js`.
+
+2. **Backend (`lib/contractWrites.js`).** Added `listOpenSecurityDepositsFromJson(category)`
+   (feeds the picker), `clearSecurityDepositAtRowFromJson(category, month,
+   year, row)` (idempotent — blanking an already-blank row is a silent
+   success, not an error), `clearSecurityDepositByRefFromJson(ref,
+   expectedCategory, expectedName)` (refuses to clear unless the ref's
+   month is the CURRENT month and the name matches — returns
+   `{cleared:false, reason}` rather than throwing), and
+   `resolveDepositLedgerPickFromJson(data)` — a deliberately separate
+   dispatch action (`resolveDepositLedgerPick`) that only clears the
+   row the user picked and updates the contract's stored reference, and
+   only if that reference is currently blank or already pointing at the
+   same category+row. It never re-runs the "log a new deposit" side of
+   `editContractFromJson`. `editContractFromJson` itself now runs the
+   whole deposit-ledger-sync block (old-side clear via the stored ref,
+   new-side log + `buildDepositRefB()`) BEFORE the Contract sheet write,
+   so the resulting reference is baked into the same write instead of a
+   second round trip. The old best-effort matcher
+   (`removeSecurityDepositByNameAndAmountFromJson`) is left in the file
+   but is no longer called by this path.
+
+3. **Frontend (`contract.html`).** New `#depositPickBackdrop` modal (built
+   to this project's standard click-outside-to-close pattern — tracks
+   `mousedown` and `click` both landing on the backdrop before closing, so
+   a text-selection drag near the edge can't close it), plus
+   `maybeOfferDepositPicker()` which lists open ledger entries in the
+   right category via `listOpenSecurityDeposits` and, on click, submits
+   `resolveDepositLedgerPick` with the chosen row. Wired into the edit
+   form's `onAllSuccess`: if `editContract` comes back with a warning
+   (old side couldn't be auto-cleared — no ref stored, or the ref didn't
+   match), the picker opens automatically instead of leaving Anton to fix
+   the ledger by hand.
+
+4. **Two bugs caught by my own test suite before delivery, not by Anton:**
+   - *Breadcrumb loss:* the reference was being blanked whenever the new
+     deposit method wasn't ledger-tracked, even if clearing the OLD entry
+     had actually FAILED — silently discarding the only pointer to a
+     still-unresolved ledger row. Fixed with an `oldSideResolved` flag;
+     the ref is now only cleared once the old entry is confirmed cleared.
+   - *Double-log risk:* the picker was originally going to re-submit the
+     whole `editContract` payload to resolve a pick, which would have
+     called `logSecurityDepositFromJson` a second time and duplicated the
+     ledger entry if the new side had already logged successfully on the
+     first save. Fixed by making `resolveDepositLedgerPick` its own
+     narrow action that never touches the logging side — regression test
+     confirms a newer, different-category reference survives a pick
+     resolution untouched.
+
+   Tested against a mocked `sheetIO` (in-memory, no real Drive calls) —
+   8/8 scenarios pass: valid-ref auto-clear, no-ref/no-pick warns without
+   touching the ledger, direct `resolveDepositLedgerPickFromJson` test,
+   the double-log regression guard above, stale-ref name-mismatch refusal,
+   previous-month ref refusal, and Passport→Revolut (logs + stores a
+   fresh ref). NOT run against the real spreadsheet/Drive data — worth a
+   live smoke test after deploy: create a contract, take a Revolut
+   deposit, edit it back to Cash, confirm the Revolut ledger row actually
+   clears and the contract's hidden ref column ends up blank; also try an
+   old pre-existing contract with no stored ref and confirm the picker
+   shows up and works.
+
 ## ✅ contract.html + lib/contractWrites.js: Revolut added as a Deposit
 ## option; deposit-method-change ledger sync ported from Code.gs — CODED,
 ## UNIT-TESTED (5/5 scenarios against a mocked sheetIO), NOT YET DEPLOYED
