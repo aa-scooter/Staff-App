@@ -9,7 +9,7 @@ the handoff.
 ## ✅ contract.html + lib/contractWrites.js: deposit now stores a direct
 ## reference to its own ledger row instead of best-effort name/amount
 ## matching, with a manual picker fallback — CODED, UNIT-TESTED (8/8
-## scenarios against a mocked sheetIO), NOT YET DEPLOYED (2026-08-21)
+## scenarios against a mocked sheetIO), DEPLOYED 2026-08-21 (commit b1a5ae7)
 
 Redesign of the deposit-method-change-on-edit fix directly below, same
 day. Anton flagged that clearing the OLD ledger entry by matching
