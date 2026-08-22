@@ -3241,7 +3241,7 @@ function bkResolveItem(item, success, err) {
 // own comments), so a resulting Retry (or an app restart's
 // restoreUnresolvedSaves) safely no-ops if the original attempt secretly
 // succeeded.
-const DISPATCH_TIMEOUT_MS = 20000;
+const DISPATCH_TIMEOUT_MS = 45000;
 async function bkDispatch(body) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), DISPATCH_TIMEOUT_MS);
