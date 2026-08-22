@@ -1499,7 +1499,18 @@ async function appendLedgerEntryFromJson(rowNumber, bikeModel, fromDmy, toDmy, l
 
   return { totalDays: newTotalDays, totalAmount: newTotalAmount };
 }
-async function appendMonthlyIncomeRowFromJson(data, dayCount) {
+// ---- collector (added 22/08/2026, optional, trailing arg): when the
+// caller passes an array here (extendBikeRowFromJson / swapBikeFromJson,
+// see their own comments), this function pushes its write descriptor onto
+// it instead of logging its own separate transaction entry -- letting the
+// caller fold every sub-write from one user-facing action into ONE
+// combined, one-click-reversible log entry. Fixes a real bug Anton hit
+// live (22/08/2026): a single "Extend" produced TWO separate reversible
+// rows (this income entry + appendCashSheetRowFromJson's cash entry),
+// so reversing one silently left the other -- and the money/date -- in
+// place. Omit the argument (every other call site, unchanged) and this
+// behaves exactly as before: its own standalone logTransactionB call. ----
+async function appendMonthlyIncomeRowFromJson(data, dayCount, collector) {
   const now = new Date();
   const monthName = DEPOSITS_MONTH_NAMES[now.getMonth()];
   const year = now.getFullYear();
@@ -1525,13 +1536,18 @@ async function appendMonthlyIncomeRowFromJson(data, dayCount) {
   newRows[targetIdx] = row;
   await writeSheetJson(monthName, newRows, modifiedTime, year);
   await recomputeCurrentMonthSummaryCascadeB();
-  await logTransactionB({
-    page: 'bikes.html', action: 'appendMonthlyIncomeRowFromJson', reversible: true,
-    summary: 'Income ' + fmtMoneyB(amountValue) + ' — ' + (incomeText || '(no description)') + (data.name ? (' from ' + data.name) : '') + ' (' + monthName + ' ' + year + ')',
-    writes: [{ sheet: monthName, year: year, row: targetIdx + 1, cols: [6, 7, 8, 9, 10], before: ['', '', '', '', ''], after: [row[5], row[6], row[7], row[8], row[9]] }]
-  });
+  const writeDescriptor = { sheet: monthName, year: year, row: targetIdx + 1, cols: [6, 7, 8, 9, 10], before: ['', '', '', '', ''], after: [row[5], row[6], row[7], row[8], row[9]] };
+  if (collector) {
+    collector.push(writeDescriptor);
+  } else {
+    await logTransactionB({
+      page: 'bikes.html', action: 'appendMonthlyIncomeRowFromJson', reversible: true,
+      summary: 'Income ' + fmtMoneyB(amountValue) + ' — ' + (incomeText || '(no description)') + (data.name ? (' from ' + data.name) : '') + ' (' + monthName + ' ' + year + ')',
+      writes: [writeDescriptor]
+    });
+  }
 }
-async function appendCashSheetRowFromJson(incomeText, rawAmount) {
+async function appendCashSheetRowFromJson(incomeText, rawAmount, collector) {
   const { rows, modifiedTime } = await fetchSheetWithMeta('cash');
   if (!rows || !rows.length) {
     throw new Error('no tab named "cash" was found, so this entry was NOT logged on the cash sheet.');
@@ -1550,11 +1566,16 @@ async function appendCashSheetRowFromJson(incomeText, rawAmount) {
   newRows[targetIdx] = row;
   await writeSheetJson('cash', newRows, modifiedTime);
   await recomputeCurrentMonthSummaryCascadeB();
-  await logTransactionB({
-    page: 'bikes.html', action: 'appendCashSheetRowFromJson', reversible: true,
-    summary: 'Cash income ' + fmtMoneyB(amountValue) + ' — ' + (incomeText || '(no description)'),
-    writes: [{ sheet: 'cash', year: null, row: targetIdx + 1, cols: [1, 2, 3], before: ['', '', ''], after: [row[0], row[1], row[2]] }]
-  });
+  const writeDescriptor = { sheet: 'cash', year: null, row: targetIdx + 1, cols: [1, 2, 3], before: ['', '', ''], after: [row[0], row[1], row[2]] };
+  if (collector) {
+    collector.push(writeDescriptor);
+  } else {
+    await logTransactionB({
+      page: 'bikes.html', action: 'appendCashSheetRowFromJson', reversible: true,
+      summary: 'Cash income ' + fmtMoneyB(amountValue) + ' — ' + (incomeText || '(no description)'),
+      writes: [writeDescriptor]
+    });
+  }
 }
 async function addRentalAmountToBikesSheetFromJson(bikeModel, rawAmount) {
   const amount = Number(rawAmount);
@@ -1585,7 +1606,7 @@ async function addRentalAmountToBikesSheetFromJson(bikeModel, rawAmount) {
   newRows[rowIdx] = targetRow;
   await writeSheetJson('bikes', newRows, modifiedTime);
 }
-async function processDepositForPaymentFromJson(paidByLower, rawAmount) {
+async function processDepositForPaymentFromJson(paidByLower, rawAmount, collector) {
   const now = new Date();
   const monthName = DEPOSITS_MONTH_NAMES[now.getMonth()];
   const year = now.getFullYear();
@@ -1607,11 +1628,16 @@ async function processDepositForPaymentFromJson(paidByLower, rawAmount) {
   newRows[rowIdx] = targetRow;
   await writeSheetJson(monthName, newRows, modifiedTime, year);
   await recomputeCurrentMonthSummaryCascadeB();
-  await logTransactionB({
-    page: 'bikes.html', action: 'processDepositForPaymentFromJson', reversible: true,
-    summary: (delta >= 0 ? 'Deposit total +' : 'Deposit total ') + fmtMoneyB(delta) + ' — ' + paidByLower + ' (' + monthName + ' ' + year + ')',
-    writes: [{ sheet: monthName, year: year, row: rowIdx + 1, cols: [13], before: [isNaN(current) ? 0 : current], after: [targetRow[12]] }]
-  });
+  const writeDescriptor = { sheet: monthName, year: year, row: rowIdx + 1, cols: [13], before: [isNaN(current) ? 0 : current], after: [targetRow[12]] };
+  if (collector) {
+    collector.push(writeDescriptor);
+  } else {
+    await logTransactionB({
+      page: 'bikes.html', action: 'processDepositForPaymentFromJson', reversible: true,
+      summary: (delta >= 0 ? 'Deposit total +' : 'Deposit total ') + fmtMoneyB(delta) + ' — ' + paidByLower + ' (' + monthName + ' ' + year + ')',
+      writes: [writeDescriptor]
+    });
+  }
 }
 
 // ---- Adds addAmount onto the Contract row's OWN existing total (column
@@ -1688,6 +1714,16 @@ async function extendBikeRowFromJson(data) {
   const row = newRows[idx].slice();
   while (row.length < 19) row.push('');
 
+  // ---- Snapshot BEFORE any of row's cells get overwritten below -- this is
+  // what makes the core date/price change itself reversible. Added
+  // 22/08/2026 alongside the collector plumbing below: before this, NOTHING
+  // logged this write at all (only the income/cash/deposit side-effects
+  // were separately reversible), so "reversing an extend" never actually
+  // restored the due date or price -- exactly the bug Anton hit live with
+  // Mr. Nicolas Quillevere's wrong 61-day extend. ----
+  const beforeReturnDate = row[8], beforeTotalPrice = row[11], beforePaidBy = row[12],
+        beforeTimeConfirmed = row[17], beforeConfirmedReturnDate = row[18];
+
   let currentDate = decodeSheetDate(row[8]);
   if (!currentDate) {
     const m = String(row[8] || '').trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
@@ -1710,6 +1746,20 @@ async function extendBikeRowFromJson(data) {
 
   await writeSheetJson('customer', newRows, modifiedTime);
 
+  // ---- Combined reversible transaction (added 22/08/2026) -- see the
+  // collector comment on appendMonthlyIncomeRowFromJson above for the full
+  // "why". Every write this one Extend action makes gets folded into ONE
+  // logTransactionB call at the end instead of each helper logging its own
+  // separate entry, so "Reverse" on settings.html undoes the due date, the
+  // price bump, AND the income/cash/deposit entries together in one click
+  // -- not some subset of them. ----
+  const extendCollector = [{
+    sheet: 'customer', year: null, row: rowNumber,
+    cols: [9, 12, 13, 18, 19],
+    before: [beforeReturnDate, beforeTotalPrice, beforePaidBy, beforeTimeConfirmed, beforeConfirmedReturnDate],
+    after: [row[8], row[11], row[12], row[17], row[18]]
+  }];
+
   const warnings = [];
   try {
     const extendFromDmy = formatDmyJson(preExtendDueDate);
@@ -1724,19 +1774,19 @@ async function extendBikeRowFromJson(data) {
   catch (contractAmountErr) { warnings.push('Contract total price sync: ' + contractAmountErr.message); }
 
   const incomeData = { bikeModel: bikeModel || '', name: custName || '', totalPrice: amountPaid, paidBy, source: 'extend' };
-  try { await appendMonthlyIncomeRowFromJson(incomeData, daysToExtend); }
+  try { await appendMonthlyIncomeRowFromJson(incomeData, daysToExtend, extendCollector); }
   catch (incomeErr) { warnings.push('Income sheet: ' + incomeErr.message); }
 
   try {
     if (paidBy.toLowerCase() === 'cash') {
-      await appendCashSheetRowFromJson(buildRentalIncomeTextB(incomeData, daysToExtend), amountPaid);
+      await appendCashSheetRowFromJson(buildRentalIncomeTextB(incomeData, daysToExtend), amountPaid, extendCollector);
     }
   } catch (cashErr) { warnings.push('Cash sheet: ' + cashErr.message); }
 
   try {
     const paidByLower = paidBy.toLowerCase();
     if (paidByLower === 'wise' || paidByLower === 'revolut') {
-      await processDepositForPaymentFromJson(paidByLower, amountPaid);
+      await processDepositForPaymentFromJson(paidByLower, amountPaid, extendCollector);
     }
   } catch (depositErr) { warnings.push('Deposit total: ' + depositErr.message); }
 
@@ -1746,6 +1796,12 @@ async function extendBikeRowFromJson(data) {
 
   try { await addRentalAmountToBikesSheetFromJson(bikeModel, amountPaid); }
   catch (bikesErr) { warnings.push(bikesErr.message); }
+
+  await logTransactionB({
+    page: 'bikes.html', action: 'extendBikeRowFromJson', reversible: true,
+    summary: 'Extend ' + daysToExtend + ' day' + (daysToExtend === 1 ? '' : 's') + ' — ' + fmtMoneyB(amountPaid) + ' from ' + (custName || '(no name)') + ' (' + (bikeModel || '') + ')',
+    writes: extendCollector
+  });
 
   const responsePayload = { success: true };
   if (warnings.length) responsePayload.warning = warnings.join(' ');
@@ -1937,7 +1993,7 @@ async function addRentalAmountToBikesSheetForMonthFromJson(bikeModel, rawAmount,
 // other income-logging path in this app, this one does NOT convert paidBy
 // 'scan' -> 'QR scan' for display -- Code.gs's own swapBike writes
 // additionalPaidBy verbatim into column J, so this does too. ----
-async function appendSwapUpgradeIncomeRowFromJson(bikeModel, name, amount, paidBy) {
+async function appendSwapUpgradeIncomeRowFromJson(bikeModel, name, amount, paidBy, collector) {
   const now = new Date();
   const monthName = DEPOSITS_MONTH_NAMES[now.getMonth()];
   const year = now.getFullYear();
@@ -1960,11 +2016,16 @@ async function appendSwapUpgradeIncomeRowFromJson(bikeModel, name, amount, paidB
   newRows[targetIdx] = row;
   await writeSheetJson(monthName, newRows, modifiedTime, year);
   await recomputeCurrentMonthSummaryCascadeB();
-  await logTransactionB({
-    page: 'bikes.html', action: 'appendSwapUpgradeIncomeRowFromJson', reversible: true,
-    summary: 'Income ' + fmtMoneyB(row[8]) + ' — ' + description + (name ? (' from ' + name) : '') + ' (' + monthName + ' ' + year + ')',
-    writes: [{ sheet: monthName, year: year, row: targetIdx + 1, cols: [6, 7, 8, 9, 10], before: ['', '', '', '', ''], after: [row[5], row[6], row[7], row[8], row[9]] }]
-  });
+  const writeDescriptor = { sheet: monthName, year: year, row: targetIdx + 1, cols: [6, 7, 8, 9, 10], before: ['', '', '', '', ''], after: [row[5], row[6], row[7], row[8], row[9]] };
+  if (collector) {
+    collector.push(writeDescriptor);
+  } else {
+    await logTransactionB({
+      page: 'bikes.html', action: 'appendSwapUpgradeIncomeRowFromJson', reversible: true,
+      summary: 'Income ' + fmtMoneyB(row[8]) + ' — ' + description + (name ? (' from ' + name) : '') + ' (' + monthName + ' ' + year + ')',
+      writes: [writeDescriptor]
+    });
+  }
   return description;
 }
 
@@ -2021,6 +2082,7 @@ async function swapBikeFromJson(data) {
   const passport = oldRow[4] || '';
   const deliverToHotel = oldRow[10] || '';
   const paidBy = oldRow[12] || '';
+  const beforeSituation = oldRow[13]; // N situation, before this swap's own closeout below
 
   // ---- 1) Close out the old row: same as a normal Return, except the
   // total price is overwritten with just the "used" portion (returnAmount)
@@ -2058,6 +2120,35 @@ async function swapBikeFromJson(data) {
   const newRowNumber = newRows.length;
 
   await writeSheetJson('customer', newRows, modifiedTime);
+
+  // ---- Combined reversible transaction (added 22/08/2026) -- same fix and
+  // same reasoning as extendBikeRowFromJson's own copy of this comment
+  // above: before this, a swap logged NO reversible entry at all unless an
+  // upgrade charge was involved (appendSwapUpgradeIncomeRowFromJson was the
+  // ONLY logTransactionB call in this whole function) -- so an ordinary
+  // no-upgrade swap (e.g. Xmax Red 300 -> Nmax grey 2, no extra charge) had
+  // nothing on settings.html's Transaction History to reverse it with at
+  // all. This collector captures BOTH halves of the swap itself -- the old
+  // row's closeout (cols 12/9/14 = totalPrice/returnDate/situation) and the
+  // brand-new row this swap appends (represented as a full-row write whose
+  // "before" is all blanks, so reversing it just blanks the row back out --
+  // reusing settings.html's existing cols/before replay loop as-is, no new
+  // "delete a row" mechanism needed) -- plus any upgrade-charge writes
+  // folded in below via the same collector. ----
+  const swapCollector = [
+    {
+      sheet: 'customer', year: null, row: rowNumber,
+      cols: [12, 9, 14],
+      before: [oldTotalPrice, origReturnDateRaw, beforeSituation],
+      after: [oldRow[11], oldRow[8], oldRow[13]]
+    },
+    {
+      sheet: 'customer', year: null, row: newRowNumber,
+      cols: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
+      before: ['', '', '', '', '', '', '', '', '', '', '', '', '', '', '', ''],
+      after: newRow.slice()
+    }
+  ];
 
   const warnings = [];
 
@@ -2147,20 +2238,26 @@ async function swapBikeFromJson(data) {
   // already been saved above. ----
   if (additionalAmount > 0) {
     try {
-      const upgradeDescription = await appendSwapUpgradeIncomeRowFromJson(newBikeModel, name, additionalAmount, additionalPaidBy);
+      const upgradeDescription = await appendSwapUpgradeIncomeRowFromJson(newBikeModel, name, additionalAmount, additionalPaidBy, swapCollector);
       const additionalPaidByLower = additionalPaidBy.toLowerCase();
       try {
         if (additionalPaidByLower === 'cash') {
-          await appendCashSheetRowFromJson(upgradeDescription, additionalAmount);
+          await appendCashSheetRowFromJson(upgradeDescription, additionalAmount, swapCollector);
         }
       } catch (upgradeCashErr) { warnings.push('Upgrade cash sheet: ' + upgradeCashErr.message); }
       try {
         if (additionalPaidByLower === 'wise' || additionalPaidByLower === 'revolut') {
-          await processDepositForPaymentFromJson(additionalPaidByLower, additionalAmount);
+          await processDepositForPaymentFromJson(additionalPaidByLower, additionalAmount, swapCollector);
         }
       } catch (upgradeDepositErr) { warnings.push('Upgrade deposit total: ' + upgradeDepositErr.message); }
     } catch (upgradeIncomeErr) { warnings.push('Upgrade income entry: ' + upgradeIncomeErr.message); }
   }
+
+  await logTransactionB({
+    page: 'bikes.html', action: 'swapBikeFromJson', reversible: true,
+    summary: 'Swap bike — ' + (oldBikeModel || '(bike)') + ' → ' + (newBikeModel || '(bike)') + ' for ' + (name || '(no name)'),
+    writes: swapCollector
+  });
 
   const responsePayload = { success: true, newRowNumber };
   if (warnings.length) responsePayload.warning = warnings.join(' ');
