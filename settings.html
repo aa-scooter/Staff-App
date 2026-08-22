@@ -892,9 +892,25 @@
     document.getElementById('reverseProgress').classList.remove('show');
     document.getElementById('reverseSummary').textContent = entry.summary || '(no summary)';
     document.getElementById('reverseMeta').textContent = fmtTs(entry.ts) + ' — ' + (entry.page || '') + (entry.action ? (' (' + entry.action + ')') : '');
-    var details = (entry.writes || []).map(function (w) {
-      return (w.sheet || '') + (w.year ? (' ' + w.year) : '') + ', row ' + w.row + ' — will restore to ' + JSON.stringify(w.before);
-    }).join('\n');
+    // ---- Grouped preview (added 22/08/2026) -- a long extension logs TWO
+    // entries (closeBikeForExtend + customerIntake) sharing one groupId
+    // (see lib/bikesWrites.js). Show every write from every not-yet-
+    // reversed sibling here too, so staff see the FULL scope of what one
+    // click is about to undo, not just this one row's half of it.
+    var groupSiblings = entry.groupId
+      ? allEntries.filter(function (x) { return x && x.groupId === entry.groupId && x.id !== entry.id && !x.reversed; })
+      : [];
+    var allForPreview = [entry].concat(groupSiblings);
+    var details = allForPreview.reduce(function (acc, e) {
+      return acc.concat((e.writes || []).map(function (w) {
+        return (w.sheet || '') + (w.year ? (' ' + w.year) : '') + ', row ' + w.row + ' — will restore to ' + JSON.stringify(w.before);
+      }));
+    }, []).join('\n');
+    if (groupSiblings.length) {
+      details += '\n\n(Linked to ' + groupSiblings.length + ' other action' + (groupSiblings.length > 1 ? 's' : '') +
+        ' from the same long extension -- reversing this will undo all of them together: ' +
+        groupSiblings.map(function (g) { return g.summary || g.action; }).join(', ') + ')';
+    }
     document.getElementById('reverseDetails').textContent = details || '(no recorded writes for this entry)';
     document.getElementById('reverseBackdrop').classList.add('show');
     document.getElementById('reverseConfirmBtn').disabled = false;
@@ -915,6 +931,10 @@
     btn.disabled = true;
     // Scales with how many sheet writes this entry touches -- reversing a
     // combined entry (extend/swap) genuinely takes longer than a 1-write one.
+    // (Grouped siblings aren't known yet at this point -- fresh.groupId is
+    // only resolved after the re-fetch below -- so this is just the
+    // clicked entry's own count; fine as a starting estimate, it keeps
+    // climbing on its own curve either way.)
     var writeCount = (entry.writes || []).length || 1;
     var reverseProgress = startPercentProgress(
       document.getElementById('reverseProgressText'), document.getElementById('reverseProgressBar'),
@@ -930,37 +950,63 @@
       if (fresh.reversed) throw new Error('This was already reversed' + (fresh.reversedAt ? (' at ' + fmtTs(fresh.reversedAt)) : '') + '.');
       if (!fresh.reversible) throw new Error('This entry is marked as not reversible.');
 
+      // ---- Grouped reversal (added 22/08/2026) -- a long extension logs
+      // TWO independent entries (closeBikeForExtend + customerIntake --
+      // they're two separate HTTP requests, see lib/bikesWrites.js), tagged
+      // with the same groupId. Reversing only one of the pair used to
+      // leave the bike half-undone (Anton, 22/08/2026: "it's reversing all
+      // the inputs, but it's making it unrented" -- the old row stayed
+      // "Returned" with no active row left for that bike at all). Clicking
+      // Reverse on EITHER entry in the group now reverses the WHOLE group
+      // together, as one action.
+      var toReverse = [fresh];
+      if (fresh.groupId) {
+        (logRows || []).forEach(function (x) {
+          if (x && x.id !== fresh.id && x.groupId === fresh.groupId && !x.reversed) toReverse.push(x);
+        });
+      }
+
       var writeErrors = [];
-      var writes = fresh.writes || [];
-      for (var i = 0; i < writes.length; i++) {
-        var w = writes[i];
-        try {
-          const { rows, modifiedTime } = await fetchSheetWithMeta(w.sheet, w.year || undefined);
-          var newRows = rows.map(function (r) { return r.slice(); });
-          var rowIdx = w.row - 1;
-          if (!newRows[rowIdx]) throw new Error('row ' + w.row + ' no longer exists on this sheet');
-          var targetRow = newRows[rowIdx].slice();
-          (w.cols || []).forEach(function (col1, ci) {
-            while (targetRow.length < col1) targetRow.push('');
-            targetRow[col1 - 1] = (w.before || [])[ci];
-          });
-          newRows[rowIdx] = targetRow;
-          await writeSheetJson(w.sheet, newRows, modifiedTime, w.year || undefined);
-        } catch (e) {
-          writeErrors.push((w.sheet || '') + (w.year ? (' ' + w.year) : '') + ' row ' + w.row + ': ' + e.message);
+      for (var g = 0; g < toReverse.length; g++) {
+        var writes = toReverse[g].writes || [];
+        for (var i = 0; i < writes.length; i++) {
+          var w = writes[i];
+          try {
+            const { rows, modifiedTime } = await fetchSheetWithMeta(w.sheet, w.year || undefined);
+            var newRows = rows.map(function (r) { return r.slice(); });
+            var rowIdx = w.row - 1;
+            if (!newRows[rowIdx]) throw new Error('row ' + w.row + ' no longer exists on this sheet');
+            var targetRow = newRows[rowIdx].slice();
+            (w.cols || []).forEach(function (col1, ci) {
+              while (targetRow.length < col1) targetRow.push('');
+              targetRow[col1 - 1] = (w.before || [])[ci];
+            });
+            newRows[rowIdx] = targetRow;
+            await writeSheetJson(w.sheet, newRows, modifiedTime, w.year || undefined);
+          } catch (e) {
+            writeErrors.push((w.sheet || '') + (w.year ? (' ' + w.year) : '') + ' row ' + w.row + ': ' + e.message);
+          }
         }
       }
 
-      // Mark the entry reversed in the log regardless of partial write
-      // failures above -- so it doesn't stay stuck offering a "Reverse"
-      // button that will never fully succeed. Retries on a write conflict
-      // since another log append could have landed in between.
+      // Mark every entry in the group reversed in the log regardless of
+      // partial write failures above -- so none of them stay stuck
+      // offering a "Reverse" button that will never fully succeed. Retries
+      // on a write conflict since another log append could have landed in
+      // between.
+      var idsToMark = toReverse.map(function (x) { return x.id; });
       for (var attempt = 0; attempt < 3; attempt++) {
         const { rows: curRows, modifiedTime: curModifiedTime } = await fetchSheetWithMeta('transactionLog');
-        var curIdx = (curRows || []).findIndex(function (x) { return x && x.id === entry.id; });
-        if (curIdx === -1) break;
-        var updated = curRows.slice();
-        updated[curIdx] = Object.assign({}, updated[curIdx], { reversed: true, reversedAt: new Date().toISOString() });
+        var updated = (curRows || []).slice();
+        var anyFound = false;
+        var nowIso = new Date().toISOString();
+        for (var u = 0; u < updated.length; u++) {
+          if (updated[u] && idsToMark.indexOf(updated[u].id) !== -1 && !updated[u].reversed) {
+            updated[u] = Object.assign({}, updated[u], { reversed: true, reversedAt: nowIso });
+            anyFound = true;
+          }
+        }
+        if (!anyFound) break;
         try {
           await writeSheetJson('transactionLog', updated, curModifiedTime);
           break;
@@ -970,7 +1016,7 @@
       }
 
       // Deliberately NOT logging a second "Reversed: ..." entry here --
-      // the original entry's own reversed/reversedAt fields (set just
+      // each original entry's own reversed/reversedAt fields (set just
       // above) are the record of this happening, shown as the "Reversed"
       // badge on that same row. A separate audit row for the same event
       // was pure duplication in the list (Anton caught this live,

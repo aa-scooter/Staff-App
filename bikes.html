@@ -5812,6 +5812,17 @@ function confirmExtend(rowNumber, daysToExtend, amountPaid, extendMonth, paidBy,
     // form uses (action:'customerIntake', see lib/bikesWrites.js) -- as
     // TWO requests in one queue item, run in strict sequence (see bkRun),
     // same order as before this pass, just backgrounded.
+    //
+    // extendGroupId (added 22/08/2026): generated ONCE here and sent as
+    // BOTH this customerIntake payload's clientTxnId AND the paired
+    // closeBikeForExtend request's groupId below, so the server tags both
+    // of this long extension's transaction-log entries with the same
+    // groupId -- lets settings.html's Reverse action undo the whole
+    // extension in one click instead of just half of it (see
+    // lib/bikesWrites.js's closeBikeForExtendFromJson comment for the bug
+    // this fixes -- Anton, 22/08/2026: "it's reversing all the inputs, but
+    // it's making it unrented").
+    const extendGroupId = genClientTxnId();
     const payload = {
       contact: renter.contact || '',
       name: renter.name || '',
@@ -5831,11 +5842,12 @@ function confirmExtend(rowNumber, daysToExtend, amountPaid, extendMonth, paidBy,
       previousRowNumber: String(rowNumber),
       // Deal (Anton, 20/07/2026) -- only ever sent for a long extension.
       isDeal: !!isDeal,
-      // clientTxnId generated once here so a dropped-connection retry (or
-      // a page-reload resubmit -- see restoreUnresolvedSaves) of this same
-      // request can't book the extension twice -- see customerIntakeFromJson's
-      // own comment in lib/bikesWrites.js.
-      clientTxnId: genClientTxnId()
+      // clientTxnId doubles as the shared extendGroupId (see comment
+      // above) -- also still used for its original purpose: guarding
+      // against a dropped-connection retry (or a page-reload resubmit --
+      // see restoreUnresolvedSaves) booking the extension twice, see
+      // customerIntakeFromJson's own comment in lib/bikesWrites.js.
+      clientTxnId: extendGroupId
     };
     // Cash (Anton, 13/08/2026) has no depositRow to select -- see
     // refreshExtendPaidFromDepositUI -- so it's allowed through here
@@ -5853,7 +5865,7 @@ function confirmExtend(rowNumber, daysToExtend, amountPaid, extendMonth, paidBy,
       label: (renter.name ? renter.name + ' — ' : '') + 'Extend (new period)',
       rows: [rowNumber],
       requests: [
-        { action: 'closeBikeForExtend', payload: { rowNumber: rowNumber } },
+        { action: 'closeBikeForExtend', payload: { rowNumber: rowNumber, groupId: extendGroupId } },
         { action: 'customerIntake', payload }
       ],
       onAllSuccess: (results) => {
