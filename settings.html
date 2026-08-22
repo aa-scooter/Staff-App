@@ -480,6 +480,27 @@
     return res;
   }
 
+  // ---- Asks the server to recompute one monthly sheet's derived Expenses/
+  // Income/Profit/Cash & Deposits summary block from that sheet's OWN
+  // current raw rows (see lib/accountsWrites.js's recomputeMonthlySummary-
+  // CascadeB). Added 22/08/2026 alongside executeReversal's call to this --
+  // see that function's own comment for the "why". Every OTHER write path
+  // in this app (add/edit/delete on accounts.html, extend/swap/etc. on
+  // bikes.html) goes through a server action that calls this recompute
+  // itself right after writing; this panel writes restored cells straight
+  // through the generic /api/data/[sheet] route above, so it has to ask for
+  // the recompute explicitly instead. ----
+  async function recomputeSummaryForMonth(monthName, year) {
+    const r = await fetch('/api/accounts/write', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'recomputeSummary', monthName, year })
+    });
+    const res = await r.json().catch(() => ({}));
+    if (!r.ok || !res.success) throw new Error(res.error || ('HTTP ' + r.status));
+    return res;
+  }
+
   function escapeHtmlS(s) {
     return (s || '').toString().replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
@@ -761,8 +782,47 @@
     }
     return true;
   }
+  // ---- Grouped display merge (added 22/08/2026) -- a long extension logs
+  // TWO entries sharing one groupId: closeBikeForExtendFromJson (closes
+  // out the old row) and customerIntakeFromJson (creates the new period,
+  // the one with the useful "extend N days -- name" summary). Reversing
+  // either one already undoes both together (see executeReversal), but
+  // showing both as separate rows here was just confusing clutter (Anton,
+  // 22/08/2026: "I just need the two transactions... the closeout row, we
+  // don't need"). This hides the closeBikeForExtend half whenever its
+  // customerIntake sibling is also present -- clicking the one remaining
+  // (merged) row still reverses both, same as before. Only hidden when
+  // the sibling actually made it into the list too, so a close-out whose
+  // matching intake failed to log (a real write error, not just this
+  // display merge) still shows up on its own rather than vanishing. ----
+  function hideAsGroupedDuplicate(e, all) {
+    if (e.action !== 'closeBikeForExtendFromJson') return false;
+    if (e.groupId) {
+      return all.some(function (o) { return o !== e && o.groupId === e.groupId; });
+    }
+    // Legacy fallback -- entries logged before this groupId fix existed
+    // have no groupId to match on at all. A close-out logged within 3
+    // minutes of a customerIntakeFromJson entry in the same reversed
+    // state is treated as that same long-extension pair for DISPLAY
+    // purposes only (Anton, 22/08/2026, looking at exactly this pair:
+    // "I just need the two transactions... the closeout row, we don't
+    // need"). This does NOT change what reversing an entry actually
+    // does -- executeReversal still only groups by a real groupId --
+    // it just stops old, un-tagged entries from cluttering the list too.
+    var eTime = e.ts ? new Date(e.ts).getTime() : NaN;
+    if (isNaN(eTime)) return false;
+    return all.some(function (o) {
+      if (o === e || o.action !== 'customerIntakeFromJson') return false;
+      if (!!o.reversed !== !!e.reversed) return false;
+      var oTime = o.ts ? new Date(o.ts).getTime() : NaN;
+      if (isNaN(oTime)) return false;
+      return Math.abs(oTime - eTime) <= 3 * 60 * 1000;
+    });
+  }
   function currentFilteredSorted() {
-    return allEntries.filter(entryMatchesFilter).slice().sort(function (a, b) {
+    var base = allEntries.filter(entryMatchesFilter);
+    var visible = base.filter(function (e) { return !hideAsGroupedDuplicate(e, base); });
+    return visible.sort(function (a, b) {
       return (b.ts || '').localeCompare(a.ts || '');
     });
   }
@@ -987,6 +1047,47 @@
             writeErrors.push((w.sheet || '') + (w.year ? (' ' + w.year) : '') + ' row ' + w.row + ': ' + e.message);
           }
         }
+      }
+
+      // ---- Recompute derived summary totals (added 22/08/2026, Anton:
+      // "it takes the transaction out of the list... but it's not taking
+      // it out of cash" -- reversing an income/expense correctly zeroed out
+      // its own row above, but Income/Cash/Bank/Wise/Revolut on
+      // accounts.html kept showing the PRE-reversal numbers). Restoring a
+      // write's raw cell values above does NOT itself update those cached
+      // totals -- see recomputeSummaryForMonth's own comment for the full
+      // "why" and lib/accountsWrites.js's matching 'recomputeSummary'
+      // action. Recompute once per distinct monthly sheet actually touched
+      // by this reversal -- a "monthly" write is any write whose descriptor
+      // carries a real year (every non-monthly sheet, 'cash' included,
+      // always logs with year: null/undefined -- see every writeDescriptor
+      // throughout lib/bikesWrites.js and lib/accountsWrites.js). Falls
+      // back to the CURRENT month if 'cash' was touched with no monthly
+      // sheet alongside it in this same reversal (e.g. bikes.html's
+      // standalone "Cash expense" entry -- appendCashExpenseRowFromJson in
+      // lib/bikesWrites.js -- logs just its own single 'cash' write, no
+      // paired monthly write to key off of here).
+      var monthsToRecompute = {};
+      var touchedCash = false;
+      for (var mg = 0; mg < toReverse.length; mg++) {
+        (toReverse[mg].writes || []).forEach(function (w) {
+          if (w.sheet === 'cash') { touchedCash = true; return; }
+          if (w.year) monthsToRecompute[w.sheet + ' ' + w.year] = { monthName: w.sheet, year: w.year };
+        });
+      }
+      if (touchedCash && !Object.keys(monthsToRecompute).length) {
+        var CURRENT_MONTH_NAMES_B = ['January', 'February', 'march', 'april', 'may', 'June',
+          'July', 'August', 'September', 'October', 'November', 'December'];
+        var nowForRecompute = new Date();
+        var curMonthName = CURRENT_MONTH_NAMES_B[nowForRecompute.getMonth()];
+        var curYear = nowForRecompute.getFullYear();
+        monthsToRecompute[curMonthName + ' ' + curYear] = { monthName: curMonthName, year: curYear };
+      }
+      var monthKeys = Object.keys(monthsToRecompute);
+      for (var mk = 0; mk < monthKeys.length; mk++) {
+        var monthEntry = monthsToRecompute[monthKeys[mk]];
+        try { await recomputeSummaryForMonth(monthEntry.monthName, monthEntry.year); }
+        catch (e) { writeErrors.push('Summary totals (' + monthEntry.monthName + ' ' + monthEntry.year + '): ' + e.message); }
       }
 
       // Mark every entry in the group reversed in the log regardless of
