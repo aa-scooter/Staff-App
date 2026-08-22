@@ -1579,13 +1579,30 @@ cashDeductBtn.addEventListener('click', () => {
   cashDeductName.value = '';
   cashDeductAmount.value = '';
   cashDeductReason.value = '';
-  setCashDeductResult('Saving…', true);
+  // Percentage progress (upgraded 22/08/2026, Anton: "a lot of them are
+  // really slow... can we have a percentage everywhere for saving?") --
+  // climbs toward an estimated-duration asymptote rather than sitting on a
+  // static "Saving…". Never claims 100% on its own; the real outcome
+  // replaces this line once the request actually settles.
+  const cashDeductProgStart = Date.now();
+  const cashDeductProgTimer = setInterval(() => {
+    const elapsed = Date.now() - cashDeductProgStart;
+    const pct = Math.max(1, Math.round(92 * (1 - Math.exp(-elapsed / 5000))));
+    setCashDeductResult('Saving… ' + pct + '%', true);
+  }, 200);
+  setCashDeductResult('Saving… 0%', true);
+  // Safety net: if this fails, there's no onFailure hook here to clear the
+  // interval (a failed item just goes to the shared fail banner instead --
+  // see dpResolveItem) -- so self-terminate after a generous ceiling rather
+  // than climbing/overwriting this result line forever.
+  setTimeout(() => clearInterval(cashDeductProgTimer), 30000);
 
   dpEnqueue({
     label: 'Cash deposit deduction — ' + customerName,
     rows: [],
     requests: [{ action: 'deductCashDeposit', payload }],
     onAllSuccess: (results) => {
+      clearInterval(cashDeductProgTimer);
       const res = results[0];
       if (!res.applied) {
         // Per Anton: no cash deposit on file for this customer is not an

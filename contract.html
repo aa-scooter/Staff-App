@@ -2627,22 +2627,39 @@ const statusBox = document.getElementById('statusBox');
 const submitBtn = document.getElementById('submitBtn');
 
 // Lightweight "what's happening" indicator shown while a save is in
-// flight. Apps Script doesn't give us real progress events, so this fakes
-// reasonable stages by time: "Connecting…" immediately, then "Saving…"
-// shortly after if still pending. stopSaveProgress() cancels the pending
-// stage-change timer; the caller then overwrites statusBox with the real
-// result (ok/warn/err) once the request settles.
+// flight. No real server-side progress events exist for a single fetch, so
+// this climbs a percentage toward an estimated-duration asymptote instead
+// of just sitting on a static "Saving…" (Anton, 22/08/2026: "a lot of them
+// are really slow... can we have a percentage everywhere for saving?") --
+// fast saves finish before it gets far, slow ones keep visibly crawling
+// upward instead of looking frozen, and it never claims 100% on its own;
+// the caller overwrites statusBox with the real result (ok/warn/err) once
+// the request actually settles. Superseded the old startSaveProgress/
+// stopSaveProgress pair below, which were dead code (defined but never
+// called -- every real call site set statusBox.innerHTML directly instead,
+// e.g. the addContract submit handler) -- kept the same two-function shape
+// so it's a drop-in replacement wherever a call site wants it.
 let saveProgressTimer = null;
-function startSaveProgress() {
+function startSaveProgress(label) {
+  label = label || 'Saving';
+  var start = Date.now();
+  var estimatedMs = 6000;
   statusBox.className = 'status progress';
-  statusBox.innerHTML = '<span class="status-spinner"></span><span>Connecting…</span>';
-  clearTimeout(saveProgressTimer);
-  saveProgressTimer = setTimeout(() => {
-    statusBox.innerHTML = '<span class="status-spinner"></span><span>Saving…</span>';
-  }, 500);
+  statusBox.innerHTML = '<span class="status-spinner"></span><span id="saveProgressText">' + label + '… 0%</span>';
+  clearInterval(saveProgressTimer);
+  saveProgressTimer = setInterval(() => {
+    var elapsed = Date.now() - start;
+    var pct = Math.max(1, Math.round(92 * (1 - Math.exp(-elapsed / estimatedMs))));
+    var el = document.getElementById('saveProgressText');
+    if (el) el.textContent = label + '… ' + pct + '%';
+  }, 200);
+  // Safety net: a failed item goes straight to the shared fail banner
+  // rather than back through this statusBox (see ctResolveItem), so
+  // self-terminate after a generous ceiling instead of climbing forever.
+  setTimeout(() => clearInterval(saveProgressTimer), 30000);
 }
 function stopSaveProgress() {
-  clearTimeout(saveProgressTimer);
+  clearInterval(saveProgressTimer);
 }
 
 // While a save is in flight, disable every button on the page -- not just
@@ -5214,10 +5231,13 @@ form.addEventListener('submit', (e) => {
   // ctEnqueue below) means this item starts running right away; otherwise
   // it's sitting behind an already-in-flight save (MAX_QUEUE = 2).
   const willRunImmediately = ctQueue.length === 0;
-  statusBox.className = 'status progress';
-  statusBox.innerHTML = willRunImmediately
-    ? '<span class="status-spinner"></span><span>Saving…</span>'
-    : '<span class="status-spinner"></span><span>Queued…</span>';
+  if (willRunImmediately) {
+    startSaveProgress('Saving');
+  } else {
+    stopSaveProgress();
+    statusBox.className = 'status progress';
+    statusBox.innerHTML = '<span class="status-spinner"></span><span>Queued…</span>';
+  }
 
   ctEnqueue({
     label,
@@ -5322,6 +5342,7 @@ form.addEventListener('submit', (e) => {
         msg += ' Checklist could not be generated: ' + ckErr.message + '.';
       }
 
+      stopSaveProgress();
       statusBox.textContent = msg;
       statusBox.className = res.warning ? 'status warn' : 'status ok';
       ctReloadAndRerender();

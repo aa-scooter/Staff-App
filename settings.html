@@ -233,7 +233,8 @@
   .modal-error.show{ display:block; }
   .modal-progress{
     font-size:12.5px; color:#2A5A8C; background:#EAF2FB; border:1px solid #BBD6F0;
-    border-radius:7px; padding:7px 10px; margin-bottom:12px; display:none; align-items:center; gap:9px;
+    border-radius:7px; padding:7px 10px; margin-bottom:12px; display:none;
+    align-items:center; gap:9px; flex-wrap:wrap;
   }
   .modal-progress.show{ display:flex; }
   .modal-progress-spinner{
@@ -241,6 +242,17 @@
     border-radius:50%; flex-shrink:0; animation: modal-progress-spin 0.7s linear infinite;
   }
   @keyframes modal-progress-spin{ to{ transform:rotate(360deg); } }
+  /* ---- Percentage bar (added 22/08/2026) -- climbs toward an estimated
+     duration instead of just spinning in place, so a slow save/restore/
+     reverse still visibly moves rather than looking frozen. flex:1 1 100%
+     drops it onto its own full-width row under the spinner+label, without
+     needing to restructure .modal-progress into a column layout. ---- */
+  .modal-progress-bar-track{
+    flex:1 1 100%; height:4px; border-radius:2px; background:rgba(42,90,140,.18); overflow:hidden;
+  }
+  .modal-progress-bar-fill{
+    height:100%; width:0%; background:#2A5A8C; border-radius:2px; transition:width .25s ease-out;
+  }
   .reverse-summary{ font-size:14.5px; color:var(--ink); font-weight:500; margin-bottom:4px; }
   .reverse-meta{ font-size:12px; color:var(--muted); margin-bottom:12px; }
   .reverse-warning{
@@ -385,7 +397,7 @@
   <div class="modal-sheet">
     <h3>Reverse this?</h3>
     <div class="modal-error" id="reverseError"></div>
-    <div class="modal-progress" id="reverseProgress"><span class="modal-progress-spinner"></span><span>Reversing…</span></div>
+    <div class="modal-progress" id="reverseProgress"><span class="modal-progress-spinner"></span><span id="reverseProgressText">Reversing…</span><div class="modal-progress-bar-track"><div class="modal-progress-bar-fill" id="reverseProgressBar"></div></div></div>
     <div class="reverse-summary" id="reverseSummary"></div>
     <div class="reverse-meta" id="reverseMeta"></div>
     <div class="reverse-warning">This restores the exact cell values that were changed. It can't be undone from here once done.</div>
@@ -402,7 +414,7 @@
   <div class="modal-sheet">
     <h3>Restore this backup?</h3>
     <div class="modal-error" id="restoreError"></div>
-    <div class="modal-progress" id="restoreProgress"><span class="modal-progress-spinner"></span><span>Restoring…</span></div>
+    <div class="modal-progress" id="restoreProgress"><span class="modal-progress-spinner"></span><span id="restoreProgressText">Restoring…</span><div class="modal-progress-bar-track"><div class="modal-progress-bar-fill" id="restoreProgressBar"></div></div></div>
     <div class="reverse-summary" id="restoreSummary"></div>
     <div class="reverse-warning">
       This replaces ALL live data with this backup's snapshot -- every sheet, not just one. A
@@ -421,7 +433,7 @@
   <div class="modal-sheet">
     <h3>Delete these backups?</h3>
     <div class="modal-error" id="backupDeleteError"></div>
-    <div class="modal-progress" id="backupDeleteProgress"><span class="modal-progress-spinner"></span><span>Deleting…</span></div>
+    <div class="modal-progress" id="backupDeleteProgress"><span class="modal-progress-spinner"></span><span id="backupDeleteProgressText">Deleting…</span><div class="modal-progress-bar-track"><div class="modal-progress-bar-fill" id="backupDeleteProgressBar"></div></div></div>
     <div class="reverse-summary" id="backupDeleteSummary"></div>
     <div class="reverse-warning">
       Deleted backups go to Drive's own trash (same as any other Drive delete), so they're not
@@ -697,6 +709,42 @@
   // covering when it happened. (Anton, 14/08/2026, watching this live.)
   var HIDE_REVERSED_AFTER_MS = 24 * 60 * 60 * 1000;
 
+  // ---- Percentage progress (added 22/08/2026, Anton: "a lot of them are
+  // really slow... can we have a percentage everywhere for saving?"). A
+  // single fetch can't report real server-side progress, so this climbs
+  // toward an estimated-duration asymptote using an ease-out curve -- fast
+  // actions finish before it gets far, slow ones keep visibly crawling
+  // upward instead of looking frozen -- and only ever reaches 100% when the
+  // real response actually comes back, never overstating completion.
+  // textEl/barEl are both optional (pass whichever exists for that modal). ----
+  function startPercentProgress(textEl, barEl, opts) {
+    var label = (opts && opts.label) || 'Working';
+    var estimatedMs = (opts && opts.estimatedMs) || 6000;
+    var start = Date.now();
+    var pct = 0;
+    function render() {
+      var shown = Math.round(pct);
+      if (textEl) textEl.textContent = label + '… ' + shown + '%';
+      if (barEl) barEl.style.width = shown + '%';
+    }
+    render();
+    var timer = setInterval(function () {
+      var elapsed = Date.now() - start;
+      var target = 92 * (1 - Math.exp(-elapsed / estimatedMs));
+      pct = Math.max(pct, target);
+      render();
+    }, 200);
+    return {
+      finish: function (finalLabel) {
+        clearInterval(timer);
+        var shown = 100;
+        if (textEl) textEl.textContent = (finalLabel || label) + '… 100%';
+        if (barEl) barEl.style.width = shown + '%';
+      },
+      stop: function () { clearInterval(timer); }
+    };
+  }
+
   function fmtTs(iso) {
     var d = new Date(iso);
     if (!iso || isNaN(d.getTime())) return iso || '—';
@@ -865,6 +913,13 @@
     errEl.classList.remove('show'); errEl.textContent = '';
     progEl.classList.add('show');
     btn.disabled = true;
+    // Scales with how many sheet writes this entry touches -- reversing a
+    // combined entry (extend/swap) genuinely takes longer than a 1-write one.
+    var writeCount = (entry.writes || []).length || 1;
+    var reverseProgress = startPercentProgress(
+      document.getElementById('reverseProgressText'), document.getElementById('reverseProgressBar'),
+      { label: 'Reversing', estimatedMs: 2000 + writeCount * 1500 }
+    );
 
     try {
       // Re-fetch the log fresh right before acting, so two staff clicking
@@ -925,9 +980,11 @@
         throw new Error('Marked as reversed, but some writes had issues: ' + writeErrors.join('; '));
       }
 
+      reverseProgress.finish('Reversed');
       closeReverseModal();
       await loadTransactionLog(true);
     } catch (e) {
+      reverseProgress.stop();
       progEl.classList.remove('show');
       errEl.classList.add('show');
       errEl.textContent = e.message || 'Could not reverse this -- please try again.';
@@ -1033,6 +1090,10 @@
     errEl.classList.remove('show'); errEl.textContent = '';
     progEl.classList.add('show');
     btn.disabled = true;
+    var deleteProgress = startPercentProgress(
+      document.getElementById('backupDeleteProgressText'), document.getElementById('backupDeleteProgressBar'),
+      { label: 'Deleting', estimatedMs: 1500 + pendingDeleteIds.length * 1200 }
+    );
     fetch('/api/admin/reset', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1041,6 +1102,7 @@
       .then(function (r) { return r.json(); })
       .then(function (data) {
         if (!data || !data.success) throw new Error((data && data.error) || 'Delete failed -- please try again.');
+        deleteProgress.finish('Deleted');
         progEl.classList.remove('show');
         closeBackupDeleteModal();
         pendingDeleteIds = [];
@@ -1050,6 +1112,7 @@
         }
       })
       .catch(function (e) {
+        deleteProgress.stop();
         progEl.classList.remove('show');
         errEl.classList.add('show');
         errEl.textContent = e.message || 'Could not delete -- please try again.';
@@ -1102,7 +1165,8 @@
         statusEl.style.color = isError ? '#c0392b' : '#2F855A';
       }
       btn.disabled = true;
-      setStatus('Backing up…', false);
+      statusEl.classList.add('show'); statusEl.style.color = '';
+      var backupProgress = startPercentProgress(statusEl, null, { label: 'Backing up', estimatedMs: 8000 });
       fetch('/api/admin/reset', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1110,13 +1174,14 @@
       })
         .then(function (r) { return r.json(); })
         .then(function (data) {
+          backupProgress.stop();
           if (!data || !data.success) { setStatus((data && data.error) || 'Backup failed -- please try again.', true); return; }
           var b = data.backup;
           var errNote = (b.errors && b.errors.length) ? (' (' + b.errors.length + ' file(s) failed -- check manually)') : '';
           setStatus('Backed up ' + b.fileCount + ' file(s) at ' + fmtTs(b.createdAt) + errNote, !!(b.errors && b.errors.length));
           loadBackupList();
         })
-        .catch(function (err) { setStatus('Backup failed: ' + err.message, true); })
+        .catch(function (err) { backupProgress.stop(); setStatus('Backup failed: ' + err.message, true); })
         .finally(function () { btn.disabled = false; });
     });
   }
@@ -1142,6 +1207,14 @@
     errEl.classList.remove('show'); errEl.textContent = '';
     progEl.classList.add('show');
     btn.disabled = true;
+    // A restore rewrites EVERY sheet (it's a full-data replace, plus a
+    // fresh pre-restore backup taken first) -- genuinely the slowest action
+    // on this page, hence the long estimate (Anton, 22/08/2026: "restoring
+    // backup takes forever... at least give a progress bar").
+    var restoreProgress = startPercentProgress(
+      document.getElementById('restoreProgressText'), document.getElementById('restoreProgressBar'),
+      { label: 'Restoring', estimatedMs: 20000 }
+    );
     fetch('/api/admin/reset', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1150,6 +1223,7 @@
       .then(function (r) { return r.json(); })
       .then(function (data) {
         if (!data || !data.success) throw new Error((data && data.error) || 'Restore failed -- please try again.');
+        restoreProgress.finish('Restored');
         progEl.classList.remove('show');
         closeRestoreModal();
         loadBackupList();
@@ -1158,6 +1232,7 @@
         alert('Restored ' + data.restoredFiles.length + ' file(s).' + errNote + ' Reload any open page to see the restored data.');
       })
       .catch(function (e) {
+        restoreProgress.stop();
         progEl.classList.remove('show');
         errEl.classList.add('show');
         errEl.textContent = e.message || 'Could not restore -- please try again.';

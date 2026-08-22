@@ -1817,6 +1817,35 @@ const form = document.getElementById('addBikeForm');
 const submitBtn = document.getElementById('submitBtn');
 const statusBox = document.getElementById('statusBox');
 
+// ---- Percentage progress (added 22/08/2026, Anton: "a lot of them are
+// really slow... can we have a percentage everywhere for saving?"). No
+// real server-side progress events exist for a single fetch, so this
+// climbs toward an estimated-duration asymptote instead of sitting on a
+// static "Saving…" -- never claims 100% on its own; the real result
+// overwrites statusBox once the request actually settles. Self-terminates
+// after a generous ceiling since a failed item goes straight to the shared
+// fail banner rather than back through this statusBox (see abResolveItem),
+// so nothing else would otherwise stop it climbing forever. ----
+let abSaveProgressTimer = null;
+function startAbSaveProgress(label) {
+  label = label || 'Saving';
+  const start = Date.now();
+  const estimatedMs = 6000;
+  statusBox.className = 'status progress';
+  statusBox.innerHTML = '<span class="status-spinner"></span><span id="abSaveProgressText">' + label + '… 0%</span>';
+  clearInterval(abSaveProgressTimer);
+  abSaveProgressTimer = setInterval(() => {
+    const elapsed = Date.now() - start;
+    const pct = Math.max(1, Math.round(92 * (1 - Math.exp(-elapsed / estimatedMs))));
+    const el = document.getElementById('abSaveProgressText');
+    if (el) el.textContent = label + '… ' + pct + '%';
+  }, 200);
+  setTimeout(() => clearInterval(abSaveProgressTimer), 30000);
+}
+function stopAbSaveProgress() {
+  clearInterval(abSaveProgressTimer);
+}
+
 function fieldValue(id) {
   return document.getElementById(id).value.trim();
 }
@@ -2084,16 +2113,19 @@ form.addEventListener('submit', (e) => {
   const label = (bike ? bike + ' — ' : '') + 'Add bike';
 
   form.reset();
-  statusBox.className = 'status progress';
-  statusBox.innerHTML = willRunImmediately
-    ? '<span class="status-spinner"></span><span>Saving…</span>'
-    : '<span class="status-spinner"></span><span>Queued…</span>';
+  if (willRunImmediately) {
+    startAbSaveProgress('Saving');
+  } else {
+    statusBox.className = 'status progress';
+    statusBox.innerHTML = '<span class="status-spinner"></span><span>Queued…</span>';
+  }
 
   abEnqueue({
     label,
     rows: [], // brand-new bike -- doesn't exist yet, nothing to badge
     requests: [{ action: 'addBike', payload }],
     onAllSuccess: (results) => {
+      stopAbSaveProgress();
       const res = results[0];
       if (res.warning) {
         statusBox.textContent = '"' + bike + '" added, but: ' + res.warning;

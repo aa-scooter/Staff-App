@@ -513,13 +513,41 @@
   // below) rather than hardcoded to bikes.html, so this and
   // refreshSaveStrip() automatically pick up contract.html's (and any
   // future page's) own pending-save key with no further changes here.
-  function pendingSaveCount(source) {
+  function pendingSaveItems(source) {
     try {
       var raw = localStorage.getItem(source.pendingKey);
-      if (!raw) return 0;
+      if (!raw) return [];
       var arr = JSON.parse(raw);
-      return Array.isArray(arr) ? arr.length : 0;
-    } catch (e) { return 0; } // corrupt/inaccessible storage -- fail quiet, same as syncBadgeHtml above
+      return Array.isArray(arr) ? arr : [];
+    } catch (e) { return []; } // corrupt/inaccessible storage -- fail quiet, same as syncBadgeHtml above
+  }
+  function pendingSaveCount(source) { return pendingSaveItems(source).length; }
+
+  // ---- Percentage on the shared strip (added 22/08/2026, Anton: "a lot of
+  // them are really slow... can we have a percentage everywhere for
+  // saving?"). This strip is read-only from any page OTHER than the one
+  // that queued the save (see file header) -- the only signal available
+  // here is elapsed time since the oldest pending item's own queuedAt (set
+  // by that page's persistPendingSaves()), so this climbs toward a generic
+  // estimated-duration asymptote exactly like every other progress
+  // indicator added this same day (see settings.html's
+  // startPercentProgress for the identical formula/reasoning) -- never
+  // claims 100%, since from here there's no way to know the save actually
+  // finished until the strip disappears entirely. ----
+  function oldestQueuedAt(counts) {
+    var oldest = null;
+    counts.forEach(function (c) {
+      c.items.forEach(function (it) {
+        if (typeof it.queuedAt === 'number' && (oldest === null || it.queuedAt < oldest)) oldest = it.queuedAt;
+      });
+    });
+    return oldest;
+  }
+  function estimatedSavePercent(queuedAt) {
+    if (!queuedAt) return null;
+    var elapsed = Date.now() - queuedAt;
+    var estimatedMs = 6000; // generic -- this strip can't know which specific action queued it
+    return Math.max(1, Math.round(92 * (1 - Math.exp(-elapsed / estimatedMs))));
   }
 
   // Keeps the shared "Saving..." strip in step with localStorage --
@@ -537,15 +565,17 @@
   function refreshSaveStrip() {
     var el = document.getElementById('saveStrip');
     if (!el) return;
-    var counts = PENDING_SAVE_SOURCES.map(function (s) { return { source: s, n: pendingSaveCount(s) }; });
-    var total = counts.reduce(function (sum, c) { return sum + c.n; }, 0);
+    var counts = PENDING_SAVE_SOURCES.map(function (s) { return { source: s, items: pendingSaveItems(s) }; });
+    var total = counts.reduce(function (sum, c) { return sum + c.items.length; }, 0);
     if (!total) { el.classList.remove('show'); return; }
-    var queuedCount = counts.reduce(function (sum, c) { return sum + Math.max(0, c.n - 1); }, 0);
-    el.textContent = queuedCount ? ('● Saving… (' + queuedCount + ' queued)') : '● Saving…';
+    var queuedCount = counts.reduce(function (sum, c) { return sum + Math.max(0, c.items.length - 1); }, 0);
+    var pct = estimatedSavePercent(oldestQueuedAt(counts));
+    var pctLabel = pct ? (' ' + pct + '%') : '';
+    el.textContent = queuedCount ? ('● Saving…' + pctLabel + ' (' + queuedCount + ' queued)') : ('● Saving…' + pctLabel);
     // Link to whichever source actually has the most pending right now
     // (stable tie-break to the first entry, i.e. bikes.html, if equal) --
     // that's the one worth reviewing/retrying from if something's stuck.
-    var withMost = counts.reduce(function (best, c) { return (c.n > best.n) ? c : best; }, counts[0]);
+    var withMost = counts.reduce(function (best, c) { return (c.items.length > best.items.length) ? c : best; }, counts[0]);
     el.href = withMost.source.ownerPage;
     el.title = 'A save is still in progress -- tap to go there';
     el.classList.add('show');

@@ -1449,18 +1449,27 @@ async function saveFields(fields, btn, statusBox, idleLabel) {
     fields: fields
   };
 
-  // Fake staged progress ("Connecting…" then "Saving…") since Apps Script
-  // doesn't give us real progress events -- just something better than a
-  // silent wait while the request is in flight.
+  // Percentage progress (upgraded 22/08/2026, Anton: "a lot of them are
+  // really slow... can we have a percentage everywhere for saving?") --
+  // climbs toward an estimated-duration asymptote instead of just sitting
+  // on a static "Saving…", so a slow write still visibly moves. Never
+  // claims 100% on its own; the real result overwrites statusBox once the
+  // request actually settles.
   statusBox.className = 'status progress';
-  statusBox.innerHTML = '<span class="status-spinner"></span><span>Connecting…</span>';
-  const stageTimer = setTimeout(() => {
-    statusBox.innerHTML = '<span class="status-spinner"></span><span>Saving…</span>';
-  }, 500);
+  const progStart = Date.now();
+  const progEstimatedMs = 6000;
+  statusBox.innerHTML = '<span class="status-spinner"></span><span id="partsSaveProgressText">Connecting… 0%</span>';
+  const stageTimer = setInterval(() => {
+    const elapsed = Date.now() - progStart;
+    const label = elapsed < 400 ? 'Connecting' : 'Saving';
+    const pct = Math.max(1, Math.round(92 * (1 - Math.exp(-elapsed / progEstimatedMs))));
+    const el = document.getElementById('partsSaveProgressText');
+    if (el) el.textContent = label + '… ' + pct + '%';
+  }, 200);
 
   try {
     const data = await updateBikeRowJson(payload);
-    clearTimeout(stageTimer);
+    clearInterval(stageTimer);
     if (data.success) {
       if (data.warning) {
         // Post-write verification problems (the server re-reads what it
@@ -1481,7 +1490,7 @@ async function saveFields(fields, btn, statusBox, idleLabel) {
       throw new Error(data.error || 'Unknown error');
     }
   } catch (err) {
-    clearTimeout(stageTimer);
+    clearInterval(stageTimer);
     statusBox.textContent = 'Could not save: ' + err.message;
     statusBox.className = 'status err';
   } finally {

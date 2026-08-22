@@ -1311,9 +1311,21 @@ document.getElementById('saveContactBtn').addEventListener('click', async () => 
     statusEl.className = 'status err';
     return;
   }
-  statusEl.textContent = 'Saving…'; statusEl.className = 'status';
+  // Percentage progress (added 22/08/2026, Anton: "a lot of them are really
+  // slow... can we have a percentage everywhere for saving?") -- climbs
+  // toward an estimated-duration asymptote instead of sitting on a static
+  // "Saving…"; never claims 100% on its own.
+  statusEl.className = 'status';
+  const saveContactStart = Date.now();
+  const saveContactTimer = setInterval(() => {
+    const elapsed = Date.now() - saveContactStart;
+    const pct = Math.max(1, Math.round(92 * (1 - Math.exp(-elapsed / 5000))));
+    statusEl.textContent = 'Saving… ' + pct + '%';
+  }, 200);
+  statusEl.textContent = 'Saving… 0%';
   try {
     const res = await addContactFromJson({ name, number });
+    clearInterval(saveContactTimer);
     if (!res.success) throw new Error(res.error || 'Could not save');
     statusEl.textContent = 'Saved.';
     statusEl.className = 'status ok';
@@ -1321,6 +1333,7 @@ document.getElementById('saveContactBtn').addEventListener('click', async () => 
     await loadCustomers();
     setTimeout(() => addContactBackdrop.classList.remove('show'), 700);
   } catch (err) {
+    clearInterval(saveContactTimer);
     statusEl.textContent = 'Could not save: ' + err.message;
     statusEl.className = 'status err';
   }
