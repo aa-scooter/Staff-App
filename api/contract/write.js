@@ -17,7 +17,7 @@
 // unreferenced, so its mere existence changes nothing about how
 // contract.html behaves today.
 const { withDrive } = require('../../lib/apiAuth');
-const { ensureAppFolder, findNamedFolderAnywhere, APP_FOLDER_NAME, ConflictError } = require('../../lib/googleDrive');
+const { ensureAppFolder, findNamedFolderAnywhere, APP_FOLDER_NAME, ConflictError, readJsonFile, writeJsonFile } = require('../../lib/googleDrive');
 const { setSessionCookie } = require('../../lib/session');
 const { createContractWrites, createSheetIO } = require('../../lib/contractWrites');
 
@@ -92,6 +92,40 @@ async function handleDailySweepCron(req, res) {
     const { rows: contractRows, modifiedTime: contractModifiedTime } = await sheetIO.fetchSheetWithMeta('Contract');
 
     const result = await dailySweep(automation.calendar, customerRows || [], contractRows || []);
+
+    // ---- Persist a durable run log (added 25/08/2026) ---------------------
+    // Anton's ask: he's asleep/away when this runs at 22:00 Bangkok, so any
+    // per-row warning has nowhere to surface in real time -- previously the
+    // ONLY record was Vercel's own function logs, which this project's own
+    // history shows neither Anton nor Claude could reliably reach (Vercel
+    // MCP only sees an unrelated team; the device Chrome bridge errors --
+    // see project memory aa-scooters-calendar-nightly-sweep-2026-08-25).
+    // Writing the outcome into the SAME shared Drive folder the sweep
+    // already reads from means it survives independent of Vercel dashboard
+    // access, and is readable any time via api/admin/calendar-sweep-log.js
+    // (or directly via Drive, once this folder/file is shared with whatever
+    // account reads it) -- no new infrastructure, same readJsonFile/
+    // writeJsonFile every other sheet in this app already uses. Wrapped in
+    // its own try/catch: a logging failure must never block the sweep
+    // itself or its real write-back below. ----
+    try {
+      const LOG_FILENAME = 'calendar_sweep_log.json';
+      const MAX_LOG_ENTRIES = 60; // ~2 months of nightly runs
+      const { data: existingLog } = await readJsonFile(automation.drive, found.id, LOG_FILENAME);
+      const entries = Array.isArray(existingLog && existingLog.entries) ? existingLog.entries : [];
+      const nowIso = new Date().toISOString();
+      const bangkokTime = new Date().toLocaleString('en-GB', { timeZone: 'Asia/Bangkok', hour12: false });
+      const entry = result.ok
+        ? { timestamp: nowIso, bangkokTime, outcome: 'ok', stats: result.stats, errors: result.errors || [] }
+        : { timestamp: nowIso, bangkokTime, outcome: 'skipped', reason: result.reason };
+      entries.push(entry);
+      while (entries.length > MAX_LOG_ENTRIES) entries.shift();
+      await writeJsonFile(automation.drive, found.id, LOG_FILENAME, { entries }, null, false);
+    } catch (logErr) {
+      console.warn('[contract/write cron] failed to write calendar_sweep_log.json (non-blocking):', logErr && logErr.message);
+    }
+    // ------------------------------------------------------------------------
+
     if (!result.ok) {
       sendJson(res, 200, { success: true, skipped: true, reason: result.reason });
       return;
@@ -106,7 +140,7 @@ async function handleDailySweepCron(req, res) {
     try { await sheetIO.writeSheetJson('Contract', result.contractRows, contractModifiedTime); }
     catch (err) { console.warn('[contract/write cron] Contract sheet write-back failed:', err.message); }
 
-    sendJson(res, 200, { success: true, stats: result.stats });
+    sendJson(res, 200, { success: true, stats: result.stats, errors: result.errors || [] });
   } catch (err) {
     sendJson(res, 500, { success: false, error: err.message });
   }
