@@ -102,7 +102,7 @@ async function handleDailySweepCron(req, res) {
     // see project memory aa-scooters-calendar-nightly-sweep-2026-08-25).
     // Writing the outcome into the SAME shared Drive folder the sweep
     // already reads from means it survives independent of Vercel dashboard
-    // access, and is readable any time via api/admin/calendar-sweep-log.js
+    // access, and is readable any time via this same file's GET ?cron=sweepLog route
     // (or directly via Drive, once this folder/file is shared with whatever
     // account reads it) -- no new infrastructure, same readJsonFile/
     // writeJsonFile every other sheet in this app already uses. Wrapped in
@@ -146,6 +146,83 @@ async function handleDailySweepCron(req, res) {
   }
 }
 
+// ---- GET .../api/contract/write?cron=sweepLog&key=<CRON_SECRET value> ----
+// Read-only status/diagnostic for the nightly dailySweep cron just above.
+// Folded into THIS file/function (rather than a separate api/admin/*.js
+// file) deliberately -- added 25/08/2026, then immediately reverted from
+// its own file the same day when Vercel's Hobby plan rejected the deploy
+// with "No more than 12 Serverless Functions" (this project was already at
+// exactly 12; see git history same day). Every file directly under api/
+// is its own serverless function on Vercel, so a genuinely new admin
+// endpoint would need Anton to either delete an existing one or upgrade
+// off Hobby -- reusing this already-existing function via another `cron=`
+// query value costs nothing extra.
+//
+// WHY THIS EXISTS: Anton is asleep/away when the sweep runs (22:00
+// Bangkok), so any per-row warning it hits has nowhere to surface in real
+// time. dailySweep's caller (handleDailySweepCron above) writes each run's
+// outcome to calendar_sweep_log.json in the app's shared Drive folder --
+// this endpoint reads that back over a plain HTTPS GET, no staff session
+// needed, so a future Claude session (or Anton) can check on the sweep
+// without Vercel dashboard access, which this project's own history shows
+// has been unreliable to reach from a Claude session.
+//
+// AUTH: reuses CRON_SECRET as the read key -- if CRON_SECRET isn't set, the
+// cron itself can't run anyway, so gating on it here adds no extra setup
+// step. WITHOUT a matching ?key=, this still safely reports whether the two
+// required env vars are SET (booleans only -- never their values, never
+// customer data). ----
+async function handleSweepLogStatus(req, res) {
+  const cronSecret = process.env.CRON_SECRET;
+  const providedKey = (req.query && req.query.key) || '';
+  const envStatus = {
+    cronSecretSet: !!cronSecret,
+    calendarAutomationTokenSet: !!process.env.CALENDAR_AUTOMATION_REFRESH_TOKEN
+  };
+
+  if (!cronSecret || providedKey !== cronSecret) {
+    sendJson(res, 200, {
+      success: true,
+      authenticated: false,
+      envStatus,
+      note: 'Pass ?key=<CRON_SECRET value> to also read the actual sweep log (last runs, stats, per-row errors).'
+    });
+    return;
+  }
+
+  try {
+    const { automationClientsFromEnv } = require('../../lib/googleCalendarAuth');
+    const automation = automationClientsFromEnv();
+    if (!automation) {
+      sendJson(res, 200, {
+        success: true, authenticated: true, envStatus, sweepConfigured: false,
+        reason: 'CALENDAR_AUTOMATION_REFRESH_TOKEN is not set (or invalid) -- automationClientsFromEnv() returned null.'
+      });
+      return;
+    }
+    const found = await findNamedFolderAnywhere(automation.drive, APP_FOLDER_NAME);
+    if (!found) {
+      sendJson(res, 200, {
+        success: true, authenticated: true, envStatus, sweepConfigured: false,
+        reason: `Could not find the "${APP_FOLDER_NAME}" Drive folder from the connected calendar account -- has it been shared (Viewer) with that account's email yet?`
+      });
+      return;
+    }
+    const { data } = await readJsonFile(automation.drive, found.id, 'calendar_sweep_log.json');
+    const entries = (data && Array.isArray(data.entries)) ? data.entries : [];
+    sendJson(res, 200, {
+      success: true,
+      authenticated: true,
+      envStatus,
+      sweepConfigured: true,
+      totalEntriesStored: entries.length,
+      mostRecent: entries.slice(-10) // last 10 runs, most recent last
+    });
+  } catch (err) {
+    sendJson(res, 500, { success: false, authenticated: true, envStatus, error: err.message });
+  }
+}
+
 const postHandler = withDrive(async function handler(req, res, { drive, folderId, session }) {
   try {
     const body = await readJsonBody(req);
@@ -181,6 +258,9 @@ const postHandler = withDrive(async function handler(req, res, { drive, folderId
 module.exports = async function handler(req, res) {
   if (req.method === 'GET' && req.query && req.query.cron === 'dailySweep') {
     return handleDailySweepCron(req, res);
+  }
+  if (req.method === 'GET' && req.query && req.query.cron === 'sweepLog') {
+    return handleSweepLogStatus(req, res);
   }
   if (req.method !== 'POST') {
     sendJson(res, 405, { success: false, error: 'Method not allowed.' });
