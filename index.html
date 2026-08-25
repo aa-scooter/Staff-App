@@ -130,6 +130,17 @@
 
 <div id="topbar-mount"></div>
 
+<!-- Rollover-health banner (added 24/08/2026 -- see lib/rolloverStatus.js's
+     header comment for the full "why"). Hidden by default; the script at
+     the bottom fills it in and shows it only when the last recorded
+     month-rollover check (cron OR the manual button below) wasn't a clean
+     'ok'. This is the whole point of the status-tracking change: a problem
+     that used to be a quiet 200 in a Vercel log nobody watches now shows up
+     here, the first thing loaded when the app is opened. -->
+<div id="rolloverBanner" style="display:none; max-width:520px; margin:0 auto; padding:0 16px 14px;">
+  <div id="rolloverBannerInner" style="border-radius:10px; padding:12px 14px; font-size:13px; line-height:1.45;"></div>
+</div>
+
 <div class="page-head">
   <h1>Staff Tools</h1>
   <div class="sub">Pick a tool to get started</div>
@@ -279,6 +290,42 @@ document.getElementById('createMonthSheetBtn').addEventListener('click', () => {
       status.textContent = 'Could not create: ' + err.message;
     });
 });
+
+// ---- Rollover-health banner (added 24/08/2026) -- fires once on page
+// load, POSTs {action:'rolloverStatus'} (see api/admin/reset.js's new
+// handleRolloverStatusAction), and shows a banner only if the last
+// recorded check wasn't a clean 'ok'. Deliberately fails silent on its own
+// error (a network hiccup fetching the STATUS shouldn't itself put up a
+// scary banner) -- this is a nice-to-have surfaced problem, not something
+// that should ever get in the way of using the app. ----
+fetch('/api/admin/reset', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ action: 'rolloverStatus' })
+})
+  .then(res => res.json())
+  .then(data => {
+    const s = data && data.success && data.status;
+    if (!s || s.severity === 'ok') return; // nothing to show
+    const banner = document.getElementById('rolloverBanner');
+    const inner = document.getElementById('rolloverBannerInner');
+    const colors = {
+      warning: { bg: '#FFF3EC', border: '#F0B77A', text: '#8A5A1F' },
+      blocked: { bg: '#FFF9E6', border: '#E8CE7A', text: '#7A6415' },
+      error:   { bg: '#FDECEC', border: '#EFA3A3', text: '#8A2323' }
+    };
+    const c = colors[s.severity] || colors.warning;
+    inner.style.background = c.bg;
+    inner.style.border = '1px solid ' + c.border;
+    inner.style.color = c.text;
+    const label = s.severity === 'error' ? 'Month rollover error'
+      : s.severity === 'blocked' ? 'Month rollover not configured'
+      : 'Month rollover warning';
+    inner.innerHTML = '<strong>' + label + ':</strong> ' + (s.message || '(no details given)') +
+      (s.checkedAt ? '<div style="margin-top:4px; opacity:.75; font-size:11.5px;">Last checked ' + new Date(s.checkedAt).toLocaleString() + '</div>' : '');
+    banner.style.display = 'block';
+  })
+  .catch(() => { /* silent -- see comment above */ });
 </script>
 
 </body>

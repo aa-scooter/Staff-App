@@ -52,6 +52,17 @@
 // quietly (same as dailySweep does) rather than failing loudly -- the
 // manual button above is the reliable fallback either way.
 //
+// EXTENDED 2026-08-24 to also carry rollover-health status tracking (see
+// lib/rolloverStatus.js's own header comment for the full design/why --
+// closes the gap where the cron's "quietly skipped" responses above were
+// invisible to a human):
+//   - { action: 'rolloverStatus' }                  -> returns the last
+//                                                       recorded outcome of
+//                                                       either the cron or
+//                                                       the manual button
+//                                                       above, for
+//                                                       index.html's banner
+//
 // Deliberately NOT a new file/route: this project already hit Vercel
 // Hobby's 12-Serverless-Function cap once (see PROGRESS.md/
 // BUGFIX_HANDOFF.md's bike-photos-404 saga) consolidating routes into
@@ -66,6 +77,7 @@ const { writeJsonFile, ensureAppFolder, ensureYearFolder } = require('../../lib/
 const { isMonthSheetName } = require('../../lib/monthSheets');
 const { createBackup, listBackups, ensureDailyBackup, deleteBackups, restoreBackup } = require('../../lib/backups');
 const { createNextMonthSheetFromJson, checkForMonthEndRolloverJson } = require('../../lib/monthRollover');
+const { writeRolloverStatus, readRolloverStatus } = require('../../lib/rolloverStatus');
 
 const DATA_DIR = path.join(__dirname, '..', '..', 'data');
 
@@ -263,10 +275,26 @@ function buildMonthSheetIO(drive, appFolderId) {
 }
 
 // ---- New 2026-08-21 month-rollover action (manual trigger). ----
+// STATUS TRACKING (added 24/08/2026, see lib/rolloverStatus.js's own header
+// comment): a dryRun preview never touches real data, so it's deliberately
+// excluded from status tracking -- only a REAL createNextMonthSheet call
+// (from this button, or from the cron below) updates the banner index.html
+// shows, same reasoning `dryRun` already gets excluded from other
+// side-effecting bookkeeping throughout lib/monthRollover.js.
 async function handleMonthRolloverAction(req, res, { drive, folderId }, body) {
   const effectiveFolderId = folderId || await ensureAppFolder(drive);
   const sheetIO = buildMonthSheetIO(drive, effectiveFolderId);
-  const result = await createNextMonthSheetFromJson(sheetIO, { dryRun: !!(body && body.dryRun) });
+  const dryRun = !!(body && body.dryRun);
+  const result = await createNextMonthSheetFromJson(sheetIO, { dryRun });
+  if (!dryRun) {
+    if (!result.success) {
+      await writeRolloverStatus(drive, effectiveFolderId, { severity: 'error', message: result.error, source: 'manual' });
+    } else if (result.warning) {
+      await writeRolloverStatus(drive, effectiveFolderId, { severity: 'warning', message: `Created "${result.sheetName}", but: ${result.warning}`, source: 'manual' });
+    } else {
+      await writeRolloverStatus(drive, effectiveFolderId, { severity: 'ok', message: `Created "${result.sheetName}" cleanly.`, source: 'manual' });
+    }
+  }
   sendJson(res, result.success ? 200 : 400, result);
 }
 
@@ -276,7 +304,21 @@ async function handleMonthRolloverAction(req, res, { drive, folderId }, body) {
 // own `?cron=dailySweep` handler: Vercel Cron has no browser, so there's no
 // staff session cookie for withDrive to check. Authenticates itself instead
 // by checking Vercel's own Authorization: Bearer <CRON_SECRET> header
-// against the CRON_SECRET env var. ----
+// against the CRON_SECRET env var.
+//
+// STATUS TRACKING (added 24/08/2026, see lib/rolloverStatus.js's own header
+// comment for the full "why"): every branch below now also persists what
+// happened, so a problem that used to be just a quiet 200 in a Vercel log
+// shows up as a banner on the home page instead. The "blocked" branches
+// (missing automation credential / can't find the Drive folder) fire EVERY
+// night regardless of whether tonight is actually a rollover night -- that's
+// deliberate: those two are genuine standing misconfigurations that would
+// also silently break the one night a month this actually matters, so
+// they're worth surfacing immediately rather than waiting for the next
+// month-end to discover it the hard way. The unauthorized-request return
+// (bad/missing CRON_SECRET) is deliberately NOT status-tracked -- that's a
+// request-auth problem, not a rollover-health problem, and would need a
+// working drive/folderId to persist to anyway, which this branch doesn't have. ----
 async function handleMonthRolloverCron(req, res) {
   const cronSecret = process.env.CRON_SECRET;
   const authHeader = (req.headers && req.headers['authorization']) || '';
@@ -289,11 +331,13 @@ async function handleMonthRolloverCron(req, res) {
     const { findNamedFolderAnywhere, APP_FOLDER_NAME } = require('../../lib/googleDrive');
     const automation = automationClientsFromEnv();
     if (!automation) {
-      sendJson(res, 200, {
-        success: true, skipped: true,
-        reason: 'CALENDAR_AUTOMATION_REFRESH_TOKEN is not set yet -- see lib/googleCalendarAuth.js. ' +
-          'The "Create Next Month Sheet" button on the home page still works manually in the meantime.'
-      });
+      const reason = 'CALENDAR_AUTOMATION_REFRESH_TOKEN is not set yet -- see lib/googleCalendarAuth.js. ' +
+        'The "Create Next Month Sheet" button on the home page still works manually in the meantime.';
+      // No drive client at all in this branch (that's the whole problem) --
+      // nowhere to persist the status TO. Falls through unrecorded; the
+      // very next successful check (once this is fixed) will self-heal the
+      // banner by writing a fresh 'ok'/'warning'/'error' status.
+      sendJson(res, 200, { success: true, skipped: true, reason });
       return;
     }
     // NOT ensureAppFolder here -- same gotcha api/contract/write.js's own
@@ -301,6 +345,8 @@ async function handleMonthRolloverCron(req, res) {
     // app's Drive folder, it only has it SHARED with it.
     const found = await findNamedFolderAnywhere(automation.drive, APP_FOLDER_NAME);
     if (!found) {
+      // Same "nowhere to persist to" situation as above -- the whole point
+      // of this check IS that the folder can't be located.
       sendJson(res, 200, {
         success: true, skipped: true,
         reason: `Could not find the "${APP_FOLDER_NAME}" Drive folder from the connected calendar account -- ` +
@@ -311,10 +357,51 @@ async function handleMonthRolloverCron(req, res) {
     }
     const sheetIO = buildMonthSheetIO(automation.drive, found.id);
     const result = await checkForMonthEndRolloverJson(sheetIO);
+    // result.skipped === true here means the ordinary "tomorrow isn't the
+    // 1st" no-op (see checkForMonthEndRolloverJson) -- the expected outcome
+    // 364 nights a year, not a problem. Recording 'ok' on every one of
+    // those nights (rather than only recording something on rollover
+    // nights) is deliberate: it's what lets a previously-'blocked' status
+    // self-heal to 'ok' automatically the very next night after the
+    // underlying config problem gets fixed, with no separate "clear the
+    // banner" step needed anywhere.
+    if (result.skipped) {
+      await writeRolloverStatus(automation.drive, found.id, { severity: 'ok', message: result.reason, source: 'cron' });
+    } else if (!result.success) {
+      await writeRolloverStatus(automation.drive, found.id, { severity: 'error', message: result.error, source: 'cron' });
+    } else if (result.warning) {
+      await writeRolloverStatus(automation.drive, found.id, { severity: 'warning', message: `Created "${result.sheetName}", but: ${result.warning}`, source: 'cron' });
+    } else {
+      await writeRolloverStatus(automation.drive, found.id, { severity: 'ok', message: `Created "${result.sheetName}" cleanly.`, source: 'cron' });
+    }
     sendJson(res, 200, result);
   } catch (err) {
+    // Best-effort status write -- if THIS also fails (e.g. the exception
+    // was itself a Drive-access problem), writeRolloverStatus's own
+    // try/catch swallows it rather than masking the real error below.
+    try {
+      const { automationClientsFromEnv } = require('../../lib/googleCalendarAuth');
+      const { findNamedFolderAnywhere, APP_FOLDER_NAME } = require('../../lib/googleDrive');
+      const automation = automationClientsFromEnv();
+      if (automation) {
+        const found = await findNamedFolderAnywhere(automation.drive, APP_FOLDER_NAME);
+        if (found) await writeRolloverStatus(automation.drive, found.id, { severity: 'error', message: err.message, source: 'cron' });
+      }
+    } catch (statusErr) { /* swallow -- see comment above */ }
     sendJson(res, 500, { success: false, error: err.message });
   }
+}
+
+// ---- New 2026-08-24 action -- lets index.html ask "is anything wrong with
+// month rollover?" on page load, using the staff member's own logged-in
+// Drive session (same as every other page read in this app) rather than
+// the cron's borrowed automation credentials -- both read/write the exact
+// same rollover_status.json in the app's Drive folder, so it doesn't matter
+// which identity last wrote it. ----
+async function handleRolloverStatusAction(req, res, { drive, folderId }) {
+  const effectiveFolderId = folderId || await ensureAppFolder(drive);
+  const status = await readRolloverStatus(drive, effectiveFolderId);
+  sendJson(res, 200, { success: true, status });
 }
 
 // Same "define the withDrive-wrapped handler once at module scope" shape
@@ -335,6 +422,10 @@ const postHandler = withDrive(async function handler(req, res, ctx) {
     }
     if (action === 'createNextMonthSheet') {
       await handleMonthRolloverAction(req, res, ctx, body);
+      return;
+    }
+    if (action === 'rolloverStatus') {
+      await handleRolloverStatusAction(req, res, ctx);
       return;
     }
     await handleBackupAction(req, res, ctx, action, body);
