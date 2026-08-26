@@ -504,7 +504,7 @@ see the "opt-" prefixed block near the end of the <script> below. -->
     <div class="field" id="fPaidFromDepositToggleField" style="display:none;">
       <label style="display:flex; align-items:center; gap:8px; text-transform:none; letter-spacing:normal; font-size:13.5px; font-weight:500; color:var(--ink);">
         <input type="checkbox" id="fPaidFromDepositToggle" style="width:auto;">
-        Paid from an existing deposit
+        <span id="fPaidFromDepositLabel">Paid from an existing deposit</span>
       </label>
     </div>
     <div class="field" id="fPaidFromDepositField" style="display:none;">
@@ -3532,19 +3532,30 @@ const fPaidFromDeposit = document.getElementById('fPaidFromDeposit');
 // Maps the Payment method dropdown's value to the matching deposit
 // category key used by action=deposits / consumeDeposit in Code.gs.
 // Cash (and blank) has no deposit table, so there's nothing to draw from.
+// "scan" is Add Income's payment-method wording for a bank deposit slip;
+// "bank" is Add Expense's wording for the same underlying category -- both
+// map to the same 'bank' key.
 function depositCategoryForPaidBy(paidByVal) {
   const v = (paidByVal || '').toString().trim().toLowerCase();
-  if (v === 'scan') return 'bank';
+  if (v === 'scan' || v === 'bank') return 'bank';
   if (v === 'wise') return 'wise';
   if (v === 'revolut') return 'revolut';
   return null;
 }
 
-// Fetched fresh every time the "Paid from an existing deposit" checkbox is
-// ticked, rather than cached, so it reflects whatever's actually left in
-// the deposit tables right now (another staff member may have just spent
-// one). Add-Income only -- this feature doesn't apply to editing an
-// existing income entry or to expenses.
+// The "paid/spent from an existing deposit" toggle draws its category from
+// whichever payment-method select is actually visible for the current
+// modal mode -- fPaidBy for Add Income, fExpensePayment for Add Expense.
+function activePaymentMethodValue() {
+  const isIncome = modalMode === 'addIncome' || modalMode === 'editIncome';
+  return isIncome ? fPaidBy.value : fExpensePayment.value;
+}
+
+// Fetched fresh every time the "Paid/Spent from an existing deposit"
+// checkbox is ticked, rather than cached, so it reflects whatever's
+// actually left in the deposit tables right now (another staff member may
+// have just spent one). Add-only -- this feature doesn't apply to editing
+// an existing income or expense entry.
 async function populateDepositDropdown(categoryKey) {
   fPaidFromDeposit.innerHTML = '<option value="">Loading…</option>';
   fPaidFromDeposit.disabled = true;
@@ -3569,7 +3580,7 @@ async function populateDepositDropdown(categoryKey) {
 }
 
 // Keeps the toggle+dropdown in sync with whatever payment method is
-// currently selected -- only Scan/Wise/Revolut have a deposit table to
+// currently selected -- only Scan/Bank/Wise/Revolut have a deposit table to
 // draw from, and switching methods while the dropdown is open should
 // refresh it rather than leave a stale list from the previous method.
 function refreshPaidFromDepositUI() {
@@ -3579,7 +3590,7 @@ function refreshPaidFromDepositUI() {
     fPaidFromDepositField.style.display = 'none';
     return;
   }
-  const category = depositCategoryForPaidBy(fPaidBy.value);
+  const category = depositCategoryForPaidBy(activePaymentMethodValue());
   if (!category) {
     fPaidFromDepositToggle.checked = false;
     fPaidFromDepositToggleField.style.display = 'none';
@@ -3708,11 +3719,11 @@ function setSelectValueCI(selectEl, rawValue) {
   selectEl.value = match ? match.value : '';
 }
 
-// Only true while the Add Income modal (never Edit Income, never either
-// expense mode) is open -- "paid from an existing deposit" only makes
-// sense when logging a brand-new income row, so the toggle/dropdown stay
-// hidden everywhere else regardless of what refreshPaidFromDepositUI's
-// own checks would otherwise allow.
+// Only true while an Add Income or Add Expense modal (never an Edit of
+// either) is open -- "paid/spent from an existing deposit" only makes
+// sense when logging a brand-new row, so the toggle/dropdown stay hidden
+// everywhere else regardless of what refreshPaidFromDepositUI's own checks
+// would otherwise allow.
 let paidFromDepositFeatureEnabled = false;
 
 function openModal(mode, isIncome, entry) {
@@ -3732,11 +3743,14 @@ function openModal(mode, isIncome, entry) {
     : 'Split this expense across one or more bikes';
   document.getElementById('fIncomeBikeSplitHint').style.display = isIncome ? 'block' : 'none';
 
-  paidFromDepositFeatureEnabled = isIncome && !entry;
+  paidFromDepositFeatureEnabled = !entry;
   fPaidFromDepositToggle.checked = false;
   fPaidFromDepositToggleField.style.display = 'none';
   fPaidFromDepositField.style.display = 'none';
   fPaidFromDeposit.innerHTML = '<option value="">— Select —</option>';
+  document.getElementById('fPaidFromDepositLabel').textContent = isIncome
+    ? 'Paid from an existing deposit'
+    : 'Spent from an existing deposit';
 
   if (isIncome) {
     modalTitle.textContent = entry ? 'Edit Income' : 'Add Income';
@@ -3749,6 +3763,7 @@ function openModal(mode, isIncome, entry) {
     fExpense.value = entry ? (entry.expense || '') : '';
     setSelectValueCI(fExpensePayment, entry ? entry.payment : '');
     fExpenseType.value = (entry && entry.type) ? entry.type : 'business';
+    if (paidFromDepositFeatureEnabled) refreshPaidFromDepositUI();
   }
 
   // "extras" is income's implicit default when no bike is explicitly
@@ -3802,10 +3817,12 @@ fExpenseBikeToggle.addEventListener('change', () => {
     addBikeSplitRow('', fAmount.value || '');
   }
 });
-// Switching payment method while adding an income refreshes which deposit
-// category (if any) the checkbox below draws from; ticking/unticking the
-// checkbox itself shows/hides and (re)loads the dropdown.
+// Switching payment method while adding an income or expense refreshes
+// which deposit category (if any) the checkbox below draws from;
+// ticking/unticking the checkbox itself shows/hides and (re)loads the
+// dropdown.
 fPaidBy.addEventListener('change', () => { if (paidFromDepositFeatureEnabled) refreshPaidFromDepositUI(); });
+fExpensePayment.addEventListener('change', () => { if (paidFromDepositFeatureEnabled) refreshPaidFromDepositUI(); });
 fPaidFromDepositToggle.addEventListener('change', refreshPaidFromDepositUI);
 // Close only on a genuine click on the backdrop itself -- NOT when the
 // mousedown started inside the modal (e.g. dragging to select text in an
@@ -4353,6 +4370,16 @@ modalSaveBtn.addEventListener('click', () => {
     }
   } else {
     if (!payload.payment) { setModalError('Please select a payment method.'); return; }
+
+    // Add-only: paidFromDepositFeatureEnabled is false whenever this is an
+    // edit, so an edit never sends these fields even if the checkbox
+    // somehow ended up checked.
+    if (paidFromDepositFeatureEnabled && fPaidFromDepositToggle.checked) {
+      if (!fPaidFromDeposit.value) { setModalError('Please select which deposit this was spent from.'); return; }
+      payload.paidFromDeposit = true;
+      payload.depositCategory = depositCategoryForPaidBy(fExpensePayment.value);
+      payload.depositRow = Number(fPaidFromDeposit.value);
+    }
   }
 
   pendingPayload = payload;
