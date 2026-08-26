@@ -408,6 +408,13 @@
        JS below (calSyncNowBtn handler) and lib/contractWrites.js's
        manualCalendarSyncFromJson for the full "why". -->
   <div class="cal-sync-result hidden" id="calSyncResultBox"></div>
+  <!-- "Clean Up Duplicates" (added 26/08/2026) -- shown only when the last
+       Sync Now found duplicate titles. Deletes the extra copy of each
+       clearly-resolvable duplicate (keeping whichever event the sheet
+       currently points to), after a confirm() -- same click-to-confirm
+       convention as Disconnect above. See lib/contractWrites.js's
+       cleanupDuplicateCalendarEventsFromJson for the full "why"/rule. -->
+  <button type="button" id="calCleanupDupesBtn" class="hidden sync-now" style="margin-bottom:14px;">Clean Up Duplicates</button>
 
   <div class="cal-card hidden" id="calCard">
     <iframe
@@ -992,6 +999,8 @@ linkEntryForm.addEventListener('submit', async (e) => {
 const calConnectStatus = document.getElementById('calConnectStatus');
 const calSyncNowBtn = document.getElementById('calSyncNowBtn');
 const calSyncResultBox = document.getElementById('calSyncResultBox');
+const calCleanupDupesBtn = document.getElementById('calCleanupDupesBtn');
+let lastDupeCount = 0;
 const calConnectBtn = document.getElementById('calConnectBtn');
 const calDisconnectBtn = document.getElementById('calDisconnectBtn');
 const calTokenBox = document.getElementById('calTokenBox');
@@ -1085,6 +1094,9 @@ calSyncNowBtn.addEventListener('click', async () => {
       // future ones) easy to find and clear by hand via each event's own
       // Google Calendar link.
       const dupes = data.duplicateEvents || [];
+      lastDupeCount = dupes.length;
+      calCleanupDupesBtn.classList.toggle('hidden', dupes.length === 0);
+      calCleanupDupesBtn.textContent = 'Clean Up Duplicates (' + dupes.length + ')';
       if (dupes.length) {
         html += '<div style="margin-top:10px;"><strong class="csr-err">' + dupes.length + ' duplicate title' + (dupes.length === 1 ? '' : 's') + ' found on the calendar -- open each link below and delete the extras:</strong><ul>';
         dupes.forEach(d => {
@@ -1102,6 +1114,48 @@ calSyncNowBtn.addEventListener('click', async () => {
   }
   calSyncNowBtn.disabled = false;
   calSyncNowBtn.textContent = 'Sync Now';
+});
+
+// "Clean Up Duplicates" (added 26/08/2026) -- see
+// lib/contractWrites.js's cleanupDuplicateCalendarEventsFromJson for the
+// full rule (keep whichever event the sheet currently points to, delete
+// the other copy; anything it can't safely resolve is left alone and
+// reported back for manual review via the same links Sync Now already
+// showed). Confirms once before deleting anything, same as Disconnect.
+calCleanupDupesBtn.addEventListener('click', async () => {
+  if (!confirm('Delete the extra copy of each of the ' + lastDupeCount + ' duplicate calendar entries found? The copy matching what\'s currently in the sheet is kept; the other is permanently removed. Anything that can\'t be safely told apart is left alone for manual review.')) return;
+  calCleanupDupesBtn.disabled = true;
+  calCleanupDupesBtn.textContent = 'Cleaning up…';
+  try {
+    const data = await callApi('cleanupDuplicateCalendarEvents');
+    if (data.skipped) {
+      calSyncResultBox.innerHTML += '<div class="csr-err" style="margin-top:10px;">Cleanup not run: ' + escapeHtml(data.reason || 'unknown reason') + '</div>';
+    } else {
+      let html = '<div style="margin-top:10px; padding-top:10px; border-top:1px solid var(--line);">Cleanup done: deleted <strong>' + (data.deleted || 0) + '</strong> extra event(s) across <strong>' + (data.deletedTitles || []).length + '</strong> title(s).';
+      const amb = data.ambiguous || [];
+      if (amb.length) {
+        html += '<div class="csr-err" style="margin-top:6px;">' + amb.length + ' title(s) could not be safely auto-resolved (kept as-is) -- review manually:</div><ul>';
+        amb.forEach(a => {
+          html += '<li>' + escapeHtml(a.title) + ' (' + a.count + '×, ' + a.matchingCurrentData + ' matching current data): ';
+          html += a.events.map((e, i) => '<a href="' + e.htmlLink + '" target="_blank" rel="noopener">#' + (i + 1) + '</a>').join(' ');
+          html += '</li>';
+        });
+        html += '</ul>';
+      }
+      const fails = data.failures || [];
+      if (fails.length) {
+        html += '<div class="csr-err" style="margin-top:6px;">' + fails.length + ' delete(s) failed:</div><ul>' +
+          fails.map(f => '<li class="csr-err">' + escapeHtml(f.title + ': ' + f.error) + '</li>').join('') + '</ul>';
+      }
+      html += '</div>';
+      calSyncResultBox.innerHTML += html;
+    }
+  } catch (err) {
+    calSyncResultBox.innerHTML += '<div class="csr-err" style="margin-top:10px;">Cleanup failed: ' + escapeHtml(err.message) + '</div>';
+  }
+  calCleanupDupesBtn.classList.add('hidden');
+  calCleanupDupesBtn.disabled = false;
+  calCleanupDupesBtn.textContent = 'Clean Up Duplicates';
 });
 
 calConnectBtn.addEventListener('click', () => {
