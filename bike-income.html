@@ -54,7 +54,7 @@
   }
   .search-wrap input:focus{ outline:none; border-color:var(--petrol-light); }
 
-  .toolbar{ margin-bottom:14px; }
+  .toolbar{ margin-bottom:14px; display:flex; align-items:center; gap:10px; }
   #toggleMonthsBtn{
     padding:9px 16px; border:1px solid var(--petrol); border-radius:8px;
     background:var(--card); color:var(--petrol); font-family:'Barlow Condensed',sans-serif;
@@ -63,6 +63,23 @@
   }
   #toggleMonthsBtn:active{ transform:scale(.97); }
   #toggleMonthsBtn.active{ background:var(--petrol); color:#fff; }
+
+  #logExpenseBtn{
+    padding:9px 16px; border:none; border-radius:8px;
+    background:var(--cone); color:#fff; font-family:'Barlow Condensed',sans-serif;
+    font-weight:700; font-size:12.5px; letter-spacing:.03em; text-transform:uppercase;
+    cursor:pointer; margin-left:auto;
+  }
+  #logExpenseBtn:active{ transform:scale(.97); }
+
+  .save-status{
+    font-size:12.5px; border-radius:7px; padding:8px 10px; margin-bottom:12px; display:none;
+  }
+  .save-status.show{ display:block; }
+  .save-status.ok{ color:var(--petrol); background:#EEF5F2; border:1px solid #D8E8E1; }
+  .save-status.err{ color:var(--bad); background:#FCEBEB; border:1px solid #F3C6C6; }
+
+  td.expenses.just-logged{ background:#FCEBEB; border-radius:6px; }
 
   .bike-count{ font-size:12px; color:var(--muted); margin-bottom:10px; }
 
@@ -138,6 +155,62 @@
       max-width:64px; overflow:hidden; text-overflow:ellipsis;
     }
   }
+
+  /* -- Log Expense modal -- */
+  .modal-backdrop{
+    position:fixed; inset:0; background:rgba(15,36,33,.45);
+    display:none; align-items:flex-end; justify-content:center; z-index:1000;
+  }
+  .modal-backdrop.show{ display:flex; }
+  .modal-sheet{
+    background:var(--card); width:100%; max-width:420px;
+    border-radius:16px 16px 0 0; padding:20px 18px 24px;
+    max-height:90vh; overflow-y:auto;
+  }
+  @media (min-width:560px){
+    .modal-backdrop{ align-items:center; }
+    .modal-sheet{ border-radius:16px; }
+  }
+  .modal-sheet h3{
+    font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:20px;
+    color:var(--petrol); margin:0 0 16px;
+  }
+  .modal-error{
+    font-size:12.5px; color:var(--bad); background:#FCEBEB; border:1px solid #F3C6C6;
+    border-radius:7px; padding:7px 10px; margin-bottom:12px; display:none;
+  }
+  .modal-error.show{ display:block; }
+  .field{ margin-bottom:14px; position:relative; }
+  .field label{
+    display:block; font-size:11.5px; font-weight:600; color:var(--muted);
+    margin-bottom:5px; text-transform:uppercase; letter-spacing:.04em;
+  }
+  .field input{
+    width:100%; padding:11px 12px; border:1px solid var(--line); border-radius:9px;
+    font-size:14.5px; font-family:'Inter',sans-serif; background:#FBFAF7; color:var(--ink);
+  }
+  .field input:focus{ outline:none; border-color:var(--petrol-light); background:#fff; }
+  .ac-list{
+    position:absolute; left:0; right:0; top:100%; margin-top:4px;
+    background:#fff; border:1px solid var(--line); border-radius:9px;
+    max-height:180px; overflow-y:auto; z-index:20; display:none;
+    box-shadow:0 8px 18px rgba(15,61,62,.12);
+  }
+  .ac-list.show{ display:block; }
+  .ac-item{ padding:10px 12px; font-size:13.5px; cursor:pointer; border-bottom:1px solid #F0EBE0; }
+  .ac-item:last-child{ border-bottom:none; }
+  .ac-item:hover, .ac-item.hi{ background:#F5EFE6; }
+  .field-note{ font-size:11.5px; color:var(--muted); margin-top:6px; line-height:1.4; }
+  .modal-btn-row{ display:flex; gap:10px; margin-top:4px; }
+  .modal-btn-row button{
+    flex:1; padding:13px; border:none; border-radius:10px;
+    font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:14px;
+    letter-spacing:.03em; text-transform:uppercase; cursor:pointer;
+  }
+  .modal-btn-row button:active{ transform:scale(.98); }
+  .btn-cancel{ background:#EFEAE0; color:var(--petrol); }
+  .btn-save{ background:var(--cone); color:#fff; }
+  .btn-save:disabled{ opacity:.45; cursor:default; }
 </style>
 </head>
 <body>
@@ -158,7 +231,10 @@
 
   <div class="toolbar">
     <button type="button" id="toggleMonthsBtn">Show months</button>
+    <button type="button" id="logExpenseBtn">Log Expense</button>
   </div>
+
+  <div class="save-status" id="saveStatus"></div>
 
   <div class="bike-count" id="bikeCount"></div>
 
@@ -212,6 +288,30 @@
     </table>
   </div>
 </main>
+
+<div class="modal-backdrop" id="expenseModalBackdrop">
+  <div class="modal-sheet">
+    <h3>Log Bike Expense</h3>
+    <div class="modal-error" id="expenseModalError"></div>
+
+    <div class="field" id="expenseBikeFieldWrap">
+      <label for="expenseBikeInput">Bike</label>
+      <input type="text" id="expenseBikeInput" placeholder="Search bikes…" autocomplete="off">
+      <div class="ac-list" id="expenseBikeAcList"></div>
+    </div>
+
+    <div class="field">
+      <label for="expenseAmountInput">Amount (฿)</label>
+      <input type="number" id="expenseAmountInput" step="0.01" placeholder="0.00">
+      <div class="field-note">Dated today. Recorded against this bike's Expenses total only — no transaction is added to Accounts, and it's reversible from Settings &gt; Transaction history.</div>
+    </div>
+
+    <div class="modal-btn-row">
+      <button type="button" class="btn-cancel" id="expenseModalCancelBtn">Cancel</button>
+      <button type="button" class="btn-save" id="expenseModalSaveBtn">Save</button>
+    </div>
+  </div>
+</div>
 
 <script>
 const scriptUrl = ''; // DISCONNECTED: this Vercel copy is intentionally not wired to the live backend (dev/testing only, see project CLAUDE.md)
@@ -355,6 +455,187 @@ async function getBikeIncomeSummaryFromJson() {
 }
 // ================== end JSON-backed data layer ==================
 
+// ================== Bike Expenses (stock/parts costs charged to a bike) ==================
+// Added 2026-08-26 per Anton: lets staff charge a parts/stock cost straight
+// to a bike's running Expenses total without it also creating an Accounts
+// transaction -- the underlying cost was already recorded as a real
+// expense when the parts/stock were bought; this just tags that spend
+// against the bike it ended up on, after the fact, with no money actually
+// moving now. Modeled on the SAME "attach an expense amount to a bike"
+// idea accounts.html's own Add Expense modal already has (its "Split this
+// expense across one or more bikes" bike-split rows), simplified down to
+// just Bike + Amount and routed to its own small sheet instead of also
+// writing a Cash-sheet row.
+//
+// Lives in its OWN sheet ("bike_expenses", auto-created on first save by
+// the generic /api/data/<sheet> route -- see that route's own header
+// comment for why a brand-new sheet name needs no registration anywhere)
+// rather than touching the "bikes" sheet's own Expenses/Profit/Net profit
+// cells, which stay exactly as accounts.html's bike-split expenses compute
+// them. This page only ADDS this sheet's per-bike totals on top of those
+// at render time (mergeBikeExpensesIntoBikes below) -- nothing here ever
+// writes to the "bikes" sheet itself, so there's no risk of this feature
+// corrupting the figures every other page also reads.
+//
+// Row shape: [ID, Date, Bike, Amount] -- same array-of-arrays + header-row
+// convention as every other sheet in this app, specifically so a reversed
+// entry (see logBikeExpense below) can be blanked back to '' in place by
+// Settings' EXISTING generic reversal code (executeReversal in
+// settings.html) with zero changes needed there -- it already knows how to
+// restore ["before"] values into a {sheet, row, cols} it's given, for any
+// sheet name, no allowlist. Reversing just blanks the row rather than
+// removing it from the array (matches how the reversal engine already
+// works everywhere else in this app -- see addExpenseRowFromJson's own
+// blank-row-reuse convention in lib/accountsWrites.js); getBikeExpenseTotalsFromJson
+// below already skips any row with a blank Bike cell, so a blanked/reversed
+// row simply stops counting.
+const BIKE_EXPENSES_SHEET = 'bike_expenses';
+const BIKE_EXPENSES_HEADER = ['ID', 'Date', 'Bike', 'Amount'];
+
+// ---- Generic sheet IO for the WRITE path (own copy -- this project's
+// convention is no shared JS between pages other than nav.js's UI chrome;
+// same pattern as settings.html/accounts.html/parts.html's own copies).
+// fetchSheetJson above is read-only and promise-cached for this page's own
+// display reads; this pair is for writing, which needs a fresh, uncached
+// modifiedTime immediately before every save. ----
+async function fetchSheetWithMeta(sheetName) {
+  const r = await fetch(`/api/data/${encodeURIComponent(sheetName)}`);
+  if (r.status === 401) throw new Error('Signed out -- please refresh to sign in again.');
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  const res = await r.json();
+  if (!res.success) throw new Error(res.error || 'Could not load data.');
+  return { rows: res.rows || [], modifiedTime: res.modifiedTime || null };
+}
+async function writeSheetJson(sheetName, rows, expectedModifiedTime) {
+  const r = await fetch(`/api/data/${encodeURIComponent(sheetName)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ rows, expectedModifiedTime })
+  });
+  const res = await r.json().catch(() => ({}));
+  if (r.status === 409) throw new Error(res.error || 'This record was changed by someone else in the meantime -- please try again.');
+  if (!r.ok || !res.success) throw new Error(res.error || ('HTTP ' + r.status));
+  delete bikeIncomeJsonCache[sheetName]; // this page's own read cache for fetchSheetJson -- drop it so the next read isn't stale
+  return res;
+}
+
+function pad2BikeExpense(n) { return String(n).padStart(2, '0'); }
+// Today's date, encoded the same "YYYY-MM-DDT00:00:00" way
+// isoDateInputToSheetValue does elsewhere in this app (see
+// lib/accountsWrites.js) -- round-trips through decodeSheetDate/
+// jsonCellToDmy identically to every other date this app writes.
+function todaySheetDateValue() {
+  const d = new Date();
+  return `${d.getFullYear()}-${pad2BikeExpense(d.getMonth() + 1)}-${pad2BikeExpense(d.getDate())}T00:00:00`;
+}
+
+// ---- Reads bike_expenses.json and sums logged amounts per bike (exact,
+// case-insensitive name match -- the modal only ever lets staff PICK a bike
+// from this page's own list, never free-type an arbitrary one, so there's
+// no fuzzy name-matching to do here, unlike most other bike-name lookups in
+// this codebase). Tolerates the sheet not existing yet (brand new, see
+// fetchSheetJson's own null-rows handling) and skips any row with a blank
+// Bike cell -- including one Settings' reversal has blanked back to ''. ----
+async function getBikeExpenseTotalsFromJson() {
+  const rows2D = await fetchSheetJson(BIKE_EXPENSES_SHEET).catch(() => []);
+  const totals = {};
+  for (let i = 1; i < rows2D.length; i++) {
+    const row = rows2D[i] || [];
+    const bike = (row[2] || '').toString().trim();
+    if (!bike) continue; // blank -- unused pre-allocated row, or a reversed entry
+    const amount = Number(row[3]);
+    if (!amount || isNaN(amount)) continue;
+    const key = bike.toLowerCase();
+    totals[key] = (totals[key] || 0) + amount;
+  }
+  return totals;
+}
+
+// ---- Folds getBikeExpenseTotalsFromJson()'s per-bike totals into the
+// "bikes" sheet's own numbers -- adds to Expenses, and subtracts the same
+// amount from Profit and Net profit (Profit = Income - Expenses, Net
+// profit = Profit - Cost, so a bigger Expenses figure moves both of those
+// by exactly this much too). Mutates and returns the same array. ----
+function mergeBikeExpensesIntoBikes(bikes, totals) {
+  bikes.forEach(b => {
+    const extra = totals[(b.name || '').toLowerCase()] || 0;
+    if (!extra) return;
+    b.expenses += extra;
+    b.profit -= extra;
+    b.netProfit -= extra;
+  });
+  return bikes;
+}
+
+// ---- Appends one row to bike_expenses.json, then logs it to the shared
+// Transaction History (transactionLog.json) exactly like every other
+// reversible action in this app -- so it shows up in Settings > Transaction
+// history with a working "Reverse" button using that page's EXISTING
+// generic reversal code, with NO changes needed there: reversing an entry
+// there is just "blank these {sheet, row, cols} back to `before`", which
+// works for any sheet name already, and this row is brand new (before:
+// ['', '', '', '']). Retries the bike_expenses.json write once on a save
+// conflict (two staff logging an expense in the same instant); the
+// transaction-log append itself is best-effort and does not fail the
+// overall save if it can't land -- same non-critical-failure reasoning as
+// logTransactionB in lib/accountsWrites.js (the expense is still correctly
+// recorded either way, it just wouldn't show up as reversible in Settings
+// until the next successful log write). ----
+async function logBikeExpense(bikeName, amount) {
+  let rows, modifiedTime, newRowNum, newRow;
+  for (let attempt = 1; ; attempt++) {
+    ({ rows, modifiedTime } = await fetchSheetWithMeta(BIKE_EXPENSES_SHEET));
+    if (!rows.length) rows = [BIKE_EXPENSES_HEADER.slice()];
+    const id = 'be_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+    newRow = [id, todaySheetDateValue(), bikeName, amount];
+    const newRows = rows.concat([newRow]);
+    newRowNum = newRows.length;
+    try {
+      await writeSheetJson(BIKE_EXPENSES_SHEET, newRows, modifiedTime);
+      break;
+    } catch (err) {
+      if (attempt < 2 && /changed by someone else/i.test(err.message || '')) continue;
+      throw err;
+    }
+  }
+
+  const entry = {
+    id: 'txn_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8),
+    ts: new Date().toISOString(),
+    page: 'bike-income.html',
+    action: 'logBikeExpense',
+    reversible: true,
+    reversed: false,
+    reversedAt: null,
+    summary: 'Bike expense ' + fmt(amount) + ' — ' + bikeName,
+    writes: [{
+      sheet: BIKE_EXPENSES_SHEET, row: newRowNum, cols: [1, 2, 3, 4],
+      before: ['', '', '', ''], after: newRow,
+      note: 'Stock/parts expense charged to this bike -- no Accounts transaction was created.'
+    }]
+  };
+  // Same retry-on-conflict as the bike_expenses.json write above -- a pure
+  // append is always safe to redo (see logTransactionB's own comment in
+  // lib/accountsWrites.js). Still wrapped in an outer try/catch: this
+  // logging is best-effort and must never undo or fail the expense itself,
+  // which is already safely saved by this point.
+  try {
+    for (let attempt = 1; ; attempt++) {
+      const { rows: logRows, modifiedTime: logModifiedTime } = await fetchSheetWithMeta('transactionLog');
+      try {
+        await writeSheetJson('transactionLog', (logRows || []).concat([entry]), logModifiedTime);
+        break;
+      } catch (err) {
+        if (attempt < 3 && /changed by someone else/i.test(err.message || '')) continue;
+        throw err;
+      }
+    }
+  } catch (err) {
+    console.warn('Transaction log write failed (non-critical):', err && err.message);
+  }
+}
+// ================== end Bike Expenses ==================
+
 let allBikes = [];
 
 function setLoadStatus(msg) {
@@ -362,6 +643,15 @@ function setLoadStatus(msg) {
   if (!msg) { el.classList.remove('show'); el.textContent = ''; return; }
   el.textContent = msg;
   el.classList.add('show');
+}
+
+let saveStatusTimer = null;
+function showSaveStatus(msg, isError) {
+  const el = document.getElementById('saveStatus');
+  clearTimeout(saveStatusTimer);
+  el.textContent = msg;
+  el.className = 'save-status show ' + (isError ? 'err' : 'ok');
+  if (!isError) saveStatusTimer = setTimeout(() => { el.classList.remove('show'); }, 6000);
 }
 
 function fmt(num) {
@@ -401,7 +691,7 @@ function render() {
       <td class="cost">${fmt(b.cost)}</td>
       ${monthCells}
       <td class="income">${fmt(b.income)}</td>
-      <td class="expenses">${fmt(b.expenses)}</td>
+      <td class="expenses ${b.name === justLoggedBikeName ? 'just-logged' : ''}">${fmt(b.expenses)}</td>
       <td class="profit">${fmt(b.profit)}</td>
       <td class="netProfit ${netCls}">${fmt(b.netProfit)}</td>
     </tr>`;
@@ -456,8 +746,15 @@ async function loadBikes() {
     setLoadStatus('Loading bikes…');
   }
   try {
-    const res = await getBikeIncomeSummaryFromJson();
+    const [res, expenseTotals] = await Promise.all([
+      getBikeIncomeSummaryFromJson(),
+      // Best-effort -- a hiccup reading this sheet shouldn't take down the
+      // whole page, it just means bike-logged expenses are missing from
+      // Expenses/Profit/Net profit until the next successful load.
+      getBikeExpenseTotalsFromJson().catch(() => ({}))
+    ]);
     if (!res.success) throw new Error(res.error || 'Could not load bike income data.');
+    mergeBikeExpensesIntoBikes(res.bikes || [], expenseTotals);
     // Sold bikes (A-Z), then unsold bikes (A-Z), then "Extras" and
     // "Deposit" pinned to the very bottom in that fixed order -- those two
     // are sentinel rows on the sheet, not real bikes, so they never belong
@@ -493,6 +790,127 @@ document.getElementById('toggleMonthsBtn').addEventListener('click', () => {
   const showing = table.classList.toggle('show-months');
   btn.classList.toggle('active', showing);
   btn.textContent = showing ? 'Hide months' : 'Show months';
+});
+
+/* ---------------- Log Expense modal ---------------- */
+const expenseModalBackdrop = document.getElementById('expenseModalBackdrop');
+const expenseBikeInput = document.getElementById('expenseBikeInput');
+const expenseBikeAcList = document.getElementById('expenseBikeAcList');
+const expenseAmountInput = document.getElementById('expenseAmountInput');
+const expenseModalError = document.getElementById('expenseModalError');
+const expenseModalSaveBtn = document.getElementById('expenseModalSaveBtn');
+let expensePickedBikeName = null;
+let justLoggedBikeName = null;
+let justLoggedTimer = null;
+
+function tokenMatchExpense(value, query) {
+  if (!query) return true;
+  const v = (value || '').toString().toLowerCase();
+  return query.toLowerCase().trim().split(/\s+/).filter(Boolean).every(t => v.includes(t));
+}
+
+function closeExpenseAc() {
+  expenseBikeAcList.classList.remove('show');
+  expenseBikeAcList.innerHTML = '';
+}
+// Suggestions come from this page's own already-loaded bike list (the same
+// names the table itself shows), excluding the "Extras"/"Deposit" sentinel
+// rows -- those aren't real bikes, see isSentinel in
+// getBikeIncomeSummaryFromJson. Selecting one always sets the field to the
+// EXACT stored name, which is what makes getBikeExpenseTotalsFromJson's
+// per-bike sum above a plain exact match instead of needing this
+// codebase's usual fuzzy bike-name matching.
+function openExpenseAc(query) {
+  const options = allBikes.filter(b => !b.isSentinel && tokenMatchExpense(b.name, query)).slice(0, 8);
+  if (!options.length) { closeExpenseAc(); return; }
+  expenseBikeAcList.innerHTML = options.map((b, i) => `<div class="ac-item" data-index="${i}">${b.name}</div>`).join('');
+  expenseBikeAcList.classList.add('show');
+  Array.from(expenseBikeAcList.children).forEach((el, i) => {
+    el.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      expensePickedBikeName = options[i].name;
+      expenseBikeInput.value = expensePickedBikeName;
+      closeExpenseAc();
+    });
+  });
+}
+expenseBikeInput.addEventListener('input', () => {
+  expensePickedBikeName = null;
+  openExpenseAc(expenseBikeInput.value.trim());
+});
+expenseBikeInput.addEventListener('focus', () => openExpenseAc(expenseBikeInput.value.trim()));
+document.addEventListener('click', (e) => {
+  if (!expenseBikeInput.contains(e.target) && !expenseBikeAcList.contains(e.target)) closeExpenseAc();
+});
+
+function openExpenseModal() {
+  expensePickedBikeName = null;
+  expenseBikeInput.value = '';
+  expenseAmountInput.value = '';
+  expenseModalError.classList.remove('show');
+  expenseModalError.textContent = '';
+  expenseModalSaveBtn.disabled = false;
+  expenseModalSaveBtn.textContent = 'Save';
+  closeExpenseAc();
+  expenseModalBackdrop.classList.add('show');
+}
+function closeExpenseModal() {
+  expenseModalBackdrop.classList.remove('show');
+  closeExpenseAc();
+}
+document.getElementById('logExpenseBtn').addEventListener('click', openExpenseModal);
+document.getElementById('expenseModalCancelBtn').addEventListener('click', closeExpenseModal);
+
+// Close only on a genuine click on the backdrop itself -- not when the
+// mousedown started inside the modal (e.g. dragging to select text in the
+// amount field). See project CLAUDE.md's modal/backdrop convention.
+let expenseModalMouseDownOnBackdrop = false;
+expenseModalBackdrop.addEventListener('mousedown', (e) => {
+  expenseModalMouseDownOnBackdrop = (e.target === expenseModalBackdrop);
+});
+expenseModalBackdrop.addEventListener('click', (e) => {
+  if (e.target === expenseModalBackdrop && expenseModalMouseDownOnBackdrop) closeExpenseModal();
+  expenseModalMouseDownOnBackdrop = false;
+});
+
+expenseModalSaveBtn.addEventListener('click', async () => {
+  // Forgiving fallback for "typed the exact name but never clicked the
+  // suggestion" -- matches it against this page's own bike list rather
+  // than requiring the click.
+  const typed = expenseBikeInput.value.trim();
+  const bikeName = expensePickedBikeName ||
+    (allBikes.find(b => !b.isSentinel && b.name.toLowerCase() === typed.toLowerCase()) || {}).name;
+  const amount = Number(expenseAmountInput.value);
+
+  expenseModalError.classList.remove('show');
+  if (!bikeName) {
+    expenseModalError.textContent = 'Pick a bike from the list.';
+    expenseModalError.classList.add('show');
+    return;
+  }
+  if (!amount || amount <= 0) {
+    expenseModalError.textContent = 'Enter an amount greater than 0.';
+    expenseModalError.classList.add('show');
+    return;
+  }
+
+  expenseModalSaveBtn.disabled = true;
+  expenseModalSaveBtn.textContent = 'Saving…';
+  try {
+    await logBikeExpense(bikeName, amount);
+    closeExpenseModal();
+    showSaveStatus('Logged ' + fmt(amount) + ' to ' + bikeName + ' — no transaction was created in Accounts.', false);
+    clearTimeout(justLoggedTimer);
+    justLoggedBikeName = bikeName;
+    justLoggedTimer = setTimeout(() => { justLoggedBikeName = null; render(); }, 4000);
+    await loadBikes();
+  } catch (err) {
+    expenseModalError.textContent = err.message || 'Could not save this expense.';
+    expenseModalError.classList.add('show');
+  } finally {
+    expenseModalSaveBtn.disabled = false;
+    expenseModalSaveBtn.textContent = 'Save';
+  }
 });
 
 loadBikes();
