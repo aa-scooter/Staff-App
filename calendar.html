@@ -1078,6 +1078,23 @@ calSyncNowBtn.addEventListener('click', async () => {
         html += '<ul>' + warns.map(w => '<li class="csr-err">' + escapeHtml(w) + '</li>').join('') + '</ul>';
       }
       if (!errs.length && !warns.length) html += ' No errors.';
+
+      // Duplicate-event report (added 26/08/2026) -- read-only scan, see
+      // lib/contractWrites.js's manualCalendarSyncFromJson comment. Never
+      // deletes anything itself -- just makes today's duplicates (and any
+      // future ones) easy to find and clear by hand via each event's own
+      // Google Calendar link.
+      const dupes = data.duplicateEvents || [];
+      if (dupes.length) {
+        html += '<div style="margin-top:10px;"><strong class="csr-err">' + dupes.length + ' duplicate title' + (dupes.length === 1 ? '' : 's') + ' found on the calendar -- open each link below and delete the extras:</strong><ul>';
+        dupes.forEach(d => {
+          html += '<li>' + escapeHtml(d.title) + ' (' + d.count + '×): ';
+          html += d.events.map((e, i) => '<a href="' + e.htmlLink + '" target="_blank" rel="noopener">#' + (i + 1) + '</a>').join(' ');
+          html += '</li>';
+        });
+        html += '</ul></div>';
+      }
+
       calSyncResultBox.innerHTML = html;
     }
   } catch (err) {
