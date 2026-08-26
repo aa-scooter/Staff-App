@@ -4114,16 +4114,17 @@ editWhatsappAiFillBtn.addEventListener('click', async () => {
   editWhatsappAiStatusBox.innerHTML = '<span class="status-spinner"></span><span>Reading screenshot…</span>';
 
   try {
-    const base64 = await readFileAsBase64(file);
+    const resized = await resizeImageForAiRead(file);
+    const base64 = await readFileAsBase64(resized);
     const res = await fetch('/api/ai/whatsapp-contact', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         imageBase64: base64,
-        imageMimeType: file.type || 'image/jpeg'
+        imageMimeType: 'image/jpeg'
       })
     });
-    const data = await res.json();
+    const data = await readAiJsonResponse(res);
     if (!data.success) throw new Error(data.error || 'Unknown error');
 
     const fields = data.fields || {};
@@ -4980,6 +4981,84 @@ function readFileAsBase64(file) {
   });
 }
 
+// BUGFIX 26/08/2026 -- "Fill from Passport (AI)" was failing with a
+// browser-native JSON-parse error ("The string did not match the expected
+// pattern.") on real passport photos while "Fill from WhatsApp (AI)" kept
+// working fine on screenshots. Root cause: Vercel Functions cap the whole
+// request body at 4.5MB (see bikephotos.html's resizeImageForUploadB,
+// which documents/solves the exact same limit for bike-photo uploads --
+// this is the same fix, ported here). A phone-camera passport photo is
+// routinely 3-8MB before base64 (which itself inflates size by ~33%), so
+// it blows past that cap and Vercel's edge rejects the request with an
+// HTML error page BEFORE our function ever runs -- the client's `await
+// res.json()` then throws trying to parse that HTML as JSON, and that
+// throw's exact wording is browser-dependent (Safari/WebKit's is "The
+// string did not match the expected pattern."). A WhatsApp "Edit contact"
+// screenshot is a small, already-compressed PNG, comfortably under the
+// cap, which is why only the passport flow was ever affected.
+//
+// Downscaling to at most 1600px on the long edge (same ceiling
+// bikephotos.html uses) keeps the AI-analysis payload in the low hundreds
+// of KB, comfortably under the cap -- and is plenty of resolution for the
+// model to read printed text/MRZ lines; both Claude's and Gemini's vision
+// pipelines internally downsample well below this anyway. This resized
+// copy is ONLY used for the AI read below -- the original, full-resolution
+// file selected in the picker is untouched and still gets bundled into the
+// addContract submission as usual.
+const MAX_AI_IMAGE_DIMENSION = 1600;
+const AI_IMAGE_JPEG_QUALITY = 0.82;
+function resizeImageForAiRead(file) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const objectUrl = URL.createObjectURL(file);
+    img.onload = () => {
+      URL.revokeObjectURL(objectUrl);
+      let width = img.naturalWidth || img.width;
+      let height = img.naturalHeight || img.height;
+      if (!width || !height) { reject(new Error('Could not read this image\'s dimensions.')); return; }
+      if (width > MAX_AI_IMAGE_DIMENSION || height > MAX_AI_IMAGE_DIMENSION) {
+        if (width >= height) {
+          height = Math.round(height * (MAX_AI_IMAGE_DIMENSION / width));
+          width = MAX_AI_IMAGE_DIMENSION;
+        } else {
+          width = Math.round(width * (MAX_AI_IMAGE_DIMENSION / height));
+          height = MAX_AI_IMAGE_DIMENSION;
+        }
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, width, height);
+      canvas.toBlob((blob) => {
+        if (!blob) { reject(new Error('Could not process this image.')); return; }
+        resolve(blob);
+      }, 'image/jpeg', AI_IMAGE_JPEG_QUALITY);
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      reject(new Error('Could not read this image file -- it may not be a valid photo.'));
+    };
+    img.src = objectUrl;
+  });
+}
+
+// Parses a fetch Response as JSON, but turns a non-JSON body (e.g. an HTML
+// error page from a platform-level rejection like a too-large request)
+// into a clear, actionable message instead of letting the raw JSON-parse
+// exception (browser-dependent wording, e.g. Safari's "The string did not
+// match the expected pattern.") surface confusingly to staff.
+async function readAiJsonResponse(res) {
+  let data;
+  try {
+    data = await res.json();
+  } catch (e) {
+    throw new Error('The server did not return a usable response (HTTP ' + res.status + '). If this was a large photo, try a smaller/lower-resolution one.');
+  }
+  if (!res.ok && !data.success) throw new Error(data.error || ('Request failed (HTTP ' + res.status + ').'));
+  return data;
+}
+
 const passportPhotoInput = document.getElementById('passportPhoto');
 
 // "Fill from Passport (AI)" -- reads whatever photo is currently chosen in
@@ -5014,16 +5093,17 @@ passportAiFillBtn.addEventListener('click', async () => {
   passportAiStatusBox.innerHTML = '<span class="status-spinner"></span><span>Reading photo…</span>';
 
   try {
-    const base64 = await readFileAsBase64(file);
+    const resized = await resizeImageForAiRead(file);
+    const base64 = await readFileAsBase64(resized);
     const res = await fetch('/api/ai/passport', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         imageBase64: base64,
-        imageMimeType: file.type || 'image/jpeg'
+        imageMimeType: 'image/jpeg'
       })
     });
-    const data = await res.json();
+    const data = await readAiJsonResponse(res);
     if (!data.success) throw new Error(data.error || 'Unknown error');
 
     const fields = data.fields || {};
@@ -5077,16 +5157,17 @@ whatsappAiFillBtn.addEventListener('click', async () => {
   whatsappAiStatusBox.innerHTML = '<span class="status-spinner"></span><span>Reading screenshot…</span>';
 
   try {
-    const base64 = await readFileAsBase64(file);
+    const resized = await resizeImageForAiRead(file);
+    const base64 = await readFileAsBase64(resized);
     const res = await fetch('/api/ai/whatsapp-contact', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         imageBase64: base64,
-        imageMimeType: file.type || 'image/jpeg'
+        imageMimeType: 'image/jpeg'
       })
     });
-    const data = await res.json();
+    const data = await readAiJsonResponse(res);
     if (!data.success) throw new Error(data.error || 'Unknown error');
 
     const fields = data.fields || {};
