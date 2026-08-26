@@ -91,6 +91,26 @@
     color:#C53030;
     border:1px solid #F3C6C6;
   }
+  .cal-connect-bar button.sync-now{
+    background:var(--petrol);
+  }
+  .cal-connect-bar button.sync-now:disabled{
+    opacity:.6;
+    cursor:not-allowed;
+  }
+  .cal-sync-result{
+    background:#FBFAF7;
+    border:1px solid var(--line);
+    border-radius:10px;
+    padding:12px 14px;
+    margin-bottom:14px;
+    font-size:12.5px;
+    color:var(--muted);
+    line-height:1.5;
+  }
+  .cal-sync-result strong{ color:var(--petrol); }
+  .cal-sync-result .csr-err{ color:#C53030; }
+  .cal-sync-result ul{ margin:6px 0 0 18px; padding:0; }
   .cal-token-box{
     background:#FBFAF7;
     border:1px solid var(--line);
@@ -375,11 +395,19 @@
   <div class="cal-connect-bar" id="calConnectBar">
     <span class="ccb-status" id="calConnectStatus">Checking calendar connection…</span>
     <div>
+      <button type="button" id="calSyncNowBtn" class="hidden sync-now" title="Re-check every rented bike against the calendar right now, instead of waiting for the 22:00 automatic sync.">Sync Now</button>
       <button type="button" id="calConnectBtn" class="hidden">Connect Calendar</button>
       <button type="button" id="calDisconnectBtn" class="hidden secondary">Disconnect</button>
     </div>
   </div>
   <div class="cal-token-box hidden" id="calTokenBox"></div>
+  <!-- "Sync Now" result (added 26/08/2026) -- shows what the manual sweep
+       actually did (rows checked/changed, any errors) right after clicking,
+       so a fixed extend/return can be verified on the spot instead of
+       waiting to see if the calendar looks right. See calendar.html's own
+       JS below (calSyncNowBtn handler) and lib/contractWrites.js's
+       manualCalendarSyncFromJson for the full "why". -->
+  <div class="cal-sync-result hidden" id="calSyncResultBox"></div>
 
   <div class="cal-card hidden" id="calCard">
     <iframe
@@ -962,6 +990,8 @@ linkEntryForm.addEventListener('submit', async (e) => {
 // other account at any point, no code changes needed).
 
 const calConnectStatus = document.getElementById('calConnectStatus');
+const calSyncNowBtn = document.getElementById('calSyncNowBtn');
+const calSyncResultBox = document.getElementById('calSyncResultBox');
 const calConnectBtn = document.getElementById('calConnectBtn');
 const calDisconnectBtn = document.getElementById('calDisconnectBtn');
 const calTokenBox = document.getElementById('calTokenBox');
@@ -998,10 +1028,12 @@ async function refreshCalendarConnectionStatus() {
     if (data.connected) {
       calConnectStatus.innerHTML = 'Calendar connected: <strong>' + escapeHtml(data.email || '(unknown account)') + '</strong>';
       calDisconnectBtn.classList.remove('hidden');
+      calSyncNowBtn.classList.remove('hidden');
       setCalendarView(data.email);
     } else {
       calConnectStatus.textContent = 'No calendar connected yet.';
       calConnectBtn.classList.remove('hidden');
+      calSyncNowBtn.classList.add('hidden');
       setCalendarView(null);
     }
   } catch (err) {
@@ -1010,6 +1042,50 @@ async function refreshCalendarConnectionStatus() {
     setCalendarView(null);
   }
 }
+
+// "Sync Now" (added 26/08/2026) -- runs the exact same dailySweep the
+// nightly cron runs, on demand, against whichever calendar is connected
+// above. See lib/contractWrites.js's manualCalendarSyncFromJson for the
+// full "why" (short version: extend/return are supposed to update the
+// calendar live and the nightly job is supposed to catch anything that
+// slips through -- both have had real gaps -- so this lets staff force a
+// resync right now and see exactly what it did, to fix a stuck entry or
+// to test a fix, without waiting for 22:00 Bangkok).
+calSyncNowBtn.addEventListener('click', async () => {
+  calSyncNowBtn.disabled = true;
+  calSyncNowBtn.textContent = 'Syncing…';
+  calSyncResultBox.classList.remove('hidden');
+  calSyncResultBox.textContent = 'Checking every rented bike and contract against the calendar…';
+  try {
+    const data = await callApi('manualCalendarSync');
+    if (data.skipped) {
+      calSyncResultBox.innerHTML = '<span class="csr-err">Not run: ' + escapeHtml(data.reason || 'unknown reason') + '</span>';
+    } else if (data.success === false) {
+      calSyncResultBox.innerHTML = '<span class="csr-err">Sync failed: ' + escapeHtml(data.error || 'unknown error') + '</span>';
+    } else {
+      const s = data.stats || {};
+      let html = 'Done as of ' + new Date().toLocaleTimeString('en-GB', { timeZone: 'Asia/Bangkok' }) + ' (Bangkok time). ' +
+        'Checked <strong>' + (s.customerRowsChecked || 0) + '</strong> due-back rows (' +
+        '<strong>' + (s.dueBackEventsChanged || 0) + '</strong> changed), ' +
+        '<strong>' + (s.contractRowsChecked || 0) + '</strong> contract rows (' +
+        '<strong>' + (s.deliveryEventsChanged || 0) + '</strong> changed).';
+      const errs = data.errors || [];
+      const warns = data.writeWarnings || [];
+      if (errs.length) {
+        html += '<ul>' + errs.map(e => '<li class="csr-err">' + escapeHtml((e.type || '') + ': ' + (e.name || '') + ' / ' + (e.bike || '') + ' — ' + (e.message || '')) + '</li>').join('') + '</ul>';
+      }
+      if (warns.length) {
+        html += '<ul>' + warns.map(w => '<li class="csr-err">' + escapeHtml(w) + '</li>').join('') + '</ul>';
+      }
+      if (!errs.length && !warns.length) html += ' No errors.';
+      calSyncResultBox.innerHTML = html;
+    }
+  } catch (err) {
+    calSyncResultBox.innerHTML = '<span class="csr-err">Sync failed: ' + escapeHtml(err.message) + '</span>';
+  }
+  calSyncNowBtn.disabled = false;
+  calSyncNowBtn.textContent = 'Sync Now';
+});
 
 calConnectBtn.addEventListener('click', () => {
   window.location.href = '/api/auth/login?flow=calendar&next=' + encodeURIComponent('/calendar.html');
