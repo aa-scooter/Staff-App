@@ -315,19 +315,25 @@ async function handleGenerateChecklist(req, res, ctx) {
 }
 
 // ---- POST /api/contracts/makeContractPublic -- body { fileId }. Grants
-// "anyone with the link, view only" on a Contract PDF so contract.html's
-// viewContract() (which now opens a real drive.google.com/file/d/<id>/view
-// link -- see driveViewUrl() there) works regardless of which Google
-// account is signed into the viewer's browser. Added 2026-08-20 (Anton,
-// live: a Chrome profile on a different Google account than the file owner
-// got Drive's "you need permission" screen). generateContractDocumentFromJson
-// already sets this at generation time for anything created from now on --
-// this route is the backstop for a contract PDF that already existed
-// before that, letting viewContract() fix it retroactively the next time
-// it's opened. DELIBERATELY scoped to Contract PDFs only by which callers
-// invoke it (contract.html never calls this for receipts/checklists/photos)
-// -- do not wire this up to any other document type without asking Anton
-// first, since passport photos in particular must stay private. ----
+// "anyone with the link, view only" on a Contract/Receipt/Checklist PDF so
+// contract.html's viewContract()/viewReceipt()/viewChecklist() (which all
+// open a real drive.google.com/file/d/<id>/view link -- see driveViewUrl()
+// there) work regardless of which Google account is signed into the
+// viewer's browser. Added 2026-08-20 (Anton, live: a Chrome profile on a
+// different Google account than the file owner got Drive's "you need
+// permission" screen) for Contract PDFs; extended 2026-08-27 (Anton, live)
+// to Receipt/Checklist PDFs too -- same screen, same fix. The name kept
+// its original 'makeContractPublic' route/function name to avoid churning
+// every caller for a rename, but this handler was already generic by
+// fileId and is now deliberately called for all three document types.
+// generateContractDocumentFromJson/generateReceiptDocumentFromJson/
+// generateChecklistDocumentFromJson already set this at generation time
+// for anything created from now on -- this route is the backstop for a
+// PDF that already existed before that, letting the view functions fix it
+// retroactively the next time it's opened. Still DELIBERATELY never called
+// for passport photos or any other document -- those must stay private;
+// do not wire this up to any new document type without asking Anton
+// first. ----
 async function handleMakeContractPublic(req, res, { drive }) {
   if (req.method !== 'POST') { sendJson(res, 405, { success: false, error: 'Method not allowed.' }); return; }
   const body = await readJsonBody(req);

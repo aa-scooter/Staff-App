@@ -3779,11 +3779,11 @@ const editNoDocsMsg = document.getElementById('editNoDocsMsg');
 // Google Drive link, not the /api/contracts/file/<id> private proxy --
 // Anton wants these to hand off to the Drive app / Drive's own viewer on
 // Android "like before, because I know it works", instead of rendering
-// inside this app's own tab. These files are owner-only (no "anyone with
-// the link" sharing -- see lib/contractDocGen.js), so this only works
-// when the viewing browser is signed into the same Google account that
-// owns them (aascooterchiangmai@gmail.com) -- fine for Anton's own
-// devices, but flag it if a different staff login ever can't open one.
+// inside this app's own tab. As of 2026-08-27 all three of contract/
+// receipt/checklist PDFs get "anyone with the link, view only" sharing
+// (see lib/contractDocGen.js's generate*DocumentFromJson functions and the
+// ensureContractFilePublic_ backstop calls below), so this works from any
+// Google login, or none at all -- no more "you need permission" screen.
 function driveViewUrl(fileId) {
   return 'https://drive.google.com/file/d/' + encodeURIComponent(fileId) + '/view';
 }
@@ -3868,8 +3868,15 @@ async function performContractRegeneration() {
 // view only" on this specific fileId -- awaited so the permission is
 // actually in place before the Drive tab opens. Best-effort: any failure
 // here still lets the Drive link open, just possibly back to today's
-// prompt rather than a hard error. Scoped to Contract PDFs only -- never
-// call this for receipts/checklists/photos (see the route's own comment).
+// prompt rather than a hard error.
+//
+// Extended 2026-08-27 (Anton, live) to receipts and checklists too, not
+// just contracts -- Anton wants ALL of these openable by "anyone with the
+// link" so a different Google login never blocks viewing/printing one.
+// The route itself (and ensureFilePubliclyViewable underneath it) is
+// already generic by fileId, so viewReceipt()/viewChecklist() below just
+// call this same function -- still never call it for passport photos,
+// which must stay private (see the route's own comment).
 async function ensureContractFilePublic_(fileId) {
   if (!fileId) return;
   try {
@@ -4258,7 +4265,10 @@ function expectedReceiptFileName() {
 editViewReceiptBtn.addEventListener('click', async () => {
   if (!currentEditRecord) return;
   if (currentEditRecord.receiptPdfUrl) {
+    // Same not-awaited-first pattern as viewContract() above -- open the
+    // tab synchronously off the click, fix sharing in the background.
     window.open(currentEditRecord.receiptPdfUrl, '_blank', 'noopener');
+    ensureContractFilePublic_(currentEditRecord.receiptPdfFileId);
     return;
   }
 
@@ -4272,6 +4282,9 @@ editViewReceiptBtn.addEventListener('click', async () => {
   if (found) {
     currentEditRecord.receiptPdfFileId = found.id;
     currentEditRecord.receiptPdfUrl = found.url;
+    // Already past an await (the search above) -- worth waiting for this
+    // one so an older, not-yet-public receipt is fixed before it opens.
+    await ensureContractFilePublic_(currentEditRecord.receiptPdfFileId);
     window.open(found.url, '_blank', 'noopener');
     return;
   }
@@ -4563,7 +4576,10 @@ function expectedChecklistFileName() {
 async function viewChecklist() {
   if (!currentEditRecord) return;
   if (currentEditRecord.checklistPdfUrl) {
+    // Same not-awaited-first pattern as viewContract() above -- open the
+    // tab synchronously off the click, fix sharing in the background.
     window.open(currentEditRecord.checklistPdfUrl, '_blank', 'noopener');
+    ensureContractFilePublic_(currentEditRecord.checklistPdfFileId);
     return;
   }
 
@@ -4577,6 +4593,9 @@ async function viewChecklist() {
   if (found) {
     currentEditRecord.checklistPdfFileId = found.id;
     currentEditRecord.checklistPdfUrl = found.url;
+    // Already past an await (the search above) -- worth waiting for this
+    // one so an older, not-yet-public checklist is fixed before it opens.
+    await ensureContractFilePublic_(currentEditRecord.checklistPdfFileId);
     window.open(found.url, '_blank', 'noopener');
     editViewChecklistBtn.disabled = false;
     editViewChecklistBtn.textContent = originalText;
