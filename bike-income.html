@@ -1136,7 +1136,7 @@ function miRenderDetailBody(bikeName, monthIdx, year, officialAmount, state) {
     </tr>`).join('') : `<tr><td colspan="4" class="mi-detail-empty" style="padding:6px 8px;">No matched income rows for ${escapeHtml(bikeName)} in ${label} yet.</td></tr>`;
 
   let mismatchBlock = '';
-  if (isMismatch) {
+  if (isMismatch || unmatched.length) {
     const candidatesHtml = unmatched.length ? unmatched.map(u => `
       <div class="mi-orphan-row">
         <span>${escapeHtml(u.date) || '—'} · ${escapeHtml(u.name)} · ${escapeHtml(u.note)} · ${fmt(u.amount)}</span>
@@ -1145,12 +1145,14 @@ function miRenderDetailBody(bikeName, monthIdx, year, officialAmount, state) {
           data-mi-attribute-year="${u.year}" data-mi-attribute-row="${u.rowNum}"
           data-mi-attribute-amount="${u.amount}" data-mi-attribute-desc="${escapeHtml(u.note)}">Attribute to ${escapeHtml(bikeName)}</button>
       </div>`).join('') : '';
-    mismatchBlock = `<div class="mi-mismatch-block">
-      <div class="mi-mismatch">breakdown sums to ${fmt(subtotal)}, sheet total is ${fmt(officialAmount)}</div>
-      ${candidatesHtml ? `<div class="mi-orphan-list"><div class="mi-orphan-head">Unattributed income this month — could one of these belong to ${escapeHtml(bikeName)}?</div>${candidatesHtml}</div>` : ''}
-      <button type="button" class="mi-settotal-btn" data-mi-confirm-stage="0"
+    const mismatchLine = isMismatch ? `<div class="mi-mismatch">breakdown sums to ${fmt(subtotal)}, sheet total is ${fmt(officialAmount)}</div>` : '';
+    const settotalBtn = isMismatch ? `<button type="button" class="mi-settotal-btn" data-mi-confirm-stage="0"
         data-mi-settotal-bike="${escapeHtml(bikeName)}" data-mi-settotal-month="${monthIdx}"
-        data-mi-settotal-year="${year}" data-mi-settotal-value="${subtotal}">Set ${escapeHtml(bikeName)}'s ${label} total to match breakdown (${fmt(subtotal)})</button>
+        data-mi-settotal-year="${year}" data-mi-settotal-value="${subtotal}">Set ${escapeHtml(bikeName)}'s ${label} total to match breakdown (${fmt(subtotal)})</button>` : '';
+    mismatchBlock = `<div class="mi-mismatch-block">
+      ${mismatchLine}
+      ${candidatesHtml ? `<div class="mi-orphan-list"><div class="mi-orphan-head">Unattributed income this month — could one of these belong to ${escapeHtml(bikeName)}?</div>${candidatesHtml}</div>` : ''}
+      ${settotalBtn}
       <div class="mi-correction-status" data-mi-status="1"></div>
     </div>`;
   }
