@@ -211,6 +211,45 @@
   .btn-cancel{ background:#EFEAE0; color:var(--petrol); }
   .btn-save{ background:var(--cone); color:#fff; }
   .btn-save:disabled{ opacity:.45; cursor:default; }
+
+  /* -- Month drill-down (2026-08-28) -- click a month total (Aug 2026
+     onward only -- see DRILLDOWN_START_YEAR/DRILLDOWN_START_MONTH_IDX in
+     the script below) to expand the individual rentals behind it, right
+     under that bike's row. Jan-Jul (and anything before the threshold)
+     stay plain, unclickable numbers -- no rental-level log exists for
+     that older data, so a click there would just be a dead end. -- */
+  td.month-col.mi-click{
+    cursor:pointer; color:var(--petrol);
+    text-decoration:underline dashed 1px var(--line); text-underline-offset:3px;
+  }
+  td.month-col.mi-click:hover{ background:#EAF2EF; color:var(--petrol-light); }
+  td.month-col.mi-click.mi-open{ background:var(--petrol); color:#fff; text-decoration:none; }
+  tr.mi-detail-row{ display:none; }
+  tr.mi-detail-row.mi-open{ display:table-row; }
+  table:not(.show-months) tr.mi-detail-row{ display:none !important; }
+  tr.mi-detail-row td{ padding:0; border-bottom:1px solid #F0EBE0; }
+  .mi-detail-wrap{ padding:10px 14px 14px 20px; background:#FBF7EF; text-align:left; }
+  .mi-detail-head{
+    display:flex; align-items:baseline; gap:8px; margin-bottom:8px; flex-wrap:wrap;
+    font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:14.5px; color:var(--petrol);
+  }
+  .mi-detail-head .mi-amt{ color:var(--ok); }
+  .mi-detail-head .mi-mismatch{ font-family:'Inter',sans-serif; font-weight:600; font-size:11.5px; color:var(--bad); }
+  .mi-detail-head .mi-close{
+    margin-left:auto; cursor:pointer; font-family:'Inter',sans-serif; font-weight:600;
+    font-size:12px; color:var(--muted); text-transform:none; letter-spacing:0;
+  }
+  .mi-detail-table{ width:100%; max-width:640px; border-collapse:collapse; font-size:12.5px; }
+  .mi-detail-table th{
+    text-align:left; font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:10.5px;
+    letter-spacing:.03em; text-transform:uppercase; color:var(--muted); padding:4px 8px; border-bottom:1px solid var(--line);
+  }
+  .mi-detail-table th.r{ text-align:right; }
+  .mi-detail-table td{ padding:6px 8px; border-bottom:1px solid #EFE6D6; text-align:left; white-space:normal; }
+  .mi-detail-table td.r{ text-align:right; font-family:'Barlow Condensed',sans-serif; font-weight:700; color:var(--ink); }
+  .mi-detail-table tr:last-child td{ border-bottom:none; }
+  .mi-detail-empty, .mi-detail-loading, .mi-detail-err{ font-size:12.5px; color:var(--muted); padding:6px 8px; }
+  .mi-detail-err{ color:var(--bad); }
 </style>
 </head>
 <body>
@@ -380,6 +419,124 @@ function looksLikeBikesSheetLabelJson(raw) {
 function normalizeBikeNameForTaxLookup(s) {
   return (s || '').toString().toLowerCase().replace(/[()]/g, ' ').replace(/[^a-z0-9]+/g, ' ').trim().replace(/\s+/g, ' ');
 }
+
+// ================== Month drill-down (2026-08-28) ==================
+// Per Anton: clicking a bike's month total (Aug 2026 onward -- older
+// months don't get this, see DRILLDOWN_START_YEAR/MONTH_IDX below) should
+// expand the individual rentals that made up that total, right under the
+// bike's row. The "bikes" sheet itself only ever stores the RUNNING TOTAL
+// per bike per month (see addRentalAmountToBikesSheetFromJson in
+// lib/contractWrites.js -- it just bumps a cell, no line-item log lives
+// there), so the breakdown has to come from a different source: the
+// monthly income sheet (e.g. "August_2026") that appendMonthlyIncomeRowFromJson
+// already writes one row to per rental, via buildRentalIncomeTextB's
+// "<bike name> rent N days" / "<bike name> extend N days" text -- see
+// that function in lib/contractWrites.js. This block re-reads that same
+// sheet client-side (already exposed generically via fetchSheetJson/
+// /api/data/<sheet>, same as everything else on this page) and parses
+// just the rows whose income text matches this bike.
+const BIKE_INCOME_YEAR = new Date().getFullYear();
+const DRILLDOWN_START_YEAR = 2026;
+const DRILLDOWN_START_MONTH_IDX = 7; // August, 0-indexed -- Jan-Jul stay plain
+// Real tab names on Drive for the monthly sheets -- note march/april/may
+// are lowercase there (historical quirk), same list deposits.html/
+// contract.html/lib/contractWrites.js already use as DEPOSITS_MONTH_NAMES.
+const INCOME_MONTH_TAB_NAMES = ['January', 'February', 'march', 'april', 'may', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December'];
+function monthIsDrilldownEligible(year, monthIdx) {
+  return year > DRILLDOWN_START_YEAR || (year === DRILLDOWN_START_YEAR && monthIdx >= DRILLDOWN_START_MONTH_IDX);
+}
+
+function miDecodeSheetDate(val) {
+  if (val === null || val === undefined) return null;
+  if (typeof val !== 'string') return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(val)) {
+    const m = val.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  }
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(val)) {
+    const m = val.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/);
+    return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6]));
+  }
+  return null;
+}
+function miPad2(n) { return String(n).padStart(2, '0'); }
+function miFormatDmy(date) {
+  if (!date) return '';
+  return miPad2(date.getDate()) + '/' + miPad2(date.getMonth() + 1) + '/' + date.getFullYear();
+}
+
+// Same "prefix match, but not a DIFFERENT bike whose name happens to
+// start the same way" rule as contract.html's own bikeNamesMatchForRental_
+// (see that file for the fuller comment) -- ported here rather than
+// shared, since this project's convention is no shared JS between pages
+// other than nav.js's UI chrome (see BIKE_EXPENSES_SHEET's own comment
+// above for another example of that same pattern on this page).
+const MI_RENTAL_DISTINGUISHING_SUFFIXES = {
+  'one': 1, 'two': 1, 'three': 1, 'four': 1, 'five': 1, 'six': 1, 'seven': 1, 'eight': 1, 'nine': 1, 'ten': 1,
+  'i': 1, 'ii': 1, 'iii': 1, 'iv': 1, 'v': 1, 'vi': 1, 'vii': 1, 'viii': 1, 'ix': 1, 'x': 1,
+  '1': 1, '2': 1, '3': 1, '4': 1, '5': 1, '6': 1, '7': 1, '8': 1, '9': 1, '10': 1
+};
+function miNormalizeBikeName(s) {
+  return (s || '').toString().toLowerCase().replace(/\([^)]*\)/g, ' ').replace(/[^a-z0-9]+/g, ' ').trim().replace(/\s+/g, ' ');
+}
+function miBikeNamesMatch(a, b) {
+  const na = miNormalizeBikeName(a), nb = miNormalizeBikeName(b);
+  if (!na || !nb) return false;
+  if (na === nb) return true;
+  const ta = na.split(' '), tb = nb.split(' ');
+  const shorter = ta.length <= tb.length ? ta : tb;
+  const longer = ta.length <= tb.length ? tb : ta;
+  let isPrefix = true;
+  for (let i = 0; i < shorter.length; i++) { if (shorter[i] !== longer[i]) { isPrefix = false; break; } }
+  if (isPrefix) {
+    const extra = longer.slice(shorter.length);
+    for (let j = 0; j < extra.length; j++) { if (MI_RENTAL_DISTINGUISHING_SUFFIXES[extra[j]]) return false; }
+    return true;
+  }
+  return na.indexOf(nb) !== -1 || nb.indexOf(na) !== -1;
+}
+
+// Reads the given month's income sheet and pulls out just the rows whose
+// income text was built by buildRentalIncomeTextB for THIS bike. Any
+// other row in that same sheet (manual income, delivery fees, an expense
+// entry packed into that same row's earlier columns -- see
+// BIKE_EXPENSES_SHEET's own comment above on this sheet's packed-column
+// layout) simply won't match the "<bike name> rent|extend ..." shape and
+// is skipped. Promise-cached per (bike, month, year) same as this page's
+// other reads, for the lifetime of the page load.
+const miBreakdownCache = {};
+async function getBikeMonthBreakdownFromJson(bikeName, monthIdx, year) {
+  const cacheKey = bikeName + '|' + monthIdx + '|' + year;
+  if (miBreakdownCache[cacheKey]) return miBreakdownCache[cacheKey];
+  const promise = (async () => {
+    const monthName = INCOME_MONTH_TAB_NAMES[monthIdx];
+    const rows2D = await fetchSheetJson(monthName, year).catch(() => []);
+    const rentals = [];
+    for (let i = 1; i < (rows2D || []).length; i++) {
+      const row = rows2D[i];
+      if (!row) continue;
+      const incomeText = (row[6] || '').toString().trim();
+      if (!incomeText) continue;
+      const m = incomeText.match(/^(.*?)\s+(rent|extend)\b(.*)$/i);
+      if (!m) continue;
+      if (!miBikeNamesMatch(m[1], bikeName)) continue;
+      const amount = (row[8] === '' || row[8] === null || row[8] === undefined || isNaN(Number(row[8]))) ? 0 : Number(row[8]);
+      rentals.push({
+        date: miFormatDmy(miDecodeSheetDate(row[5])) || '',
+        name: (row[7] || '').toString().trim() || '(no name)',
+        verb: m[2].toLowerCase(),
+        tail: (m[3] || '').trim(),
+        amount: amount
+      });
+    }
+    return rentals;
+  })();
+  miBreakdownCache[cacheKey] = promise;
+  promise.catch(function () { delete miBreakdownCache[cacheKey]; });
+  return promise;
+}
+// ================== end month drill-down helpers ==================
 // ---- action:'bikeIncomeSummary' -> getBikeIncomeSummaryFromJson ----
 async function getBikeIncomeSummaryFromJson() {
   try {
@@ -637,6 +794,8 @@ async function logBikeExpense(bikeName, amount) {
 // ================== end Bike Expenses ==================
 
 let allBikes = [];
+let miOpenIdx = null; // { idx, mi } of the currently expanded month cell, or null
+let miLastFilteredBikes = []; // the exact array render() last built rows from -- lets the click handler map a row's idx back to its bike object
 
 function setLoadStatus(msg) {
   const el = document.getElementById('loadStatus');
@@ -682,10 +841,15 @@ function render() {
     return;
   }
 
-  tbody.innerHTML = filtered.map(b => {
+  miOpenIdx = null; // the whole tbody (and any expanded detail row in it) is about to be replaced
+  miLastFilteredBikes = filtered;
+  tbody.innerHTML = filtered.map((b, idx) => {
     const netCls = b.netProfit < 0 ? 'neg' : (b.netProfit > 0 ? 'pos' : '');
     const months = b.months && b.months.length === 12 ? b.months : new Array(12).fill({ amount: 0 });
-    const monthCells = months.map(m => `<td class="month-col">${fmt(m.amount)}</td>`).join('');
+    const monthCells = months.map((m, mi) => {
+      if (!monthIsDrilldownEligible(BIKE_INCOME_YEAR, mi)) return `<td class="month-col">${fmt(m.amount)}</td>`;
+      return `<td class="month-col mi-click" data-mi-idx="${idx}" data-mi-month="${mi}">${fmt(m.amount)}</td>`;
+    }).join('');
     return `<tr class="${b.sold ? 'sold' : ''}">
       <td>${b.name}${b.sold ? '<span class="sold-tag">Sold</span>' : ''}</td>
       <td class="cost">${fmt(b.cost)}</td>
@@ -694,7 +858,7 @@ function render() {
       <td class="expenses ${b.name === justLoggedBikeName ? 'just-logged' : ''}">${fmt(b.expenses)}</td>
       <td class="profit">${fmt(b.profit)}</td>
       <td class="netProfit ${netCls}">${fmt(b.netProfit)}</td>
-    </tr>`;
+    </tr>` + `<tr class="mi-detail-row" id="mi-detail-${idx}"><td colspan="18"></td></tr>`;
   }).join('');
 
   const sum = (key) => filtered.reduce((s, b) => s + (Number(b[key]) || 0), 0);
@@ -709,6 +873,90 @@ function render() {
   document.getElementById('fNetProfit').textContent = fmt(sum('netProfit'));
   tfoot.style.display = '';
 }
+
+// ================== Month drill-down: click handling + render ==================
+function miFmtMonthLabel(monthIdx, year) {
+  const MONTH_FULL = ['January','February','March','April','May','June','July','August',
+    'September','October','November','December'];
+  return MONTH_FULL[monthIdx] + ' ' + year;
+}
+
+function miRenderDetailBody(bikeName, monthIdx, year, officialAmount, state) {
+  const label = miFmtMonthLabel(monthIdx, year);
+  if (state.status === 'loading') {
+    return `<div class="mi-detail-wrap"><div class="mi-detail-loading">Loading ${label} rentals for ${bikeName}…</div></div>`;
+  }
+  if (state.status === 'error') {
+    return `<div class="mi-detail-wrap"><div class="mi-detail-err">Could not load: ${state.message}</div></div>`;
+  }
+  const rentals = state.rentals || [];
+  if (!rentals.length) {
+    return `<div class="mi-detail-wrap"><div class="mi-detail-empty">No rentals recorded for ${bikeName} in ${label} yet.</div></div>`;
+  }
+  const subtotal = rentals.reduce((s, r) => s + (Number(r.amount) || 0), 0);
+  const mismatch = (Math.round(subtotal) !== Math.round(officialAmount))
+    ? `<span class="mi-mismatch">breakdown sums to ${fmt(subtotal)}, sheet total is ${fmt(officialAmount)}</span>`
+    : '';
+  const rows = rentals.map(r => `
+    <tr>
+      <td>${r.date || '—'}</td>
+      <td>${r.name}</td>
+      <td>${r.verb === 'extend' ? 'Extend' : 'Rent'}${r.tail ? ' — ' + r.tail : ''}</td>
+      <td class="r">${fmt(r.amount)}</td>
+    </tr>`).join('');
+  return `<div class="mi-detail-wrap">
+    <div class="mi-detail-head">${bikeName} — ${label} <span class="mi-amt">${fmt(officialAmount)}</span> across ${rentals.length} rental${rentals.length === 1 ? '' : 's'} ${mismatch}
+      <span class="mi-close" data-mi-close="1">Close ✕</span>
+    </div>
+    <table class="mi-detail-table">
+      <thead><tr><th>Date</th><th>Customer</th><th>Note</th><th class="r">Amount</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </div>`;
+}
+
+function miCloseDetailUi() {
+  if (!miOpenIdx) return;
+  const cell = document.querySelector('td.mi-click[data-mi-idx="' + miOpenIdx.idx + '"][data-mi-month="' + miOpenIdx.mi + '"]');
+  if (cell) cell.classList.remove('mi-open');
+  const row = document.getElementById('mi-detail-' + miOpenIdx.idx);
+  if (row) {
+    row.classList.remove('mi-open');
+    const td = row.querySelector('td');
+    if (td) td.innerHTML = '';
+  }
+  miOpenIdx = null;
+}
+
+document.getElementById('tbody').addEventListener('click', async (e) => {
+  const closeBtn = e.target.closest('[data-mi-close]');
+  if (closeBtn) { miCloseDetailUi(); return; }
+  const cell = e.target.closest('td.mi-click');
+  if (!cell) return;
+  const idx = Number(cell.dataset.miIdx);
+  const mi = Number(cell.dataset.miMonth);
+  if (miOpenIdx && miOpenIdx.idx === idx && miOpenIdx.mi === mi) { miCloseDetailUi(); return; }
+  miCloseDetailUi();
+  const b = miLastFilteredBikes[idx];
+  if (!b) return;
+  const detailRow = document.getElementById('mi-detail-' + idx);
+  if (!detailRow) return;
+  const td = detailRow.querySelector('td');
+  cell.classList.add('mi-open');
+  detailRow.classList.add('mi-open');
+  miOpenIdx = { idx: idx, mi: mi };
+  const officialAmount = (b.months[mi] && b.months[mi].amount) || 0;
+  td.innerHTML = miRenderDetailBody(b.name, mi, BIKE_INCOME_YEAR, officialAmount, { status: 'loading' });
+  try {
+    const rentals = await getBikeMonthBreakdownFromJson(b.name, mi, BIKE_INCOME_YEAR);
+    if (!miOpenIdx || miOpenIdx.idx !== idx || miOpenIdx.mi !== mi) return; // closed or switched while this was loading
+    td.innerHTML = miRenderDetailBody(b.name, mi, BIKE_INCOME_YEAR, officialAmount, { status: 'ok', rentals: rentals });
+  } catch (err) {
+    if (!miOpenIdx || miOpenIdx.idx !== idx || miOpenIdx.mi !== mi) return;
+    td.innerHTML = miRenderDetailBody(b.name, mi, BIKE_INCOME_YEAR, officialAmount, { status: 'error', message: err.message });
+  }
+});
+// ================== end month drill-down: click handling + render ==================
 
 // ---- Read-side stale-while-revalidate cache (ported from accounts.html's
 // loadMonth() cache, 2026-08-16 rollout -- see PROGRESS.md "NEXT UP" entry).
