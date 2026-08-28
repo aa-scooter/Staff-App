@@ -250,6 +250,20 @@
   .mi-detail-table tr:last-child td{ border-bottom:none; }
   .mi-detail-empty, .mi-detail-loading, .mi-detail-err{ font-size:12.5px; color:var(--muted); padding:6px 8px; }
   .mi-detail-err{ color:var(--bad); }
+  .mi-mismatch-block{ margin-top:10px; padding-top:10px; border-top:1px dashed #E0D5BC; }
+  .mi-orphan-list{ margin:8px 0; }
+  .mi-orphan-head{ font-size:11.5px; color:var(--muted); margin-bottom:4px; }
+  .mi-orphan-row{ display:flex; align-items:center; justify-content:space-between; gap:10px; font-size:12px; padding:4px 0; flex-wrap:wrap; }
+  .mi-attribute-btn, .mi-settotal-btn{
+    font-family:'Inter',sans-serif; font-size:11.5px; font-weight:600; cursor:pointer;
+    border:1px solid var(--petrol); color:var(--petrol); background:#fff; border-radius:5px; padding:4px 9px;
+  }
+  .mi-attribute-btn:hover, .mi-settotal-btn:hover{ background:var(--petrol); color:#fff; }
+  .mi-attribute-btn.mi-confirming, .mi-settotal-btn.mi-confirming{ background:var(--bad); border-color:var(--bad); color:#fff; }
+  .mi-settotal-btn{ margin-top:6px; display:inline-block; }
+  .mi-correction-status{ font-size:11.5px; margin-top:6px; }
+  .mi-correction-status.err{ color:var(--bad); }
+  .mi-correction-status.ok{ color:var(--ok); }
 </style>
 </head>
 <body>
@@ -419,6 +433,10 @@ function looksLikeBikesSheetLabelJson(raw) {
 function normalizeBikeNameForTaxLookup(s) {
   return (s || '').toString().toLowerCase().replace(/[()]/g, ' ').replace(/[^a-z0-9]+/g, ' ').trim().replace(/\s+/g, ' ');
 }
+function escapeHtml(s) {
+  return (s === null || s === undefined ? '' : String(s))
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
 
 // ================== Month drill-down (2026-08-28) ==================
 // Per Anton: clicking a bike's month total (Aug 2026 onward -- older
@@ -505,36 +523,114 @@ function miBikeNamesMatch(a, b) {
 // layout) simply won't match the "<bike name> rent|extend ..." shape and
 // is skipped. Promise-cached per (bike, month, year) same as this page's
 // other reads, for the lifetime of the page load.
-const miBreakdownCache = {};
-async function getBikeMonthBreakdownFromJson(bikeName, monthIdx, year) {
-  const cacheKey = bikeName + '|' + monthIdx + '|' + year;
-  if (miBreakdownCache[cacheKey]) return miBreakdownCache[cacheKey];
+// ---- Rewritten 2026-08-28: originally only recognized rows whose income
+// text matched "<bike name> rent|extend ...". Real August 2026 data
+// showed that misses two other legitimate income shapes that ALSO move a
+// bike's monthly total -- early-return refunds ("<bike> refund - early
+// return", a negative amount) and deposit deductions returned as income
+// ("<bike>, Deposit returned for ...") -- plus accounts.html's own manual
+// income entries that are attributed to a bike ONLY via a bike-split note
+// (colIdx1===7 on the month's <name>_notes sheet, see
+// setBikeSplitsNoteFromJsonB in lib/accountsWrites.js) with no bike name
+// in the description text at all. Tested against real August 2026 data:
+// matching every income row to its bike by name-prefix, with a split note
+// taking precedence when one exists (real deposit-deduction/refund rows
+// carry BOTH a bike name in the description AND one of these notes --
+// counting both would double the amount), reconciled 44 of 45 bikes
+// exactly; the one exception (Nmax White) turned out to be a genuine
+// duplicate-write bug (fixed at the source in lib/bikesWrites.js), not a
+// gap in this matching logic. So rather than hand-coding more verb
+// patterns, this sweeps EVERY income row in the month once and buckets it
+// by best-matching bike name, falling back to "unmatched" when no bike in
+// the live fleet list matches at all -- future new wording needs no code
+// change here, and any income row that still can't be attributed shows up
+// as a candidate in the mismatch panel (miRenderDetailBody below) instead
+// of quietly vanishing from any bike's total.
+const miMonthDataCache = {};
+async function getMiMonthDataFromJson(monthIdx, year, bikeNamesList) {
+  const monthName = INCOME_MONTH_TAB_NAMES[monthIdx];
+  const cacheKey = monthName + '|' + year;
+  if (miMonthDataCache[cacheKey]) return miMonthDataCache[cacheKey];
   const promise = (async () => {
-    const monthName = INCOME_MONTH_TAB_NAMES[monthIdx];
-    const rows2D = await fetchSheetJson(monthName, year).catch(() => []);
-    const rentals = [];
+    const [rows2D, noteRows2D] = await Promise.all([
+      fetchSheetJson(monthName, year).catch(() => []),
+      fetchSheetJson(monthName + '_notes', year).catch(() => [])
+    ]);
+
+    const splitsByRow = new Map();
+    (noteRows2D || []).forEach(n => {
+      if (!Array.isArray(n) || n.length < 3) return;
+      if (n[1] !== 7) return;
+      let splits;
+      try { splits = JSON.parse(n[2]); } catch (e) { return; }
+      if (Array.isArray(splits) && splits.length) splitsByRow.set(n[0], splits);
+    });
+
+    const normalizedBikes = bikeNamesList.map(bn => ({ name: bn, tokens: miNormalizeBikeName(bn).split(' ').filter(Boolean) }));
+    const byBike = new Map();
+    const unmatched = [];
+    function pushLine(bikeKey, line) {
+      if (!byBike.has(bikeKey)) byBike.set(bikeKey, []);
+      byBike.get(bikeKey).push(line);
+    }
+
     for (let i = 1; i < (rows2D || []).length; i++) {
       const row = rows2D[i];
       if (!row) continue;
-      const incomeText = (row[6] || '').toString().trim();
-      if (!incomeText) continue;
-      const m = incomeText.match(/^(.*?)\s+(rent|extend)\b(.*)$/i);
-      if (!m) continue;
-      if (!miBikeNamesMatch(m[1], bikeName)) continue;
+      const rowNum = i + 1;
+      const dateRaw = row[5];
+      const desc = (row[6] || '').toString().trim();
+      if (!dateRaw || !desc) continue; // blank / footer / summary row, not a real transaction
       const amount = (row[8] === '' || row[8] === null || row[8] === undefined || isNaN(Number(row[8]))) ? 0 : Number(row[8]);
-      rentals.push({
-        date: miFormatDmy(miDecodeSheetDate(row[5])) || '',
-        name: (row[7] || '').toString().trim() || '(no name)',
-        verb: m[2].toLowerCase(),
-        tail: (m[3] || '').trim(),
-        amount: amount
-      });
+      const dateStr = miFormatDmy(miDecodeSheetDate(dateRaw)) || '';
+      const customer = (row[7] || '').toString().trim() || '(no name)';
+
+      const splits = splitsByRow.get(rowNum);
+      if (splits) {
+        splits.forEach(s => {
+          const bike = (s && s.bike || '').toString().trim();
+          const amt = (s && s.amount !== '' && s.amount !== null && s.amount !== undefined && !isNaN(Number(s.amount))) ? Number(s.amount) : 0;
+          if (!bike || !amt) return;
+          pushLine(bike.toLowerCase(), { date: dateStr, name: customer, note: desc + ' (split)', amount: amt, rowNum: rowNum });
+        });
+        continue;
+      }
+
+      const descTokens = miNormalizeBikeName(desc).split(' ').filter(Boolean);
+      let best = null, bestLen = -1;
+      for (const b of normalizedBikes) {
+        const n = b.tokens.length;
+        if (!n || n > descTokens.length) continue;
+        let isPrefix = true;
+        for (let k = 0; k < n; k++) { if (b.tokens[k] !== descTokens[k]) { isPrefix = false; break; } }
+        if (!isPrefix) continue;
+        if (descTokens.length > n && MI_RENTAL_DISTINGUISHING_SUFFIXES[descTokens[n]]) continue;
+        if (n > bestLen) { bestLen = n; best = b.name; }
+      }
+      if (best) {
+        pushLine(best.toLowerCase(), { date: dateStr, name: customer, note: desc, amount: amount, rowNum: rowNum });
+      } else {
+        unmatched.push({ date: dateStr, name: customer, note: desc, amount: amount, rowNum: rowNum, monthName: monthName, year: year });
+      }
     }
-    return rentals;
+
+    return { byBike: byBike, unmatched: unmatched, monthName: monthName, year: year };
   })();
-  miBreakdownCache[cacheKey] = promise;
-  promise.catch(function () { delete miBreakdownCache[cacheKey]; });
+  miMonthDataCache[cacheKey] = promise;
+  promise.catch(function () { delete miMonthDataCache[cacheKey]; });
   return promise;
+}
+function invalidateMiMonthDataCache(monthName, year) {
+  delete miMonthDataCache[monthName + '|' + year];
+}
+async function getBikeMonthBreakdownFromJson(bikeName, monthIdx, year) {
+  const monthData = await getMiMonthDataFromJson(monthIdx, year, allBikes.map(b => b.name));
+  return {
+    rentals: monthData.byBike.get(bikeName.toLowerCase()) || [],
+    unmatched: monthData.unmatched,
+    monthName: monthData.monthName,
+    year: monthData.year
+  };
 }
 // ================== end month drill-down helpers ==================
 // ---- action:'bikeIncomeSummary' -> getBikeIncomeSummaryFromJson ----
@@ -655,16 +751,22 @@ const BIKE_EXPENSES_HEADER = ['ID', 'Date', 'Bike', 'Amount'];
 // fetchSheetJson above is read-only and promise-cached for this page's own
 // display reads; this pair is for writing, which needs a fresh, uncached
 // modifiedTime immediately before every save. ----
-async function fetchSheetWithMeta(sheetName) {
-  const r = await fetch(`/api/data/${encodeURIComponent(sheetName)}`);
+async function fetchSheetWithMeta(sheetName, year) {
+  const url = year
+    ? `/api/data/${encodeURIComponent(sheetName)}?year=${encodeURIComponent(year)}`
+    : `/api/data/${encodeURIComponent(sheetName)}`;
+  const r = await fetch(url);
   if (r.status === 401) throw new Error('Signed out -- please refresh to sign in again.');
   if (!r.ok) throw new Error('HTTP ' + r.status);
   const res = await r.json();
   if (!res.success) throw new Error(res.error || 'Could not load data.');
   return { rows: res.rows || [], modifiedTime: res.modifiedTime || null };
 }
-async function writeSheetJson(sheetName, rows, expectedModifiedTime) {
-  const r = await fetch(`/api/data/${encodeURIComponent(sheetName)}`, {
+async function writeSheetJson(sheetName, rows, expectedModifiedTime, year) {
+  const url = year
+    ? `/api/data/${encodeURIComponent(sheetName)}?year=${encodeURIComponent(year)}`
+    : `/api/data/${encodeURIComponent(sheetName)}`;
+  const r = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ rows, expectedModifiedTime })
@@ -672,7 +774,7 @@ async function writeSheetJson(sheetName, rows, expectedModifiedTime) {
   const res = await r.json().catch(() => ({}));
   if (r.status === 409) throw new Error(res.error || 'This record was changed by someone else in the meantime -- please try again.');
   if (!r.ok || !res.success) throw new Error(res.error || ('HTTP ' + r.status));
-  delete bikeIncomeJsonCache[sheetName]; // this page's own read cache for fetchSheetJson -- drop it so the next read isn't stale
+  delete bikeIncomeJsonCache[year ? `${year}/${sheetName}` : sheetName]; // this page's own read cache for fetchSheetJson -- drop it so the next read isn't stale
   return res;
 }
 
@@ -793,6 +895,137 @@ async function logBikeExpense(bikeName, amount) {
 }
 // ================== end Bike Expenses ==================
 
+// ================== Month drill-down corrections (2026-08-28) ==================
+// Two small, deliberately narrow admin tools surfaced from the mismatch
+// panel in the month drill-down above, for fixing the two shapes of
+// error the August 2026 investigation turned up:
+//   - attributeIncomeRowToBike: a specific income row that legitimately
+//     belongs to a bike but couldn't be matched to one automatically (a
+//     bike-name typo/variant, e.g. "Aerox cool blue 1" for "Aerox cool
+//     blue") -- adds that row's amount to the chosen bike's month total.
+//   - adjustBikeMonthTotal: a blunter "set this cell to X" tool for when
+//     the total itself drifted from the real transactions behind it for
+//     a reason that isn't one specific row (e.g. a retried save silently
+//     duplicating the bikes-sheet write -- see extendBikeRowFromJson's
+//     own fix in lib/bikesWrites.js for the root cause this was built to
+//     clean up after) -- sets the cell straight to the reconciled
+//     breakdown total shown on screen, never a hand-typed number.
+// Both follow logBikeExpense's exact pattern above: the real financial
+// write (the "bikes" sheet cell) is what's captured in the reversible
+// transactionLog entry, same retry-on-conflict loop, same best-effort
+// (non-blocking) transaction-log append. attributeIncomeRowToBike ALSO
+// writes a bike-split note on the source row so a later view of the
+// breakdown recognizes it as already attributed instead of offering it
+// as unmatched again -- that note write is best-effort/non-reversible,
+// matching how every other bike-split note in this codebase is logged
+// (see accounts.html's addIncomeRowFromJson: the note is a display/
+// dedup aid, only the underlying sheet writes are reversible), which
+// also sidesteps a real addressing problem: a notes sheet's rows aren't
+// laid out at a fixed [row-1] array index the way a normal sheet's are,
+// so a generic {sheet,row,cols} reversal descriptor can't safely target
+// one.
+function findBikesSheetIncomeRowIdx(bikesRows, bikeName) {
+  for (let i = 1; i < bikesRows.length; i++) {
+    const name = (bikesRows[i][0] || '').toString().trim();
+    if (!name) continue;
+    if (looksLikeBikesSheetLabelJson(name)) break;
+    if (name.toLowerCase() === bikeName.toLowerCase()) return i;
+  }
+  return -1;
+}
+
+async function attributeIncomeRowToBike(monthName, year, rowNumber, bikeName, amount, description) {
+  let bikesRows, bikesModifiedTime, targetRowIdx, colIdx, before, after;
+  for (let attempt = 1; ; attempt++) {
+    ({ rows: bikesRows, modifiedTime: bikesModifiedTime } = await fetchSheetWithMeta('bikes'));
+    const headerRow = bikesRows[0] || [];
+    colIdx = findBikesSheetMonthColIdxJson(headerRow, monthName);
+    if (colIdx === -1) throw new Error('Could not find a "' + monthName + '" column on the bikes sheet.');
+    targetRowIdx = findBikesSheetIncomeRowIdx(bikesRows, bikeName);
+    if (targetRowIdx === -1) throw new Error('Could not find "' + bikeName + '" on the bikes sheet.');
+    const newRows = bikesRows.map(r => r.slice());
+    const row = newRows[targetRowIdx].slice();
+    while (row.length <= colIdx) row.push(0);
+    before = (row[colIdx] === '' || row[colIdx] === null || row[colIdx] === undefined || isNaN(Number(row[colIdx]))) ? 0 : Number(row[colIdx]);
+    after = before + amount;
+    row[colIdx] = after;
+    newRows[targetRowIdx] = row;
+    try { await writeSheetJson('bikes', newRows, bikesModifiedTime); break; }
+    catch (err) { if (attempt < 3 && /changed by someone else/i.test(err.message || '')) continue; throw err; }
+  }
+
+  try {
+    const notesSheet = monthName + '_notes';
+    const { rows: noteRows, modifiedTime: noteModifiedTime } = await fetchSheetWithMeta(notesSheet, year);
+    const filtered = (noteRows || []).filter(n => !(Array.isArray(n) && n[0] === rowNumber && n[1] === 7));
+    filtered.push([rowNumber, 7, JSON.stringify([{ bike: bikeName, amount: amount }])]);
+    await writeSheetJson(notesSheet, filtered, noteModifiedTime, year);
+  } catch (noteErr) {
+    console.warn('Bike-split note write failed (non-critical -- the amount is still correctly added to the bike; this row may show as unmatched again on a future view):', noteErr && noteErr.message);
+  }
+
+  const entry = {
+    id: 'txn_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8),
+    ts: new Date().toISOString(),
+    page: 'bike-income.html',
+    action: 'attributeIncomeRowToBike',
+    reversible: true,
+    reversed: false,
+    reversedAt: null,
+    summary: 'Attributed ' + fmt(amount) + ' — ' + description + ' — to ' + bikeName + ' (' + monthName + ' ' + year + ')',
+    writes: [{ sheet: 'bikes', row: targetRowIdx + 1, cols: [colIdx + 1], before: [before], after: [after] }]
+  };
+  try {
+    for (let attempt = 1; ; attempt++) {
+      const { rows: logRows, modifiedTime: logModifiedTime } = await fetchSheetWithMeta('transactionLog');
+      try { await writeSheetJson('transactionLog', (logRows || []).concat([entry]), logModifiedTime); break; }
+      catch (err) { if (attempt < 3 && /changed by someone else/i.test(err.message || '')) continue; throw err; }
+    }
+  } catch (err) { console.warn('Transaction log write failed (non-critical):', err && err.message); }
+}
+
+async function adjustBikeMonthTotal(bikeName, monthIdx, year, newTotal, reason) {
+  const monthName = INCOME_MONTH_TAB_NAMES[monthIdx];
+  let bikesRows, bikesModifiedTime, targetRowIdx, colIdx, before;
+  for (let attempt = 1; ; attempt++) {
+    ({ rows: bikesRows, modifiedTime: bikesModifiedTime } = await fetchSheetWithMeta('bikes'));
+    const headerRow = bikesRows[0] || [];
+    colIdx = findBikesSheetMonthColIdxJson(headerRow, monthName);
+    if (colIdx === -1) throw new Error('Could not find a "' + monthName + '" column on the bikes sheet.');
+    targetRowIdx = findBikesSheetIncomeRowIdx(bikesRows, bikeName);
+    if (targetRowIdx === -1) throw new Error('Could not find "' + bikeName + '" on the bikes sheet.');
+    const newRows = bikesRows.map(r => r.slice());
+    const row = newRows[targetRowIdx].slice();
+    while (row.length <= colIdx) row.push(0);
+    before = (row[colIdx] === '' || row[colIdx] === null || row[colIdx] === undefined || isNaN(Number(row[colIdx]))) ? 0 : Number(row[colIdx]);
+    row[colIdx] = newTotal;
+    newRows[targetRowIdx] = row;
+    try { await writeSheetJson('bikes', newRows, bikesModifiedTime); break; }
+    catch (err) { if (attempt < 3 && /changed by someone else/i.test(err.message || '')) continue; throw err; }
+  }
+
+  const monthLabel = miFmtMonthLabel(monthIdx, year);
+  const entry = {
+    id: 'txn_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8),
+    ts: new Date().toISOString(),
+    page: 'bike-income.html',
+    action: 'adjustBikeMonthTotal',
+    reversible: true,
+    reversed: false,
+    reversedAt: null,
+    summary: 'Adjusted ' + bikeName + ' ' + monthLabel + ' total from ' + fmt(before) + ' to ' + fmt(newTotal) + (reason ? ' — ' + reason : ''),
+    writes: [{ sheet: 'bikes', row: targetRowIdx + 1, cols: [colIdx + 1], before: [before], after: [newTotal] }]
+  };
+  try {
+    for (let attempt = 1; ; attempt++) {
+      const { rows: logRows, modifiedTime: logModifiedTime } = await fetchSheetWithMeta('transactionLog');
+      try { await writeSheetJson('transactionLog', (logRows || []).concat([entry]), logModifiedTime); break; }
+      catch (err) { if (attempt < 3 && /changed by someone else/i.test(err.message || '')) continue; throw err; }
+    }
+  } catch (err) { console.warn('Transaction log write failed (non-critical):', err && err.message); }
+}
+// ================== end month drill-down corrections ==================
+
 let allBikes = [];
 let miOpenIdx = null; // { idx, mi } of the currently expanded month cell, or null
 let miLastFilteredBikes = []; // the exact array render() last built rows from -- lets the click handler map a row's idx back to its bike object
@@ -884,34 +1117,53 @@ function miFmtMonthLabel(monthIdx, year) {
 function miRenderDetailBody(bikeName, monthIdx, year, officialAmount, state) {
   const label = miFmtMonthLabel(monthIdx, year);
   if (state.status === 'loading') {
-    return `<div class="mi-detail-wrap"><div class="mi-detail-loading">Loading ${label} rentals for ${bikeName}…</div></div>`;
+    return `<div class="mi-detail-wrap"><div class="mi-detail-loading">Loading ${label} rentals for ${escapeHtml(bikeName)}…</div></div>`;
   }
   if (state.status === 'error') {
-    return `<div class="mi-detail-wrap"><div class="mi-detail-err">Could not load: ${state.message}</div></div>`;
+    return `<div class="mi-detail-wrap"><div class="mi-detail-err">Could not load: ${escapeHtml(state.message)}</div></div>`;
   }
   const rentals = state.rentals || [];
-  if (!rentals.length) {
-    return `<div class="mi-detail-wrap"><div class="mi-detail-empty">No rentals recorded for ${bikeName} in ${label} yet.</div></div>`;
-  }
+  const unmatched = state.unmatched || [];
   const subtotal = rentals.reduce((s, r) => s + (Number(r.amount) || 0), 0);
-  const mismatch = (Math.round(subtotal) !== Math.round(officialAmount))
-    ? `<span class="mi-mismatch">breakdown sums to ${fmt(subtotal)}, sheet total is ${fmt(officialAmount)}</span>`
-    : '';
-  const rows = rentals.map(r => `
+  const isMismatch = Math.round(subtotal) !== Math.round(officialAmount);
+
+  const rowsHtml = rentals.length ? rentals.map(r => `
     <tr>
-      <td>${r.date || '—'}</td>
-      <td>${r.name}</td>
-      <td>${r.verb === 'extend' ? 'Extend' : 'Rent'}${r.tail ? ' — ' + r.tail : ''}</td>
+      <td>${escapeHtml(r.date) || '—'}</td>
+      <td>${escapeHtml(r.name)}</td>
+      <td>${escapeHtml(r.note)}</td>
       <td class="r">${fmt(r.amount)}</td>
-    </tr>`).join('');
+    </tr>`).join('') : `<tr><td colspan="4" class="mi-detail-empty" style="padding:6px 8px;">No matched income rows for ${escapeHtml(bikeName)} in ${label} yet.</td></tr>`;
+
+  let mismatchBlock = '';
+  if (isMismatch) {
+    const candidatesHtml = unmatched.length ? unmatched.map(u => `
+      <div class="mi-orphan-row">
+        <span>${escapeHtml(u.date) || '—'} · ${escapeHtml(u.name)} · ${escapeHtml(u.note)} · ${fmt(u.amount)}</span>
+        <button type="button" class="mi-attribute-btn" data-mi-confirm-stage="0"
+          data-mi-attribute-bike="${escapeHtml(bikeName)}" data-mi-attribute-month="${escapeHtml(u.monthName)}"
+          data-mi-attribute-year="${u.year}" data-mi-attribute-row="${u.rowNum}"
+          data-mi-attribute-amount="${u.amount}" data-mi-attribute-desc="${escapeHtml(u.note)}">Attribute to ${escapeHtml(bikeName)}</button>
+      </div>`).join('') : '';
+    mismatchBlock = `<div class="mi-mismatch-block">
+      <div class="mi-mismatch">breakdown sums to ${fmt(subtotal)}, sheet total is ${fmt(officialAmount)}</div>
+      ${candidatesHtml ? `<div class="mi-orphan-list"><div class="mi-orphan-head">Unattributed income this month — could one of these belong to ${escapeHtml(bikeName)}?</div>${candidatesHtml}</div>` : ''}
+      <button type="button" class="mi-settotal-btn" data-mi-confirm-stage="0"
+        data-mi-settotal-bike="${escapeHtml(bikeName)}" data-mi-settotal-month="${monthIdx}"
+        data-mi-settotal-year="${year}" data-mi-settotal-value="${subtotal}">Set ${escapeHtml(bikeName)}'s ${label} total to match breakdown (${fmt(subtotal)})</button>
+      <div class="mi-correction-status" data-mi-status="1"></div>
+    </div>`;
+  }
+
   return `<div class="mi-detail-wrap">
-    <div class="mi-detail-head">${bikeName} — ${label} <span class="mi-amt">${fmt(officialAmount)}</span> across ${rentals.length} rental${rentals.length === 1 ? '' : 's'} ${mismatch}
+    <div class="mi-detail-head">${escapeHtml(bikeName)} — ${label} <span class="mi-amt">${fmt(officialAmount)}</span> across ${rentals.length} rental${rentals.length === 1 ? '' : 's'}
       <span class="mi-close" data-mi-close="1">Close ✕</span>
     </div>
     <table class="mi-detail-table">
       <thead><tr><th>Date</th><th>Customer</th><th>Note</th><th class="r">Amount</th></tr></thead>
-      <tbody>${rows}</tbody>
+      <tbody>${rowsHtml}</tbody>
     </table>
+    ${mismatchBlock}
   </div>`;
 }
 
@@ -928,9 +1180,109 @@ function miCloseDetailUi() {
   miOpenIdx = null;
 }
 
+async function miReopenDetail(idx, mi) {
+  const b = miLastFilteredBikes[idx];
+  if (!b) return;
+  const detailRow = document.getElementById('mi-detail-' + idx);
+  if (!detailRow) return;
+  const td = detailRow.querySelector('td');
+  const officialAmount = (b.months[mi] && b.months[mi].amount) || 0;
+  td.innerHTML = miRenderDetailBody(b.name, mi, BIKE_INCOME_YEAR, officialAmount, { status: 'loading' });
+  try {
+    const breakdown = await getBikeMonthBreakdownFromJson(b.name, mi, BIKE_INCOME_YEAR);
+    if (!miOpenIdx || miOpenIdx.idx !== idx || miOpenIdx.mi !== mi) return; // closed or switched while this was loading
+    td.innerHTML = miRenderDetailBody(b.name, mi, BIKE_INCOME_YEAR, officialAmount, { status: 'ok', rentals: breakdown.rentals, unmatched: breakdown.unmatched });
+  } catch (err) {
+    if (!miOpenIdx || miOpenIdx.idx !== idx || miOpenIdx.mi !== mi) return;
+    td.innerHTML = miRenderDetailBody(b.name, mi, BIKE_INCOME_YEAR, officialAmount, { status: 'error', message: err.message });
+  }
+}
+
+async function miRefreshAfterCorrection(monthName, year, idx, mi) {
+  invalidateMiMonthDataCache(monthName, year);
+  delete bikeIncomeJsonCache['bikes'];
+  try { localStorage.removeItem(BIKE_INCOME_CACHE_KEY); } catch (e) {}
+  await loadBikes(); // rebuilds allBikes/miLastFilteredBikes and re-renders (this clears miOpenIdx -- see render())
+  if (idx !== null && mi !== null) {
+    miOpenIdx = { idx: idx, mi: mi };
+    const cell = document.querySelector('td.mi-click[data-mi-idx="' + idx + '"][data-mi-month="' + mi + '"]');
+    if (cell) cell.classList.add('mi-open');
+    const detailRow = document.getElementById('mi-detail-' + idx);
+    if (detailRow) detailRow.classList.add('mi-open');
+    await miReopenDetail(idx, mi);
+  }
+}
+
 document.getElementById('tbody').addEventListener('click', async (e) => {
   const closeBtn = e.target.closest('[data-mi-close]');
   if (closeBtn) { miCloseDetailUi(); return; }
+
+  const attributeBtn = e.target.closest('.mi-attribute-btn');
+  if (attributeBtn) {
+    if (attributeBtn.dataset.miConfirmStage !== '1') {
+      attributeBtn.dataset.miConfirmStage = '1';
+      attributeBtn.classList.add('mi-confirming');
+      attributeBtn.textContent = 'Click again to confirm';
+      return;
+    }
+    const idx = miOpenIdx ? miOpenIdx.idx : null;
+    const mi = miOpenIdx ? miOpenIdx.mi : null;
+    const statusEl = attributeBtn.closest('.mi-mismatch-block').querySelector('[data-mi-status]');
+    attributeBtn.disabled = true;
+    if (statusEl) { statusEl.textContent = 'Saving…'; statusEl.className = 'mi-correction-status'; }
+    const monthName = attributeBtn.dataset.miAttributeMonth;
+    const year = Number(attributeBtn.dataset.miAttributeYear);
+    try {
+      await attributeIncomeRowToBike(
+        monthName, year,
+        Number(attributeBtn.dataset.miAttributeRow),
+        attributeBtn.dataset.miAttributeBike,
+        Number(attributeBtn.dataset.miAttributeAmount),
+        attributeBtn.dataset.miAttributeDesc
+      );
+      await miRefreshAfterCorrection(monthName, year, idx, mi);
+    } catch (err) {
+      if (statusEl) { statusEl.textContent = 'Could not save: ' + err.message; statusEl.className = 'mi-correction-status err'; }
+      attributeBtn.disabled = false;
+      attributeBtn.dataset.miConfirmStage = '0';
+      attributeBtn.classList.remove('mi-confirming');
+      attributeBtn.textContent = 'Attribute to ' + attributeBtn.dataset.miAttributeBike;
+    }
+    return;
+  }
+
+  const settotalBtn = e.target.closest('.mi-settotal-btn');
+  if (settotalBtn) {
+    if (settotalBtn.dataset.miConfirmStage !== '1') {
+      settotalBtn.dataset.miConfirmStage = '1';
+      settotalBtn.classList.add('mi-confirming');
+      settotalBtn.textContent = 'Click again to confirm';
+      return;
+    }
+    const idx = miOpenIdx ? miOpenIdx.idx : null;
+    const mi = miOpenIdx ? miOpenIdx.mi : null;
+    const statusEl = settotalBtn.parentElement.querySelector('[data-mi-status]');
+    settotalBtn.disabled = true;
+    if (statusEl) { statusEl.textContent = 'Saving…'; statusEl.className = 'mi-correction-status'; }
+    const monthIdx = Number(settotalBtn.dataset.miSettotalMonth);
+    const year = Number(settotalBtn.dataset.miSettotalYear);
+    const monthName = INCOME_MONTH_TAB_NAMES[monthIdx];
+    try {
+      await adjustBikeMonthTotal(
+        settotalBtn.dataset.miSettotalBike, monthIdx, year,
+        Number(settotalBtn.dataset.miSettotalValue),
+        'reconciled to match income breakdown'
+      );
+      await miRefreshAfterCorrection(monthName, year, idx, mi);
+    } catch (err) {
+      if (statusEl) { statusEl.textContent = 'Could not save: ' + err.message; statusEl.className = 'mi-correction-status err'; }
+      settotalBtn.disabled = false;
+      settotalBtn.dataset.miConfirmStage = '0';
+      settotalBtn.classList.remove('mi-confirming');
+    }
+    return;
+  }
+
   const cell = e.target.closest('td.mi-click');
   if (!cell) return;
   const idx = Number(cell.dataset.miIdx);
@@ -941,20 +1293,10 @@ document.getElementById('tbody').addEventListener('click', async (e) => {
   if (!b) return;
   const detailRow = document.getElementById('mi-detail-' + idx);
   if (!detailRow) return;
-  const td = detailRow.querySelector('td');
   cell.classList.add('mi-open');
   detailRow.classList.add('mi-open');
   miOpenIdx = { idx: idx, mi: mi };
-  const officialAmount = (b.months[mi] && b.months[mi].amount) || 0;
-  td.innerHTML = miRenderDetailBody(b.name, mi, BIKE_INCOME_YEAR, officialAmount, { status: 'loading' });
-  try {
-    const rentals = await getBikeMonthBreakdownFromJson(b.name, mi, BIKE_INCOME_YEAR);
-    if (!miOpenIdx || miOpenIdx.idx !== idx || miOpenIdx.mi !== mi) return; // closed or switched while this was loading
-    td.innerHTML = miRenderDetailBody(b.name, mi, BIKE_INCOME_YEAR, officialAmount, { status: 'ok', rentals: rentals });
-  } catch (err) {
-    if (!miOpenIdx || miOpenIdx.idx !== idx || miOpenIdx.mi !== mi) return;
-    td.innerHTML = miRenderDetailBody(b.name, mi, BIKE_INCOME_YEAR, officialAmount, { status: 'error', message: err.message });
-  }
+  await miReopenDetail(idx, mi);
 });
 // ================== end month drill-down: click handling + render ==================
 

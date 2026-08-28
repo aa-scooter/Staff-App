@@ -154,6 +154,12 @@
   }
   .status.ok{display:block; background:#E8F5EE; color:var(--ok); border:1px solid #BEE3CE;}
   .status.err{display:block; background:#FCEBEB; color:var(--err); border:1px solid #F3C6C6;}
+  .bike-pick-btn{
+    display:inline-block; margin:6px 6px 0 0; padding:5px 10px;
+    border:1px solid var(--petrol); border-radius:6px; background:#fff; color:var(--petrol);
+    font-family:'Inter',sans-serif; font-size:12.5px; font-weight:600; cursor:pointer;
+  }
+  .bike-pick-btn:hover{ background:var(--petrol); color:#fff; }
   .status.warn{display:block; background:#FFF3E6; color:var(--warn); border:1px solid #F3D9B8;}
   .status.progress{display:flex; align-items:center; gap:9px; background:#EAF2FB; color:#2A5A8C; border:1px solid #BBD6F0;}
   .status-spinner{
@@ -4919,6 +4925,9 @@ async function maybeOfferDepositPicker(warningText, rowNumber, customerName, ori
 editForm.addEventListener('submit', (e) => {
   e.preventDefault();
   if (!currentEditRecord) return;
+  editStatusBox.className = 'status';
+  editStatusBox.textContent = '';
+  if (!validateBikeModelOrShowPicker('e_bikeModel', editStatusBox)) return;
   if (ctQueueFull()) { alert('2 saves are already in progress — wait for one to finish before starting another.'); return; }
 
   const baseContact = e_contact.value === 'other' ? e_contactOther.value.trim() : e_contact.value;
@@ -5260,6 +5269,8 @@ form.addEventListener('submit', (e) => {
     deliveryFeeInput.focus();
     return;
   }
+
+  if (!validateBikeModelOrShowPicker('bikeModel', statusBox)) return;
 
   if (ctQueueFull()) {
     statusBox.textContent = '2 saves are already in progress — wait for one to finish before starting another.';
@@ -5828,6 +5839,65 @@ function attachBikeModelAutocomplete(inputId, namesProvider) {
 
 attachBikeModelAutocomplete('bikeModel', getAvailableBikeNames);
 attachBikeModelAutocomplete('e_bikeModel', () => bikeNames);
+
+// ---- Bike-name validation gate (2026-08-28) --------------------------
+// The autocomplete above is a SUGGESTION only -- it never stopped anyone
+// typing something that isn't actually on the fleet list and saving
+// anyway. That's exactly how "Aerox cool blue 1" got onto a real rental:
+// a bare, informal name close to the real bike ("Aerox cool blue") but
+// not an exact match, and not recognized as the same bike by any of this
+// app's fuzzy-matching (bikeNamesMatch here, and its identical twins in
+// bike-income.html / lib/accountsWrites.js / lib/bikesWrites.js all
+// deliberately treat a trailing number as a DIFFERENT bike, not a typo)
+// -- so that booking's income never landed on any bike's monthly total.
+// This gate runs at save time on both places a contract's bike name gets
+// written (new "Rent out" and the Edit-contract modal): an exact
+// case-insensitive match against the live fleet list (bikeNames, loaded
+// above) passes silently (the normal path); a close-but-not-exact match
+// (per the same bikeNamesMatch rule the rest of the app already trusts)
+// blocks the save and offers the real fleet name(s) it could be as
+// one-click picks; no match at all blocks the save with a plain "pick a
+// real bike" message. Never silently rewrites what was typed -- confirming
+// which bike was meant always takes a deliberate click.
+function validateBikeModelOrShowPicker(inputId, statusBox) {
+  const input = document.getElementById(inputId);
+  const typed = input.value.trim();
+  if (!bikeNames.length) return true; // fleet list failed to load -- fail open rather than blocking every save (page gate already keeps the page unusable until this loads, in the normal case)
+  if (!typed) {
+    statusBox.textContent = 'Please enter a bike model.';
+    statusBox.className = 'status err';
+    input.focus();
+    return false;
+  }
+  const exact = bikeNames.find(n => n.toLowerCase() === typed.toLowerCase());
+  if (exact) {
+    if (exact !== typed) input.value = exact; // normalize stray casing/whitespace to the canonical fleet name -- not a different-bike correction, the text already matched
+    return true;
+  }
+  statusBox.innerHTML = '';
+  statusBox.className = 'status err';
+  const candidates = bikeNames.filter(n => bikeNamesMatch(n, typed));
+  const msg = document.createElement('div');
+  msg.textContent = candidates.length
+    ? '"' + typed + '" doesn\'t exactly match a bike on the fleet list. Did you mean:'
+    : '"' + typed + '" doesn\'t match any bike on the fleet list. Please pick a real bike from the suggestions (start typing to see the list) instead of a custom name.';
+  statusBox.appendChild(msg);
+  candidates.slice(0, 6).forEach(name => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'bike-pick-btn';
+    btn.textContent = name;
+    btn.addEventListener('click', () => {
+      input.value = name;
+      statusBox.innerHTML = '';
+      statusBox.className = 'status';
+      input.focus();
+    });
+    statusBox.appendChild(btn);
+  });
+  input.focus();
+  return false;
+}
 
 /* ---------------- Nationality (country) dropdown ---------------- */
 
