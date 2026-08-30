@@ -112,6 +112,18 @@
     white-space:nowrap;
   }
   .summary-row.total .sv{ color:var(--petrol); }
+  /* Bikes Account: manual-entry card in the same summary strip -- see the
+     JS section below for why. .sv-wrap keeps the value + pencil button
+     together on the right, inside the existing .summary-row's
+     space-between layout (label stays on its own at the left). */
+  .summary-row .sv-wrap{ display:flex; align-items:center; gap:8px; }
+  .bikes-account-edit-btn{
+    border:none; background:#F0EBE0; color:var(--petrol); width:24px; height:24px;
+    border-radius:6px; font-size:13px; line-height:1; cursor:pointer; flex-shrink:0;
+    display:inline-flex; align-items:center; justify-content:center; padding:0;
+  }
+  .bikes-account-edit-btn:hover{ background:#E4E0D8; }
+  .bikes-account-edit-btn:active{ transform:scale(.94); }
 
   .section h2{
     font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:18px;
@@ -560,6 +572,24 @@ see the "opt-" prefixed block near the end of the <script> below. -->
     <div class="modal-btn-row">
       <button class="btn-cancel" id="transferModalCancelBtn" type="button">Cancel</button>
       <button class="btn-save" id="transferModalSaveBtn" type="button">Transfer</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="bikesAccountModalBackdrop">
+  <div class="modal-sheet">
+    <h3>Bikes Account</h3>
+    <div class="modal-error" id="bikesAccountModalError"></div>
+    <div class="modal-progress" id="bikesAccountModalProgress"><span class="modal-progress-spinner"></span><span id="bikesAccountModalProgressText">Connecting…</span></div>
+
+    <div class="field">
+      <label for="fBikesAccountAmount">Balance (฿)</label>
+      <input type="number" id="fBikesAccountAmount" step="0.01" placeholder="0.00">
+    </div>
+
+    <div class="modal-btn-row">
+      <button class="btn-cancel" id="bikesAccountModalCancelBtn" type="button">Cancel</button>
+      <button class="btn-save" id="bikesAccountModalSaveBtn" type="button">Save</button>
     </div>
   </div>
 </div>
@@ -3190,7 +3220,38 @@ function renderSummary(summary) {
     card('Expenses', summary.expense, true) +
     card('Income', summary.income) +
     card('Profit', summary.profit) +
-    card('Cash &amp; Deposits', summary.deposit, true);
+    card('Cash &amp; Deposits', summary.deposit, true) +
+    bikesAccountCardHtml();
+}
+
+// ---- Bikes Account: a manual, separately-tracked balance shown in the
+// same summary strip as Cash/Bank/Wise/Revolut, but NOT calculated from
+// the sheet at all -- it's just a number Anton edits by hand with the
+// pencil button below, stored in its own tiny Drive file via the generic
+// /api/data/<sheet> route (see api/data/[sheet].js) under the sheet name
+// "bikesAccount" (a synthetic name with no corresponding spreadsheet tab --
+// same idea as "transactionLog" elsewhere on this page). Deliberately NOT
+// wired into the Cash & Deposits total -- it's "another account we have
+// separately" (Anton, 29/08/2026), not a component of that formula.
+// Card markup is rebuilt fresh every renderSummary() call (e.g. on month
+// switch) from whatever's currently in bikesAccountBalance/
+// bikesAccountLoaded (declared with the rest of this feature's wiring,
+// further down this same script) -- see that section for the load/save
+// logic and why reading those `let`s here, before their textual
+// declaration, is safe (this function only ever RUNS after the whole
+// script -- including those declarations -- has executed once).
+function bikesAccountCardHtml() {
+  const displayValue = !bikesAccountLoaded ? '—' : (bikesAccountBalance === null ? 'Error' : money(bikesAccountBalance));
+  return `<div class="summary-card">
+      <h3>Bikes Account</h3>
+      <div class="summary-row">
+        <span class="sl">Balance</span>
+        <span class="sv-wrap">
+          <span class="sv" id="bikesAccountValue">${displayValue}</span>
+          <button type="button" class="bikes-account-edit-btn" id="bikesAccountEditBtn" title="Edit Bikes Account balance" aria-label="Edit Bikes Account balance">&#9998;</button>
+        </span>
+      </div>
+    </div>`;
 }
 
 let loadToken = 0;
@@ -4591,6 +4652,142 @@ transferModalSaveBtn.addEventListener('click', async () => {
     setTransferButtonsDisabled(false);
   }
 });
+
+// ---------------- Bikes Account modal (manual balance) ----------------
+// A dedicated top-of-summary-strip account, separate from the Add/Edit
+// Expense/Income modal above and from the sheet-calculated Cash & Deposits
+// card -- see bikesAccountCardHtml()'s comment above for why this exists
+// and how it's stored.
+let bikesAccountBalance = null;      // numeric, or null once loaded if the load itself failed
+let bikesAccountLoaded = false;      // false until the very first load attempt finishes (shows — until then)
+let bikesAccountModifiedTime = null; // for the same optimistic-lock conflict check every other /api/data write uses
+
+function updateBikesAccountDisplay() {
+  const el = document.getElementById('bikesAccountValue');
+  if (!el) return; // grid hasn't rendered the card yet -- next renderSummary() picks up the current value anyway
+  el.textContent = !bikesAccountLoaded ? '—' : (bikesAccountBalance === null ? 'Error' : money(bikesAccountBalance));
+}
+
+async function loadBikesAccountBalance() {
+  try {
+    const res = await fetch('/api/data/bikesAccount').then(r => r.json());
+    const rows = Array.isArray(res.rows) ? res.rows : []; // null (file doesn't exist yet -- never saved) -> treat as 0
+    const raw = rows.length ? Number(rows[0].value) : 0;
+    bikesAccountBalance = isNaN(raw) ? 0 : raw;
+    bikesAccountModifiedTime = res.modifiedTime || null;
+  } catch (e) {
+    console.warn('Bikes Account load failed:', e && e.message);
+    bikesAccountBalance = null;
+  }
+  bikesAccountLoaded = true;
+  updateBikesAccountDisplay();
+}
+
+// Delegated to the grid container (which exists from page load) rather
+// than the button itself, since #bikesAccountEditBtn gets torn down and
+// rebuilt fresh every time renderSummary() replaces #summaryGrid's whole
+// innerHTML (e.g. switching months) -- a direct listener on the button
+// would go stale the very first time that happens.
+document.getElementById('summaryGrid').addEventListener('click', (e) => {
+  if (e.target.closest('#bikesAccountEditBtn')) openBikesAccountModal();
+});
+
+const bikesAccountModalBackdrop = document.getElementById('bikesAccountModalBackdrop');
+const bikesAccountModalError = document.getElementById('bikesAccountModalError');
+const bikesAccountModalProgress = document.getElementById('bikesAccountModalProgress');
+const bikesAccountModalProgressText = document.getElementById('bikesAccountModalProgressText');
+const fBikesAccountAmount = document.getElementById('fBikesAccountAmount');
+const bikesAccountModalCancelBtn = document.getElementById('bikesAccountModalCancelBtn');
+const bikesAccountModalSaveBtn = document.getElementById('bikesAccountModalSaveBtn');
+
+function setBikesAccountModalError(msg) {
+  if (!msg) { bikesAccountModalError.classList.remove('show'); bikesAccountModalError.textContent = ''; return; }
+  bikesAccountModalError.textContent = msg;
+  bikesAccountModalError.classList.add('show');
+}
+
+let bikesAccountProgressTimer = null;
+function startBikesAccountProgress() {
+  bikesAccountModalProgressText.textContent = 'Connecting…';
+  bikesAccountModalProgress.classList.add('show');
+  clearTimeout(bikesAccountProgressTimer);
+  bikesAccountProgressTimer = setTimeout(() => { bikesAccountModalProgressText.textContent = 'Saving…'; }, 500);
+}
+function stopBikesAccountProgress() {
+  clearTimeout(bikesAccountProgressTimer);
+  bikesAccountModalProgress.classList.remove('show');
+}
+function setBikesAccountModalDisabled(disabled) {
+  bikesAccountModalSaveBtn.disabled = disabled;
+  bikesAccountModalCancelBtn.disabled = disabled;
+  fBikesAccountAmount.disabled = disabled;
+}
+
+function openBikesAccountModal() {
+  setBikesAccountModalError(null);
+  fBikesAccountAmount.value = bikesAccountBalance === null ? '' : bikesAccountBalance;
+  bikesAccountModalBackdrop.classList.add('show');
+  setTimeout(() => fBikesAccountAmount.focus(), 0);
+}
+function closeBikesAccountModal() {
+  bikesAccountModalBackdrop.classList.remove('show');
+}
+bikesAccountModalCancelBtn.addEventListener('click', closeBikesAccountModal);
+
+// Same click-outside-to-close guard as every other modal on this page --
+// see CLAUDE.md's modal/lightbox convention (only close on a genuine click
+// on the backdrop itself, never when the mousedown that started the click
+// began inside the modal, e.g. dragging to select the amount field's text).
+let bikesAccountMouseDownOnBackdrop = false;
+bikesAccountModalBackdrop.addEventListener('mousedown', (e) => {
+  bikesAccountMouseDownOnBackdrop = (e.target === bikesAccountModalBackdrop);
+});
+bikesAccountModalBackdrop.addEventListener('click', (e) => {
+  if (e.target === bikesAccountModalBackdrop && bikesAccountMouseDownOnBackdrop) closeBikesAccountModal();
+  bikesAccountMouseDownOnBackdrop = false;
+});
+
+bikesAccountModalSaveBtn.addEventListener('click', async () => {
+  setBikesAccountModalError(null);
+  const raw = fBikesAccountAmount.value;
+  const amount = Number(raw);
+  if (raw === '' || isNaN(amount)) {
+    setBikesAccountModalError('Enter a valid balance.');
+    return;
+  }
+  setBikesAccountModalDisabled(true);
+  startBikesAccountProgress();
+  try {
+    const row = { value: amount, updatedAt: new Date().toISOString() };
+    const r = await fetch('/api/data/bikesAccount', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rows: [row], expectedModifiedTime: bikesAccountModifiedTime })
+    });
+    const res = await r.json().catch(() => ({}));
+    stopBikesAccountProgress();
+    if (r.status === 409) {
+      setBikesAccountModalError(res.error || 'Someone else updated this balance in the meantime -- please reopen and try again.');
+      loadBikesAccountBalance(); // pull in whatever they just saved so the retry starts from the real current value
+      return;
+    }
+    if (!res.success) {
+      setBikesAccountModalError(res.error || 'Save failed — please try again.');
+      return;
+    }
+    bikesAccountBalance = amount;
+    bikesAccountModifiedTime = res.modifiedTime || null;
+    updateBikesAccountDisplay();
+    closeBikesAccountModal();
+  } catch (err) {
+    stopBikesAccountProgress();
+    setBikesAccountModalError('Save failed: ' + err.message);
+  } finally {
+    setBikesAccountModalDisabled(false);
+  }
+});
+
+loadBikesAccountBalance();
 
 // Default to the current month.
 loadMonth(new Date().getMonth());
