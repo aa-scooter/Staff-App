@@ -77,6 +77,7 @@ const { writeJsonFile, ensureAppFolder, ensureYearFolder } = require('../../lib/
 const { isMonthSheetName } = require('../../lib/monthSheets');
 const { createBackup, listBackups, ensureDailyBackup, deleteBackups, restoreBackup } = require('../../lib/backups');
 const { createNextMonthSheetFromJson, checkForMonthEndRolloverJson, createCurrentMonthSheetFromJson } = require('../../lib/monthRollover');
+const { createAccountsWrites } = require('../../lib/accountsWrites');
 const { writeRolloverStatus, readRolloverStatus } = require('../../lib/rolloverStatus');
 
 const DATA_DIR = path.join(__dirname, '..', '..', 'data');
@@ -274,6 +275,46 @@ function buildMonthSheetIO(drive, appFolderId) {
   };
 }
 
+// ---- New 2026-09-01 fix (see project notes: "the numbers are completely
+// wrong" bug, diagnosed against real September_2026/August_2026/template
+// Drive data). carryForwardMonthFigures (lib/monthRollover.js) deliberately
+// leaves "cash"/"bank "/"bank less deposit"/"total (cash+bank+wise)" holding
+// Template's own raw literal numbers on a freshly-created sheet -- by
+// design, see FIXED_CELL_ITEMS's own comment there -- on the assumption
+// that recomputeMonthlySummaryCascadeB (lib/accountsWrites.js) self-heals
+// those 4 cells the moment any real expense/income/deposit write lands on
+// the new sheet. That assumption held for every month before this one only
+// because a transaction always got logged within moments of rollover; it
+// broke for September 2026, which sat genuinely empty (the rollover itself
+// had been missed -- see createCurrentMonthSheetFromJson's own header
+// comment) so nothing ever triggered the self-heal, leaving Template's
+// stale numbers (a real prior balance, not blank/0) on display looking
+// like real -- but completely wrong -- money.
+//
+// Fix: run that exact same self-heal cascade ONCE, proactively, immediately
+// after a real (non-dryRun) sheet actually gets created here -- covers all
+// three callers (this manual button, the "generate current month" recovery
+// action below, and the unattended cron) in one place, reusing the exact
+// live formula every ordinary write already depends on rather than
+// re-deriving a second copy of it here (which would risk drifting out of
+// sync with it over time). Best-effort: a failure here does NOT undo or
+// fail the sheet creation that already succeeded (every other
+// carried-forward figure -- cash previous/bank previous/bike bank/wise/
+// revolut/open deposits -- is already correct at that point) -- it's
+// appended to result.warning instead, so it surfaces on the rollover-health
+// banner / the manual button's own response rather than getting lost.
+async function healFreshSheetSummary(sheetIO, result) {
+  if (!result || !result.success || result.dryRun || result.skipped || !result.monthName || !result.year) return;
+  try {
+    const { recomputeMonthlySummaryCascadeB } = createAccountsWrites(sheetIO);
+    await recomputeMonthlySummaryCascadeB(result.monthName, result.year);
+  } catch (err) {
+    const extra = 'Cash/Bank/Total summary recompute failed after creation: ' + err.message +
+      ' -- the sheet was created and its carried-forward balances (cash previous, bank previous, bike bank, wise, revolut, open deposits) are correct, but Cash/Bank/Total may still show stale Template values until a real transaction is logged against it (or this recompute is retried, e.g. via {action:"recomputeSummary"} on /api/accounts/write).';
+    result.warning = result.warning ? (result.warning + ' ' + extra) : extra;
+  }
+}
+
 // ---- New 2026-08-21 month-rollover action (manual trigger). ----
 // STATUS TRACKING (added 24/08/2026, see lib/rolloverStatus.js's own header
 // comment): a dryRun preview never touches real data, so it's deliberately
@@ -286,6 +327,7 @@ async function handleMonthRolloverAction(req, res, { drive, folderId }, body) {
   const sheetIO = buildMonthSheetIO(drive, effectiveFolderId);
   const dryRun = !!(body && body.dryRun);
   const result = await createNextMonthSheetFromJson(sheetIO, { dryRun });
+  await healFreshSheetSummary(sheetIO, result);
   if (!dryRun) {
     if (!result.success) {
       await writeRolloverStatus(drive, effectiveFolderId, { severity: 'error', message: result.error, source: 'manual' });
@@ -315,6 +357,7 @@ async function handleCreateCurrentMonthSheetAction(req, res, { drive, folderId }
   const sheetIO = buildMonthSheetIO(drive, effectiveFolderId);
   const dryRun = !!(body && body.dryRun);
   const result = await createCurrentMonthSheetFromJson(sheetIO, { dryRun });
+  await healFreshSheetSummary(sheetIO, result);
   sendJson(res, result.success ? 200 : 400, result);
 }
 
@@ -377,6 +420,7 @@ async function handleMonthRolloverCron(req, res) {
     }
     const sheetIO = buildMonthSheetIO(automation.drive, found.id);
     const result = await checkForMonthEndRolloverJson(sheetIO);
+    await healFreshSheetSummary(sheetIO, result);
     // result.skipped === true here means the ordinary "tomorrow isn't the
     // 1st" no-op (see checkForMonthEndRolloverJson) -- the expected outcome
     // 364 nights a year, not a problem. Recording 'ok' on every one of
