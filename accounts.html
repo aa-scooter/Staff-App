@@ -3407,6 +3407,28 @@ async function offerToCreateCurrentMonthSheet(monthIndex, year) {
   // clearing, they're independent layers.
   Object.keys(accountsJsonCache).forEach(k => delete accountsJsonCache[k]);
   clearMonthCache(monthIndex, year);
+
+  // FIX (2026-09-01, second pass): clearing our OWN caches above wasn't
+  // enough on its own -- confirmed against a real case (Anton deleting
+  // September_2026.json from Drive by hand, then regenerating it through
+  // this exact flow) that still needed a hard refresh afterwards. Root
+  // cause is one level deeper than our caches: readJsonFile's own
+  // findFileInFolderWithRetry (lib/googleDrive.js) already documents that
+  // Drive's search-by-name index can briefly lag behind a just-written
+  // file and only retries for up to ~1s (350ms then 700ms) before giving
+  // up -- tuned for an ordinary "read moments after a normal write", not
+  // specifically for "read immediately after a delete-then-recreate of the
+  // very same filename", which real testing here showed can take longer
+  // than that budget to settle. A hard refresh "worked" purely because
+  // enough wall-clock time had passed by the time Anton did it, not
+  // because of anything a page reload itself does differently. Fix: give
+  // Drive a bit more real time to catch up here BEFORE firing the
+  // automatic re-fetch, on top of (not instead of) that existing ~1s
+  // server-side retry -- cheap insurance for a once-a-month recovery
+  // action, not worth doing on every ordinary page load.
+  setLoadStatus('Sheet created -- syncing…', false);
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+
   return true;
 }
 
