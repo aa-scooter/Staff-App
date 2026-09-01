@@ -692,11 +692,20 @@ function money(n) {
 // old (disconnected) scriptUrl and fail cleanly.
 // ============================================================================
 
-// Which month tabs actually exist in this workbook snapshot -- a month with
-// no entry here simply has no sheet yet, same as findMonthSheetFuzzy coming
-// up empty live.
+// Maps a month index to the sheet-file name for that month. Which sheet
+// FILE actually exists on Drive is a separate question, checked live by
+// getAccountsDataFromJson below (an empty/missing rows array means no
+// sheet yet) -- this map only has to know the NAME to look for.
+//
+// FIX (2026-09-01): this stopped at August (index 7) -- accounts.html
+// treated every month from September on as an invalid index and refused
+// to even try loading it, showing "No sheet found matching September"
+// regardless of whether September's sheet actually existed yet. Extended
+// to the full 12 months, same casing as DEPOSITS_MONTH_NAMES/
+// MONTH_SHEET_NAMES elsewhere in this project (lib/monthSheets.js).
 const ACCOUNTS_MONTH_FILES = {
-  0: 'January', 1: 'February', 2: 'march', 3: 'april', 4: 'may', 5: 'June', 6: 'July', 7: 'August'
+  0: 'January', 1: 'February', 2: 'march', 3: 'april', 4: 'may', 5: 'June', 6: 'July', 7: 'August',
+  8: 'September', 9: 'October', 10: 'November', 11: 'December'
 };
 // Only July/August actually carry any cell notes in this snapshot (matches
 // the full-workbook round-trip validation -- 99 notes total, all on
@@ -923,7 +932,7 @@ async function getAccountsDataFromJson(monthIndex, year) {
   if (!year) year = new Date().getFullYear();
   const fileBase = ACCOUNTS_MONTH_FILES[monthIndex];
   if (!fileBase) {
-    return { success: false, monthIndex, month: MONTH_NAMES[monthIndex], error: 'No sheet found matching "' + MONTH_NAMES[monthIndex] + '".' };
+    return { success: false, monthIndex, month: MONTH_NAMES[monthIndex], error: 'No sheet found matching "' + MONTH_NAMES[monthIndex] + '".', missingSheet: true };
   }
 
   // The month sheet and its notes sidecar are two completely independent
@@ -945,6 +954,26 @@ async function getAccountsDataFromJson(monthIndex, year) {
   } catch (err) {
     return { success: false, monthIndex, month: MONTH_NAMES[monthIndex], error: 'Could not load data for ' + MONTH_NAMES[monthIndex] + ': ' + err.message };
   }
+
+  // FIX (2026-09-01): a month whose sheet file genuinely doesn't exist yet
+  // on Drive doesn't 404 here -- readJsonFile just returns null, which
+  // fetchSheetJson above already turns into [] (see its own "return
+  // res.rows || []"). Left unchecked, that silently fell through into the
+  // rest of this function as if it were a real, empty-but-existing sheet:
+  // every summary item would just warn "could not find X" and the page
+  // would render a fully blank Accounts view with no expenses/income and
+  // every total showing "--", giving no indication the sheet was actually
+  // missing. A real month sheet (even a brand new one, freshly copied from
+  // Template) always has more than zero rows -- the summary/deposit-table
+  // block alone is never empty -- so an empty rows array reliably means
+  // "no sheet", same convention already used throughout lib/*Writes.js
+  // (see e.g. their own "if (!rows || !rows.length) throw ..." guards).
+  // missingSheet:true is what lets loadMonth's offerToCreateCurrentMonthSheet
+  // below tell this case apart from any other kind of load failure.
+  if (!rows || !rows.length) {
+    return { success: false, monthIndex, month: MONTH_NAMES[monthIndex], error: 'No sheet found matching "' + MONTH_NAMES[monthIndex] + '".', missingSheet: true };
+  }
+
   const noteMap = new Map();
   notes.forEach(([r, c, t]) => noteMap.set(r + ',' + c, t));
 
@@ -3323,6 +3352,55 @@ function timeAgoLabel(ms) {
   return h + 'h ago';
 }
 
+// ---- Confirm-and-generate flow for a missing CURRENT month sheet (added
+// 2026-09-01, Anton's request after September's own sheet turned out to be
+// missing on the 1st -- see lib/monthRollover.js's
+// createCurrentMonthSheetFromJson header comment for the backend half of
+// this). Deliberately gated against a FRESH `new Date()`, not whatever
+// monthIndex/year the page happens to be showing -- browsing forward to a
+// future month that also has no sheet yet (e.g. October, while September
+// is still current) must stay a plain error message, never an offer to
+// create it early. currentMonthSheetPromptShown guards against asking
+// twice in the same page visit (e.g. if something else re-triggers
+// loadMonth for the same month after a "No" or a failed create).
+let currentMonthSheetPromptShown = false;
+
+async function offerToCreateCurrentMonthSheet(monthIndex, year) {
+  const now = new Date();
+  if (monthIndex !== now.getMonth() || year !== now.getFullYear()) return false;
+  if (currentMonthSheetPromptShown) return false;
+  currentMonthSheetPromptShown = true;
+
+  const wantsToCreate = confirm(
+    'No ' + MONTH_NAMES[monthIndex] + ' sheet found yet.\n\n' +
+    'Generate it now from Template, carrying forward last month\'s cash / wise / revolut / bike-bank balances and any still-open deposits?'
+  );
+  if (!wantsToCreate) return false;
+
+  setLoadStatus('Creating the ' + MONTH_NAMES[monthIndex] + ' sheet…', false);
+  let res;
+  try {
+    res = await fetch('/api/admin/reset', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'createCurrentMonthSheet' })
+    }).then(r => r.json());
+  } catch (err) {
+    setLoadStatus('Could not create the ' + MONTH_NAMES[monthIndex] + ' sheet: ' + err.message, true);
+    return false;
+  }
+  if (!res.success) {
+    setLoadStatus('Could not create the ' + MONTH_NAMES[monthIndex] + ' sheet: ' + (res.error || 'unknown error'), true);
+    return false;
+  }
+  // The sheet now exists on Drive but this page cached its own "load
+  // failed" result for (monthIndex, year) a moment ago -- clear it so the
+  // loadMonth(monthIndex) call right after this returns true actually
+  // re-fetches instead of replaying the stale miss.
+  clearMonthCache(monthIndex, year);
+  return true;
+}
+
 async function loadMonth(monthIndex) {
   const myToken = ++loadToken;
   monthSelect.value = monthIndex;
@@ -3357,9 +3435,18 @@ async function loadMonth(monthIndex) {
       // leave it showing and just flag that the refresh itself failed.
       if (cached) {
         setLoadStatus('Could not refresh (' + (res.error || 'unknown error') + ') — showing saved data from ' + timeAgoLabel(cached.cachedAt) + '.', true);
-      } else {
-        setLoadStatus(res.error || ('No sheet found for ' + MONTH_NAMES[monthIndex] + '.'), true);
+        return;
       }
+      // FIX (2026-09-01): the specific "this month's sheet doesn't exist
+      // yet" case gets one extra chance to self-heal (only when this is
+      // really today's month -- see offerToCreateCurrentMonthSheet's own
+      // guard) before falling through to the plain error message below.
+      if (res.missingSheet) {
+        const created = await offerToCreateCurrentMonthSheet(monthIndex, year);
+        if (myToken !== loadToken) return; // a newer load superseded this one while we waited on the confirm/create
+        if (created) { loadMonth(monthIndex); return; }
+      }
+      setLoadStatus(res.error || ('No sheet found for ' + MONTH_NAMES[monthIndex] + '.'), true);
       return;
     }
     setLoadStatus(res.warning || null, !!res.warning);

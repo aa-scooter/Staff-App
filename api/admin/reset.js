@@ -76,7 +76,7 @@ const { withDrive } = require('../../lib/apiAuth');
 const { writeJsonFile, ensureAppFolder, ensureYearFolder } = require('../../lib/googleDrive');
 const { isMonthSheetName } = require('../../lib/monthSheets');
 const { createBackup, listBackups, ensureDailyBackup, deleteBackups, restoreBackup } = require('../../lib/backups');
-const { createNextMonthSheetFromJson, checkForMonthEndRolloverJson } = require('../../lib/monthRollover');
+const { createNextMonthSheetFromJson, checkForMonthEndRolloverJson, createCurrentMonthSheetFromJson } = require('../../lib/monthRollover');
 const { writeRolloverStatus, readRolloverStatus } = require('../../lib/rolloverStatus');
 
 const DATA_DIR = path.join(__dirname, '..', '..', 'data');
@@ -298,6 +298,26 @@ async function handleMonthRolloverAction(req, res, { drive, folderId }, body) {
   sendJson(res, result.success ? 200 : 400, result);
 }
 
+// ---- New 2026-09-01 action -- accounts.html's "no sheet found for the
+// current month, generate it?" confirm flow (see lib/monthRollover.js's
+// createCurrentMonthSheetFromJson header comment for the full "why" this
+// is a separate function from the one above, not a parameter on it).
+// Deliberately NOT status-tracked via writeRolloverStatus like the action
+// above -- that banner is specifically about the STANDING nightly-rollover
+// job's health (cron + this same manual "next month" button); this is a
+// one-off recovery action a staff member triggers from inside accounts.html
+// itself, where the result already surfaces directly in that page's own
+// load-status line. Mixing the two would make the home-page banner harder
+// to read (e.g. a real cron misconfiguration self-healing behind a
+// coincidental successful recovery click here), not more useful.
+async function handleCreateCurrentMonthSheetAction(req, res, { drive, folderId }, body) {
+  const effectiveFolderId = folderId || await ensureAppFolder(drive);
+  const sheetIO = buildMonthSheetIO(drive, effectiveFolderId);
+  const dryRun = !!(body && body.dryRun);
+  const result = await createCurrentMonthSheetFromJson(sheetIO, { dryRun });
+  sendJson(res, result.success ? 200 : 400, result);
+}
+
 // ---- GET .../api/admin/reset?cron=monthRollover (added 21/08/2026) --
 // Vercel Cron's daily hit for the automatic month-end check. Handled BEFORE
 // withDrive below, deliberately -- same reasoning as api/contract/write.js's
@@ -422,6 +442,10 @@ const postHandler = withDrive(async function handler(req, res, ctx) {
     }
     if (action === 'createNextMonthSheet') {
       await handleMonthRolloverAction(req, res, ctx, body);
+      return;
+    }
+    if (action === 'createCurrentMonthSheet') {
+      await handleCreateCurrentMonthSheetAction(req, res, ctx, body);
       return;
     }
     if (action === 'rolloverStatus') {
