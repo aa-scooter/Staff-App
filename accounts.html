@@ -3393,10 +3393,19 @@ async function offerToCreateCurrentMonthSheet(monthIndex, year) {
     setLoadStatus('Could not create the ' + MONTH_NAMES[monthIndex] + ' sheet: ' + (res.error || 'unknown error'), true);
     return false;
   }
-  // The sheet now exists on Drive but this page cached its own "load
-  // failed" result for (monthIndex, year) a moment ago -- clear it so the
-  // loadMonth(monthIndex) call right after this returns true actually
-  // re-fetches instead of replaying the stale miss.
+  // FIX (2026-09-01): the sheet now exists on Drive, but fetchSheetJson's
+  // own accountsJsonCache already cached the FIRST (failed/empty) read's
+  // resolved promise for this sheet name -- confirmed as why Anton needed
+  // a hard refresh to see it after generating it. That in-memory cache has
+  // no per-write invalidation of its own (see accountsWriteDispatch's own
+  // comment above on why every other write in this file just drops the
+  // whole thing rather than tracking which sheet(s) it touched); this is
+  // the same blanket-clear, applied here too so loadMonth(monthIndex)
+  // right after this actually re-fetches instead of replaying the stale
+  // "no sheet" result it already has cached in memory. clearMonthCache
+  // handles the OTHER (localStorage, cross-page-load) cache -- both need
+  // clearing, they're independent layers.
+  Object.keys(accountsJsonCache).forEach(k => delete accountsJsonCache[k]);
   clearMonthCache(monthIndex, year);
   return true;
 }
@@ -3431,20 +3440,34 @@ async function loadMonth(monthIndex) {
     if (myToken !== loadToken) return; // A newer month was selected while this was in flight.
 
     if (!res.success) {
+      // FIX (2026-09-01, revised): missingSheet is checked FIRST, before the
+      // cached-view fallback below -- confirmed necessary against a real
+      // case Anton hit deleting September_2026.json from Drive on purpose
+      // to force a clean regenerate: the OLD order let a stale localStorage
+      // snapshot from an earlier load win, so the page just showed "could
+      // not refresh -- showing saved data from Xm ago" and never even
+      // reached the offer-to-create check below, no matter how many times
+      // it was reloaded. A genuinely missing CURRENT month's sheet should
+      // always get the chance to self-heal, whether or not a stale cache
+      // happens to be sitting around from before it was deleted.
+      if (res.missingSheet) {
+        const created = await offerToCreateCurrentMonthSheet(monthIndex, year);
+        if (myToken !== loadToken) return; // a newer load superseded this one while we waited on the confirm/create
+        if (created) { loadMonth(monthIndex); return; }
+        // Declined, or creation failed -- same "cached is better than blank"
+        // fallback as the branch below, just reached from here too now.
+        if (cached) {
+          setLoadStatus('Could not refresh (' + (res.error || 'unknown error') + ') — showing saved data from ' + timeAgoLabel(cached.cachedAt) + '.', true);
+          return;
+        }
+        setLoadStatus(res.error || ('No sheet found for ' + MONTH_NAMES[monthIndex] + '.'), true);
+        return;
+      }
       // A cached view is strictly more useful than a blank error screen --
       // leave it showing and just flag that the refresh itself failed.
       if (cached) {
         setLoadStatus('Could not refresh (' + (res.error || 'unknown error') + ') — showing saved data from ' + timeAgoLabel(cached.cachedAt) + '.', true);
         return;
-      }
-      // FIX (2026-09-01): the specific "this month's sheet doesn't exist
-      // yet" case gets one extra chance to self-heal (only when this is
-      // really today's month -- see offerToCreateCurrentMonthSheet's own
-      // guard) before falling through to the plain error message below.
-      if (res.missingSheet) {
-        const created = await offerToCreateCurrentMonthSheet(monthIndex, year);
-        if (myToken !== loadToken) return; // a newer load superseded this one while we waited on the confirm/create
-        if (created) { loadMonth(monthIndex); return; }
       }
       setLoadStatus(res.error || ('No sheet found for ' + MONTH_NAMES[monthIndex] + '.'), true);
       return;
