@@ -351,6 +351,26 @@
   .helmet-add-btn:active{ transform:none; }
   .helmet-empty-note{ font-size:12.5px; color:#8A948F; padding:2px 2px 0; }
 
+  /* ---- Multi-bike -- "+ Add another bike" line-item pattern
+     (2026-09-02), visually identical to the Helmets pattern just above. ---- */
+  .bike-lines{ display:flex; flex-direction:column; gap:8px; margin-top:10px; }
+  .bike-line{ display:flex; align-items:flex-start; gap:8px; }
+  .bike-line .field{ margin:0; flex:1; min-width:0; }
+  .bike-remove-btn{
+    width:32px; height:32px; flex-shrink:0; margin:0; padding:0;
+    border-radius:8px; border:1px solid var(--line); background:#fff;
+    color:var(--err); font-size:18px; line-height:1; cursor:pointer;
+  }
+  .bike-remove-btn:active{ transform:none; }
+  .bike-add-btn{
+    width:auto; margin-top:12px; padding:9px 16px; border-radius:9px;
+    background:#fff; color:var(--petrol); border:1px solid var(--line);
+    font-family:'Inter',sans-serif; font-weight:600; font-size:13.5px;
+    text-transform:none; letter-spacing:normal; cursor:pointer;
+  }
+  .bike-add-btn:hover{ border-color:var(--petrol-light); }
+  .bike-add-btn:active{ transform:none; }
+
   /* ---- Optimistic save/queue UX (17/08/2026) -- ported verbatim from
   bikes.html's own "opt-" prefixed pass (see that file's own comment for
   the full visual-language reasoning). .opt-row-pending applies to this
@@ -865,6 +885,9 @@
         <div class="ac-list" data-for="bikeModel"></div>
       </div>
       <div class="load-status" id="bikeModelLoadStatus">Loading bikes…</div>
+
+      <div class="bike-lines" id="bikeLinesBox"></div>
+      <button type="button" class="bike-add-btn" id="addBikeBtn">+ Add another bike</button>
 
       <div class="row2">
         <div>
@@ -2908,6 +2931,52 @@ helmetNoneCheckbox.addEventListener('change', () => {
   }
 });
 rerenderHelmetLines();
+
+/* ---- Multi-bike -- Add form's "+ Add another bike" line-item pattern
+   (2026-09-02), mirroring the Helmets block just above almost exactly.
+   Each line is just a bike name -- the whole booking still shares one
+   Renting from / Return date / Payment (matching how Anton actually
+   books a group), and each bike becomes its own real Contract row on
+   submit (see the submit handler's own comment on bikeRequests), so a
+   bike that needs different treatment later is still edited independently
+   afterwards via Search -> Edit on that row, exactly like any contract. ---- */
+let extraBikeLines = []; // [{ uid, value }]
+let bikeLineSeq = 0;
+const bikeLinesBox = document.getElementById('bikeLinesBox');
+const addBikeBtn = document.getElementById('addBikeBtn');
+
+function renderBikeLines() {
+  if (!extraBikeLines.length) {
+    bikeLinesBox.innerHTML = '';
+    return;
+  }
+  bikeLinesBox.innerHTML = extraBikeLines.map((l) => `
+    <div class="bike-line" data-uid="${l.uid}">
+      <div class="field">
+        <input id="bikeLine_${l.uid}" class="bike-line-input" placeholder="Bike model" autocomplete="off" value="${(l.value || '').replace(/"/g, '&quot;')}">
+        <div class="ac-list" data-for="bikeLine_${l.uid}"></div>
+      </div>
+      <button type="button" class="bike-remove-btn" data-uid="${l.uid}" title="Remove">&times;</button>
+    </div>
+  `).join('');
+
+  extraBikeLines.forEach((l) => {
+    const input = document.getElementById('bikeLine_' + l.uid);
+    input.addEventListener('input', () => { l.value = input.value; });
+    attachBikeModelAutocomplete('bikeLine_' + l.uid, getAvailableBikeNames);
+  });
+  bikeLinesBox.querySelectorAll('.bike-remove-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const uid = Number(btn.dataset.uid);
+      extraBikeLines = extraBikeLines.filter((l) => l.uid !== uid);
+      renderBikeLines();
+    });
+  });
+}
+addBikeBtn.addEventListener('click', () => {
+  extraBikeLines.push({ uid: ++bikeLineSeq, value: '' });
+  renderBikeLines();
+});
 
 /* ---------------- Pending contracts picker (Rent / Cancel) ---------------- */
 
@@ -5272,6 +5341,27 @@ form.addEventListener('submit', (e) => {
 
   if (!validateBikeModelOrShowPicker('bikeModel', statusBox)) return;
 
+  // Multi-bike support (2026-09-02): validate every additional bike line
+  // the same way the primary Bike model field already is above (must be
+  // filled in and match a real fleet name), plus a same-bike-twice guard
+  // across the whole set.
+  for (const l of extraBikeLines) {
+    if (!validateBikeModelOrShowPicker('bikeLine_' + l.uid, statusBox)) return;
+  }
+  {
+    const namesSoFar = [document.getElementById('bikeModel').value.trim(), ...extraBikeLines.map((l) => l.value.trim())];
+    const seenLower = new Set();
+    for (const n of namesSoFar) {
+      const key = n.toLowerCase();
+      if (seenLower.has(key)) {
+        statusBox.textContent = '"' + n + '" is added more than once — each bike on a contract must be different.';
+        statusBox.className = 'status err';
+        return;
+      }
+      seenLower.add(key);
+    }
+  }
+
   if (ctQueueFull()) {
     statusBox.textContent = '2 saves are already in progress — wait for one to finish before starting another.';
     statusBox.className = 'status err';
@@ -5311,6 +5401,53 @@ form.addEventListener('submit', (e) => {
     clientTxnId: genClientTxnId()
   };
 
+  // Multi-bike support (2026-09-02): additional bikes typed into the
+  // "+ Add another bike" lines become their OWN linked Contract rows --
+  // same shared customer/dates/deposit fields as `payload` above, own
+  // bike name, own even split of the combined total price (for bike-
+  // income accounting ONLY -- the contract/receipt always print the
+  // combined total exactly as entered, never the split; see
+  // lib/contractDocGen.js's resolveMultiBikeFields and this handler's
+  // onAllSuccess below). All rows share `linkedGroupId` so they can be
+  // grouped and independently Rented/Returned/Cancelled later, since
+  // each is a genuinely separate Contract row -- same as writing several
+  // contracts by hand, just entered together. A normal single-bike
+  // contract (extraBikeLines empty) produces the exact same single
+  // addContract request this always sent.
+  const allBikeNames = [payload.bikeModel, ...extraBikeLines.map((l) => l.value.trim())].filter(Boolean);
+  const isMultiBike = allBikeNames.length > 1;
+  let bikeRequests;
+  if (!isMultiBike) {
+    bikeRequests = [{ action: 'addContract', payload }];
+  } else {
+    const linkedGroupId = 'LG-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+    const totalNum = Number(payload.totalPrice) || 0;
+    const n = allBikeNames.length;
+    const base = Math.floor(totalNum / n);
+    const shares = new Array(n).fill(base);
+    shares[n - 1] += totalNum - base * n; // remainder on the last bike -- the rows still sum to exactly the entered total
+    bikeRequests = allBikeNames.map((bikeName, i) => {
+      const linePayload = Object.assign({}, payload, {
+        bikeModel: bikeName,
+        totalPrice: String(shares[i]),
+        linkedGroupId,
+        linkedBikeIndex: i,
+        clientTxnId: genClientTxnId()
+      });
+      if (i > 0) {
+        // Helmets are booking-level equipment, not per-bike -- keep them
+        // on the first/primary row only so nothing downstream that reads
+        // helmets off "a" Contract row for this booking double/triple-
+        // counts them.
+        Object.assign(linePayload, {
+          helmetHalfSizeQty: 0, helmetFullSizeS: 0, helmetFullSizeM: 0, helmetFullSizeL: 0,
+          helmetFullSizeXL: 0, helmetKidsQty: 0, helmetFullFaceQty: 0, helmetNone: false
+        });
+      }
+      return { action: 'addContract', payload: linePayload };
+    });
+  }
+
   // Capture the File object itself (not yet read) BEFORE the optimistic
   // reset below clears the input -- see this handler's header comment.
   // Also capture name/phone/rentingDateFrom for the follow-up upload,
@@ -5333,6 +5470,8 @@ form.addEventListener('submit', (e) => {
   helmetLines = [];
   helmetNoneCheckbox.checked = false;
   rerenderHelmetLines();
+  extraBikeLines = [];
+  renderBikeLines();
   setDefaultsToNow();
   // Show a "Saving…"/"Queued…" indicator immediately (mirrors the
   // opt-row-badge convention used everywhere else in this file) instead of
@@ -5350,18 +5489,28 @@ form.addEventListener('submit', (e) => {
     statusBox.innerHTML = '<span class="status-spinner"></span><span>Queued…</span>';
   }
 
-  ctEnqueue({
+ctEnqueue({
     label,
-    rows: [], // brand-new row -- doesn't exist yet, nothing to badge
-    requests: [{ action: 'addContract', payload }],
+    rows: [], // brand-new row(s) -- don't exist yet, nothing to badge
+    requests: bikeRequests,
     onAllSuccess: async (results) => {
-      const res = results[0];
-      let msg = 'Added — "' + uploadName + '" saved to the Contract sheet.';
-      if (res.warning) msg += ' (' + res.warning + ')';
+      // Multi-bike support (2026-09-02): `results` has one entry per bike
+      // request built above, in the same order as `allBikeNames` -- see
+      // that block's own comment. Single-bike contracts are unaffected:
+      // bikeRequests is a 1-item array exactly like before this existed,
+      // so results.length is always 1 and everything below behaves
+      // identically to the original single-bike code this replaced.
+      const combinedWarning = results.map(r => r.warning).filter(Boolean).join(' ');
+      let msg = isMultiBike
+        ? 'Added \u2014 "' + uploadName + '" saved to the Contract sheet (' + allBikeNames.length + ' bikes: ' + allBikeNames.join(', ') + ').'
+        : 'Added \u2014 "' + uploadName + '" saved to the Contract sheet.';
+      if (combinedWarning) msg += ' (' + combinedWarning + ')';
+      const primaryRow = results[0].row;
 
       // Follow-up passport-photo upload, per this handler's header comment
-      // -- deliberately AFTER the queued write above has already
-      // succeeded, and never part of that request's payload.
+      // -- deliberately AFTER the queued write(s) above have already
+      // succeeded, and never part of that request's payload. One photo
+      // per booking, regardless of how many bikes are on it.
       if (passportPhotoFile) {
         try {
           const base64 = await readFileAsBase64(passportPhotoFile);
@@ -5382,22 +5531,16 @@ form.addEventListener('submit', (e) => {
         }
       }
 
-      // Follow-up receipt + checklist generation -- ADDED 2026-08-20 (Anton:
-      // "when you generate a contract, it doesn't automatically generate a
-      // checklist or receipt"). Mirrors Code.gs's own addContractEntry,
-      // which always generated both automatically right after the Contract
-      // row itself saved -- lib/contractWrites.js's addContractFromJson
-      // deliberately left Doc/PDF generation out of scope (see its own
-      // header comment), so these two calls are the client-side follow-up
-      // that restores that behavior, same shape/placement as the
-      // passport-photo upload just above. Best-effort like every other
-      // follow-up here -- never blocks or fails the "Added" success message,
-      // only folds a problem into it. Uses the SAME default values
-      // addContractEntry always computed (total price as the full amount
-      // paid, rental fee back-calculated as total minus delivery, payment
-      // method mapped from "Paid by", "Miss. Arparatchanee" as receivedBy,
-      // today as the receipt date) -- staff can still open "Edit Receipt"
-      // afterwards to correct the numbers and regenerate.
+      // Follow-up receipt + checklist generation -- see this handler's
+      // header comment for the full "why". ONE receipt and ONE checklist
+      // per booking, not one per bike -- a multi-bike receipt's Scooter
+      // Type/CC lines join every linked bike with " + "
+      // (lib/contractDocGen.js's resolveMultiBikeFields), and the total
+      // paid is the combined figure exactly as entered on this form,
+      // never split (Anton, 02/09/2026: "the payment does not have to be
+      // split"). The checklist has no bike-specific token at all (only
+      // name/date), so generating it once already covers every bike on
+      // the booking -- no change needed there.
       const now = new Date();
       const pad2 = (n) => String(n).padStart(2, '0');
       const todayIso = now.getFullYear() + '-' + pad2(now.getMonth() + 1) + '-' + pad2(now.getDate());
@@ -5409,13 +5552,14 @@ form.addEventListener('submit', (e) => {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            rowNumber: res.row,
+            rowNumber: primaryRow,
             number: payload.number,
             rentingDateFrom: payload.rentingDateFrom,
             receiptNo: '',
             receiptDate: todayIso,
             name: payload.name,
             bikeModel: payload.bikeModel,
+            bikes: isMultiBike ? allBikeNames : undefined,
             cc: '',
             rentalPeriodFrom: payload.rentingDateFrom,
             rentalPeriodTo: payload.returnDate,
@@ -5440,7 +5584,7 @@ form.addEventListener('submit', (e) => {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            rowNumber: res.row,
+            rowNumber: primaryRow,
             name: payload.name,
             number: payload.number,
             rentingDateFrom: payload.rentingDateFrom
@@ -5455,7 +5599,7 @@ form.addEventListener('submit', (e) => {
 
       stopSaveProgress();
       statusBox.textContent = msg;
-      statusBox.className = res.warning ? 'status warn' : 'status ok';
+      statusBox.className = combinedWarning ? 'status warn' : 'status ok';
       ctReloadAndRerender();
     }
   });
