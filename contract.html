@@ -297,6 +297,40 @@
   .modal-close:active{ transform:none; }
   .pending-item{ cursor:pointer; transition:background .12s, border-color .12s; }
   .pending-item:hover{ background:#F5EFE6; border-color:var(--petrol-light); }
+
+  /* ---- Multi-bike support (2026-09-02): grouped Pending-list card for a
+     linked booking -- the card itself isn't clickable (unlike a normal
+     single-bike .pending-item), only its bike sub-lines and bulk
+     buttons are, so it doesn't get the pointer cursor/hover highlight a
+     plain pending-item gets. ---- */
+  .pending-group-card{ cursor:default; }
+  .pending-group-card:hover{ background:#FBFAF7; border-color:var(--line); }
+  .bike-sub-lines{ margin-top:8px; display:flex; flex-direction:column; gap:6px; }
+  .bike-sub-line{
+    display:flex; align-items:center; justify-content:space-between; gap:8px;
+    padding:7px 10px; border-radius:8px; background:#fff; border:1px solid var(--line);
+    cursor:pointer; transition:background .12s, border-color .12s;
+  }
+  .bike-sub-line:hover{ background:#F5EFE6; border-color:var(--petrol-light); }
+  .bike-sub-name{ font-size:13px; font-weight:600; color:var(--ink); }
+  .bike-sub-price{ font-size:12.5px; color:#5A6663; }
+  .bike-sub-line.opt-row-pending{ opacity:.58; pointer-events:none; }
+  .group-bulk-actions{ display:flex; gap:8px; margin-top:10px; }
+  .group-rent-all-btn, .group-cancel-all-btn{
+    flex:1; width:auto; margin:0; padding:8px 10px; border-radius:8px;
+    font-family:'Inter',sans-serif; font-weight:600; font-size:12.5px;
+    text-transform:none; letter-spacing:normal; cursor:pointer; border:1px solid var(--line);
+  }
+  .group-rent-all-btn{ background:#fff; color:var(--ok); border-color:#BFE0CB; }
+  .group-rent-all-btn:hover{ background:#EAF7EF; }
+  .group-cancel-all-btn{ background:#fff; color:var(--err); border-color:#F3C6C6; }
+  .group-cancel-all-btn:hover{ background:#FCEBEB; }
+  .linked-badge{
+    display:inline-block; margin-left:6px; padding:1px 7px; border-radius:5px;
+    background:#FFF3E6; color:var(--cone); border:1px solid #F3D9B8;
+    font-family:'Inter',sans-serif; font-weight:600; font-size:10.5px;
+    letter-spacing:.02em; text-transform:none; vertical-align:middle;
+  }
   .head-btn-row{ display:flex; gap:8px; margin-top:10px; }
   .head-btn-row button{
     flex:1; margin-top:0; font-size:12.5px; padding:6px 10px; border-radius:8px;
@@ -1364,6 +1398,18 @@ async function getContractRowsFromJson() {
     obj.rowNumber = sheetRow;
     const noteText = (noteByRow.get(sheetRow) || '').toString().trim().toLowerCase();
     obj.isDeal = noteText === 'deal' ? 'TRUE' : '';
+    // Multi-bike support (2026-09-02): columns 38/39 (1-indexed; array
+    // indices 37/38) hold linkedGroupId/linkedBikeIndex for rows created
+    // as one bike of a multi-bike booking -- see the "Create contract"
+    // submit handler's own comment on bikeRequests, and
+    // lib/contractWrites.js's buildContractTailFieldsB. Deliberately read
+    // directly off `row` here rather than added to the `keys` array
+    // above: index 36 is an existing, unrelated "spare" column (security
+    // deposit ledger ref, see editContractFromJson) that isn't part of
+    // `keys` either, so appending to `keys` would misalign every index
+    // after it.
+    obj.linkedGroupId = (row[37] || '').toString().trim();
+    obj.linkedBikeIndex = (row[38] !== undefined && row[38] !== null && row[38] !== '') ? row[38].toString().trim() : '';
     return obj;
   }).filter(r => r.name !== '');
 
@@ -2945,7 +2991,32 @@ let bikeLineSeq = 0;
 const bikeLinesBox = document.getElementById('bikeLinesBox');
 const addBikeBtn = document.getElementById('addBikeBtn');
 
+// Reads a bike line's CURRENT value straight from its live DOM input --
+// never from the tracked `l.value` field -- see the BUG comment on
+// renderBikeLines below for why the tracked field alone isn't trustworthy.
+function getBikeLineValue(uid) {
+  const el = document.getElementById('bikeLine_' + uid);
+  return el ? el.value : '';
+}
+
 function renderBikeLines() {
+  // BUG FIX (2026-09-02): clicking an autocomplete suggestion sets
+  // input.value directly (see attachBikeModelAutocomplete's mousedown
+  // handler above) WITHOUT firing an 'input' event, so the
+  // input.addEventListener('input', ...) below never sees that change --
+  // `l.value` stays whatever partial text was last typed by hand (e.g.
+  // "g" before "Yamaha GT" was picked from the dropdown). That stale
+  // value was invisible until this function ran again -- which happens
+  // every time ANY line is added or removed -- at which point it
+  // overwrote the input's correct on-screen value with the stale one,
+  // silently corrupting an already-correctly-picked earlier bike line.
+  // Sync every line's tracked value from its live input FIRST, before
+  // rebuilding anything below, so nothing already on screen is lost.
+  extraBikeLines.forEach((l) => {
+    const existing = document.getElementById('bikeLine_' + l.uid);
+    if (existing) l.value = existing.value;
+  });
+
   if (!extraBikeLines.length) {
     bikeLinesBox.innerHTML = '';
     return;
@@ -2962,6 +3033,10 @@ function renderBikeLines() {
 
   extraBikeLines.forEach((l) => {
     const input = document.getElementById('bikeLine_' + l.uid);
+    // Still tracked on every keystroke (belt-and-suspenders, and it's
+    // what seeds the input's value= on the NEXT re-render above) -- but
+    // nothing that actually matters (validation, the submit payload)
+    // trusts this alone anymore. See getBikeLineValue above.
     input.addEventListener('input', () => { l.value = input.value; });
     attachBikeModelAutocomplete('bikeLine_' + l.uid, getAvailableBikeNames);
   });
@@ -3029,42 +3104,131 @@ function closePendingModal() {
 }
 pendingBtn.addEventListener('click', openPendingModal);
 
+// Multi-bike support (2026-09-02): rows sharing a non-empty
+// linkedGroupId are bikes on the same multi-bike booking (see the
+// "Create contract" submit handler's own bikeRequests comment) -- group
+// them into one card instead of showing N separate, confusing "contracts"
+// for what staff entered as a single booking. A normal single-bike
+// contract (no linkedGroupId) is its own singleton group and renders
+// exactly as before.
+function groupPendingRows(pending) {
+  const groups = [];
+  const byGroupId = new Map();
+  pending.forEach((r) => {
+    const gid = (r.linkedGroupId || '').toString().trim();
+    if (!gid) { groups.push([r]); return; }
+    let g = byGroupId.get(gid);
+    if (!g) { g = []; byGroupId.set(gid, g); groups.push(g); }
+    g.push(r);
+  });
+  groups.forEach((g) => g.sort((a, b) => (Number(a.linkedBikeIndex) || 0) - (Number(b.linkedBikeIndex) || 0)));
+  return groups;
+}
+
+function renderPendingSingleCard(r) {
+  const pendingHere = pendingRowSaves.get(r.rowNumber);
+  if (pendingHere) {
+    const isRunning = pendingHere.status === 'running';
+    return `
+      <div class="result-card pending-item pending-single opt-row-pending" data-row="${r.rowNumber}">
+        <div class="rc-title">${r.name || '—'} — ${r.bikeModel || '—'}</div>
+        <span class="opt-row-badge${isRunning ? '' : ' queued'}">${isRunning ? '<span class="opt-spinner"></span> Saving…' : 'Queued…'}</span>
+      </div>
+    `;
+  }
+  return `
+    <div class="result-card pending-item pending-single" data-row="${r.rowNumber}">
+      <div class="rc-title">${r.name || '—'} — ${r.bikeModel || '—'}</div>
+      <div class="rc-row"><b>Rented:</b> ${formatDateDisplay(r.rentingDateFrom)} &nbsp; <b>Return:</b> ${formatDateDisplay(r.returnDate)}</div>
+      <div class="rc-row"><b>Total:</b> ${r.totalPrice ? '฿' + r.totalPrice : '—'} &nbsp; <b>Deposit:</b> ${r.deposit || '—'}${String(r.isDeal).toUpperCase() === 'TRUE' ? ' &nbsp; <b style="color:var(--cone);">Deal</b>' : ''}</div>
+    </div>
+  `;
+}
+
+function renderPendingGroupCard(g) {
+  const first = g[0];
+  const gid = (first.linkedGroupId || '').toString().trim();
+  const combinedTotal = g.reduce((sum, r) => sum + (Number(r.totalPrice) || 0), 0);
+  const bikeNamesLine = g.map((r) => r.bikeModel || '—').join(' + ');
+  const bikesHtml = g.map((r) => {
+    const pendingHere = pendingRowSaves.get(r.rowNumber);
+    if (pendingHere) {
+      const isRunning = pendingHere.status === 'running';
+      return `
+        <div class="bike-sub-line opt-row-pending" data-row="${r.rowNumber}">
+          <span class="bike-sub-name">${r.bikeModel || '—'}</span>
+          <span class="opt-row-badge${isRunning ? '' : ' queued'}">${isRunning ? '<span class="opt-spinner"></span> Saving…' : 'Queued…'}</span>
+        </div>
+      `;
+    }
+    return `
+      <div class="bike-sub-line" data-row="${r.rowNumber}">
+        <span class="bike-sub-name">${r.bikeModel || '—'}</span>
+        <span class="bike-sub-price">${r.totalPrice ? '฿' + r.totalPrice : '—'}</span>
+      </div>
+    `;
+  }).join('');
+  return `
+    <div class="result-card pending-item pending-group-card" data-group-id="${gid}">
+      <div class="rc-title">${first.name || '—'} — ${bikeNamesLine}</div>
+      <div class="rc-row"><b>Rented:</b> ${formatDateDisplay(first.rentingDateFrom)} &nbsp; <b>Return:</b> ${formatDateDisplay(first.returnDate)}</div>
+      <div class="rc-row"><b>Total:</b> ฿${combinedTotal} &nbsp; <b>Deposit:</b> ${first.deposit || '—'}${String(first.isDeal).toUpperCase() === 'TRUE' ? ' &nbsp; <b style="color:var(--cone);">Deal</b>' : ''}</div>
+      <div class="bike-sub-lines">${bikesHtml}</div>
+      <div class="group-bulk-actions">
+        <button type="button" class="group-rent-all-btn" data-group-id="${gid}">Rent all ${g.length}</button>
+        <button type="button" class="group-cancel-all-btn" data-group-id="${gid}">Cancel all ${g.length}</button>
+      </div>
+    </div>
+  `;
+}
+
 function renderPendingList(rows) {
   const pending = (rows || []).filter(r => (r.status || '').toString().trim().toLowerCase() === 'pending');
   if (!pending.length) {
     pendingListBox.innerHTML = '<div class="results-empty">No pending contracts.</div>';
     return;
   }
-  pendingListBox.innerHTML = pending.map((r, i) => {
-    // This row has an in-flight/queued background save (see the save-
-    // pipeline engine above) -- show a small badge instead of the normal
-    // card content, same treatment bikes.html's renterActionsHtml() gives
-    // a mid-save row. opt-row-pending also sets pointer-events:none, but
-    // the click-handler loop below skips attaching a handler to these
-    // too, belt-and-suspenders against reopening the confirm modal on a
-    // row that's already mid-write.
-    const pendingHere = pendingRowSaves.get(r.rowNumber);
-    if (pendingHere) {
-      const isRunning = pendingHere.status === 'running';
-      return `
-        <div class="result-card pending-item opt-row-pending" data-index="${i}">
-          <div class="rc-title">${r.name || '—'} — ${r.bikeModel || '—'}</div>
-          <span class="opt-row-badge${isRunning ? '' : ' queued'}">${isRunning ? '<span class="opt-spinner"></span> Saving…' : 'Queued…'}</span>
-        </div>
-      `;
-    }
-    return `
-    <div class="result-card pending-item" data-index="${i}">
-      <div class="rc-title">${r.name || '—'} — ${r.bikeModel || '—'}</div>
-      <div class="rc-row"><b>Rented:</b> ${formatDateDisplay(r.rentingDateFrom)} &nbsp; <b>Return:</b> ${formatDateDisplay(r.returnDate)}</div>
-      <div class="rc-row"><b>Total:</b> ${r.totalPrice ? '฿' + r.totalPrice : '—'} &nbsp; <b>Deposit:</b> ${r.deposit || '—'}${String(r.isDeal).toUpperCase() === 'TRUE' ? ' &nbsp; <b style="color:var(--cone);">Deal</b>' : ''}</div>
-    </div>
-  `;
-  }).join('');
-  Array.from(pendingListBox.querySelectorAll('.pending-item')).forEach((el, i) => {
-    if (pendingRowSaves.has(pending[i].rowNumber)) return;
+  const groups = groupPendingRows(pending);
+  pendingListBox.innerHTML = groups.map((g) => g.length > 1 ? renderPendingGroupCard(g) : renderPendingSingleCard(g[0])).join('');
+
+  // Ungrouped (normal single-bike) cards -- click anywhere on the card,
+  // same as always.
+  Array.from(pendingListBox.querySelectorAll('.pending-single')).forEach((el) => {
+    const rowNumber = Number(el.dataset.row);
+    if (pendingRowSaves.has(rowNumber)) return;
     el.addEventListener('click', () => {
-      openConfirmModal(pending[i]);
+      const r = pending.find((p) => p.rowNumber === rowNumber);
+      if (r) openConfirmModal(r);
+    });
+  });
+
+  // Grouped cards -- clicking one bike's own sub-line opens the normal
+  // single-bike confirm modal scoped to just that bike (independent
+  // Rent/Cancel per bike, as if it were its own contract); the two bulk
+  // buttons act on every bike in the group in one go.
+  Array.from(pendingListBox.querySelectorAll('.bike-sub-line')).forEach((el) => {
+    const rowNumber = Number(el.dataset.row);
+    if (pendingRowSaves.has(rowNumber)) return;
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const r = pending.find((p) => p.rowNumber === rowNumber);
+      if (r) openConfirmModal(r);
+    });
+  });
+  Array.from(pendingListBox.querySelectorAll('.group-rent-all-btn')).forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const gid = btn.dataset.groupId;
+      const groupRows = pending.filter((p) => (p.linkedGroupId || '').toString().trim() === gid && !pendingRowSaves.has(p.rowNumber));
+      if (groupRows.length) openConfirmModalForGroup(groupRows, 'confirmRent');
+    });
+  });
+  Array.from(pendingListBox.querySelectorAll('.group-cancel-all-btn')).forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const gid = btn.dataset.groupId;
+      const groupRows = pending.filter((p) => (p.linkedGroupId || '').toString().trim() === gid && !pendingRowSaves.has(p.rowNumber));
+      if (groupRows.length) openConfirmModalForGroup(groupRows, 'confirmCancel');
     });
   });
 }
@@ -3110,9 +3274,23 @@ function openConfirmModal(r) {
     ? r.deposit + (r.depositAmount ? ' (฿' + r.depositAmount + (r.depositCurrency ? ' ' + r.depositCurrency : '') + ')' : '')
     : '—';
 
+  // Multi-bike support (2026-09-02): this bike is one of several on a
+  // linked booking (see renderPendingGroupCard) -- say so, and make clear
+  // the Total below is just THIS bike's share of the combined booking
+  // total (split evenly for bike-income accounting, see the "Create
+  // contract" submit handler's bikeRequests comment), not the full
+  // amount the customer paid. Renting/cancelling from here only affects
+  // this one bike -- the other bikes on the booking are untouched; use
+  // the group card's "Rent all"/"Cancel all" buttons to act on every
+  // bike at once instead.
+  const linkedNote = (r.linkedGroupId || '').toString().trim()
+    ? `<div class="rc-row" style="color:var(--petrol-light);"><b>Linked booking:</b> one of several bikes on this booking -- Total below is this bike's own share, not the full amount paid.</div>`
+    : '';
+
   confirmDetailsBox.innerHTML = `
     <div class="result-card">
       <div class="rc-title">${r.name || '—'} — ${r.bikeModel || '—'}</div>
+      ${linkedNote}
       <div class="rc-row"><b>Nationality:</b> ${r.nationality || '—'} &nbsp; <b>Passport:</b> ${r.passport || '—'}</div>
       <div class="rc-row"><b>Number:</b> ${r.number || '—'} &nbsp; <b>Contact via:</b> ${r.contact || '—'}${r.chatName ? ' (' + r.chatName + ')' : ''}</div>
       <div class="rc-row"><b>Renting from:</b> ${formatDateDisplay(r.rentingDateFrom)} &nbsp; <b>Return:</b> ${formatDateDisplay(r.returnDate)}</div>
@@ -3126,6 +3304,60 @@ function openConfirmModal(r) {
   renderConfirmActions();
   confirmBackdrop.classList.add('show');
 }
+
+// Multi-bike support (2026-09-02): same confirm modal, opened for an
+// entire linked group at once (from a Pending-list group card's "Rent
+// all"/"Cancel all" buttons) instead of one bike. Builds a synthetic
+// record carrying the shared customer/date/deposit fields plus a
+// combined total (the sum of every bike's own share -- equal to what the
+// customer actually paid) and the joined bike list, marked __isGroup so
+// doRent/doCancel below know to fan the action out to every row in
+// `rows` instead of treating this as one Contract row. `startStep` lets
+// the two bulk buttons jump straight to their own confirm step instead
+// of showing the Rent/Cancel choice again (staff already said which one
+// they wanted by clicking that specific button).
+function openConfirmModalForGroup(rows, startStep) {
+  const first = rows[0];
+  currentPendingRecord = {
+    __isGroup: true,
+    rows,
+    name: first.name, nationality: first.nationality, passport: first.passport,
+    number: first.number, contact: first.contact, chatName: first.chatName,
+    rentingDateFrom: first.rentingDateFrom, returnDate: first.returnDate,
+    returnTime: first.returnTime, deliverToHotel: first.deliverToHotel,
+    paidBy: first.paidBy, deposit: first.deposit, depositAmount: first.depositAmount,
+    depositCurrency: first.depositCurrency, isDeal: first.isDeal,
+    deliveryFee: first.deliveryFee,
+    totalPrice: rows.reduce((sum, r) => sum + (Number(r.totalPrice) || 0), 0),
+    bikeModel: rows.map((r) => r.bikeModel || '—').join(' + ')
+  };
+  confirmStep = startStep || 'choose';
+  confirmStatusBox.className = 'status';
+  confirmStatusBox.textContent = '';
+
+  const r = currentPendingRecord;
+  const depositLine = r.deposit
+    ? r.deposit + (r.depositAmount ? ' (฿' + r.depositAmount + (r.depositCurrency ? ' ' + r.depositCurrency : '') + ')' : '')
+    : '—';
+
+  confirmDetailsBox.innerHTML = `
+    <div class="result-card">
+      <div class="rc-title">${r.name || '—'} — ${rows.length} bikes</div>
+      <div class="rc-row"><b>Bikes:</b> ${rows.map((row) => row.bikeModel || '—').join(', ')}</div>
+      <div class="rc-row"><b>Nationality:</b> ${r.nationality || '—'} &nbsp; <b>Passport:</b> ${r.passport || '—'}</div>
+      <div class="rc-row"><b>Number:</b> ${r.number || '—'} &nbsp; <b>Contact via:</b> ${r.contact || '—'}${r.chatName ? ' (' + r.chatName + ')' : ''}</div>
+      <div class="rc-row"><b>Renting from:</b> ${formatDateDisplay(r.rentingDateFrom)} &nbsp; <b>Return:</b> ${formatDateDisplay(r.returnDate)}</div>
+      <div class="rc-row"><b>Return time:</b> ${formatTimeDisplay(r.returnTime)} &nbsp; <b>Deliver to hotel:</b> ${r.deliverToHotel || '—'}</div>
+      <div class="rc-row"><b>Combined total:</b> ${r.totalPrice ? '฿' + r.totalPrice : '—'} &nbsp; <b>Paid by:</b> ${r.paidBy || '—'}</div>
+      <div class="rc-row"><b>Deposit:</b> ${depositLine}</div>
+      ${r.deliveryFee ? `<div class="rc-row"><b>Delivery fee:</b> ฿${r.deliveryFee}</div>` : ''}
+      ${String(r.isDeal).toUpperCase() === 'TRUE' ? `<div class="rc-row"><b>Deal:</b> Yes</div>` : ''}
+    </div>
+  `;
+  renderConfirmActions();
+  confirmBackdrop.classList.add('show');
+}
+
 function closeConfirmModal() {
   confirmBackdrop.classList.remove('show');
   currentPendingRecord = null;
@@ -3139,9 +3371,11 @@ function renderConfirmActions() {
   const r = currentPendingRecord;
   const custName = (r && r.name) ? r.name : 'this customer';
 
+  const bikeCountSuffix = (r && r.__isGroup) ? (' (' + r.rows.length + ' bikes)') : '';
+
   if (confirmStep === 'confirmRent') {
     confirmPromptBox.style.display = 'block';
-    confirmPromptBox.textContent = 'Rent this out to ' + custName + '? This uses this contract\'s details as-is -- if anything needs fixing first, use Search to edit the contract, then come back here.';
+    confirmPromptBox.textContent = 'Rent this out to ' + custName + bikeCountSuffix + '? This uses ' + (r && r.__isGroup ? 'these contracts\'' : 'this contract\'s') + ' details as-is -- if anything needs fixing first, use Search to edit the contract, then come back here.';
     confirmActionsBox.innerHTML = `
       <button type="button" class="confirm-rent-btn" id="confirmYesBtn">Yes, rent it</button>
       <button type="button" class="confirm-back-btn" id="confirmBackBtn">Back</button>
@@ -3153,7 +3387,7 @@ function renderConfirmActions() {
     });
   } else if (confirmStep === 'confirmCancel') {
     confirmPromptBox.style.display = 'block';
-    confirmPromptBox.textContent = 'Cancel this contract for ' + custName + '? This cannot be undone.';
+    confirmPromptBox.textContent = 'Cancel this contract for ' + custName + bikeCountSuffix + '? This cannot be undone.';
     confirmActionsBox.innerHTML = `
       <button type="button" class="confirm-cancel-btn" id="confirmYesBtn">Yes, cancel it</button>
       <button type="button" class="confirm-back-btn" id="confirmBackBtn">Back</button>
@@ -3609,6 +3843,18 @@ restoreUnresolvedSaves();
 // customerIntakeFromJson's own guard in lib/contractWrites.js.
 function doRent() {
   if (!currentPendingRecord) return;
+  // Multi-bike support (2026-09-02): a group-level "Rent all" confirm
+  // (see openConfirmModalForGroup) reaches this same button/handler --
+  // fan out to doRentGroup instead of building a single-row payload
+  // below, which currentPendingRecord.__isGroup wouldn't have the real
+  // per-row fields for anyway (bikeModel/totalPrice on it are the
+  // joined/summed display versions, not any one Contract row's own).
+  if (currentPendingRecord.__isGroup) {
+    const rows = currentPendingRecord.rows;
+    closeConfirmModal();
+    doRentGroup(rows);
+    return;
+  }
   if (ctQueueFull()) { alert('2 saves are already in progress — wait for one to finish before starting another.'); return; }
   const r = currentPendingRecord;
 
@@ -3758,6 +4004,13 @@ async function __deadCode_oldDoRent() {
 // "Rented" -- a real conflict worth surfacing).
 function doCancel() {
   if (!currentPendingRecord) return;
+  // Multi-bike support (2026-09-02): see doRent's identical guard above.
+  if (currentPendingRecord.__isGroup) {
+    const rows = currentPendingRecord.rows;
+    closeConfirmModal();
+    doCancelGroup(rows);
+    return;
+  }
   if (ctQueueFull()) { alert('2 saves are already in progress — wait for one to finish before starting another.'); return; }
   const r = currentPendingRecord;
 
@@ -3767,6 +4020,64 @@ function doCancel() {
     label: (r.name ? r.name + ' — ' : '') + 'Cancel contract',
     rows: [r.rowNumber],
     requests: [{ action: 'cancelContract', payload: { rowNumber: r.rowNumber } }],
+    onAllSuccess: ctReloadAndRerender
+  });
+}
+
+// Multi-bike support (2026-09-02): rents (or cancels) every bike in a
+// linked group as ONE queue item (same multi-request pattern the
+// "Create contract" submit handler's bikeRequests uses), reached from
+// either a Pending-list group card's bulk buttons or doRent/doCancel
+// delegating for a __isGroup confirm. Builds the exact same payload
+// doRent() builds for a single row, once per bike -- each bike is still
+// a genuinely separate Contract row/write, just submitted together so
+// the group either all succeeds or one failure is surfaced as a single
+// review item instead of silently leaving some bikes rented and others
+// not with no indication anything went wrong.
+function doRentGroup(rows) {
+  if (!rows || !rows.length) return;
+  if (ctQueueFull()) { alert('2 saves are already in progress — wait for one to finish before starting another.'); return; }
+  const requests = rows.map((r) => ({
+    action: 'customerIntake',
+    payload: {
+      name: r.name || '',
+      nationality: r.nationality || '',
+      passport: r.passport || '',
+      contact: r.contact || '',
+      bikeModel: r.bikeModel || '',
+      rentingDateFrom: toIsoDateForInput(r.rentingDateFrom),
+      returnDate: toIsoDateForInput(r.returnDate),
+      returnTime: r.returnTime || '',
+      deliverToHotel: r.deliverToHotel || '',
+      totalPrice: r.totalPrice || '',
+      paidBy: (r.paidBy || '').toString().toLowerCase(),
+      deposit: r.deposit || '',
+      depositAmount: r.depositAmount || '',
+      source: 'Direct',
+      isDeal: String(r.isDeal).toUpperCase() === 'TRUE',
+      clientTxnId: genClientTxnId()
+    }
+  }));
+  ctEnqueue({
+    label: (rows[0].name ? rows[0].name + ' — ' : '') + 'Rent all (' + rows.length + ' bikes)',
+    rows: rows.map((r) => r.rowNumber),
+    requests,
+    onAllSuccess: (results) => {
+      const warning = results.map((res) => res && res.warning).filter(Boolean).join(' ');
+      if (warning) alert('Rented, but: ' + warning);
+      ctReloadAndRerender();
+    }
+  });
+}
+
+function doCancelGroup(rows) {
+  if (!rows || !rows.length) return;
+  if (ctQueueFull()) { alert('2 saves are already in progress — wait for one to finish before starting another.'); return; }
+  const requests = rows.map((r) => ({ action: 'cancelContract', payload: { rowNumber: r.rowNumber } }));
+  ctEnqueue({
+    label: (rows[0].name ? rows[0].name + ' — ' : '') + 'Cancel all (' + rows.length + ' bikes)',
+    rows: rows.map((r) => r.rowNumber),
+    requests,
     onAllSuccess: ctReloadAndRerender
   });
 }
@@ -5349,7 +5660,7 @@ form.addEventListener('submit', (e) => {
     if (!validateBikeModelOrShowPicker('bikeLine_' + l.uid, statusBox)) return;
   }
   {
-    const namesSoFar = [document.getElementById('bikeModel').value.trim(), ...extraBikeLines.map((l) => l.value.trim())];
+    const namesSoFar = [document.getElementById('bikeModel').value.trim(), ...extraBikeLines.map((l) => getBikeLineValue(l.uid).trim())];
     const seenLower = new Set();
     for (const n of namesSoFar) {
       const key = n.toLowerCase();
@@ -5414,7 +5725,7 @@ form.addEventListener('submit', (e) => {
   // contracts by hand, just entered together. A normal single-bike
   // contract (extraBikeLines empty) produces the exact same single
   // addContract request this always sent.
-  const allBikeNames = [payload.bikeModel, ...extraBikeLines.map((l) => l.value.trim())].filter(Boolean);
+  const allBikeNames = [payload.bikeModel, ...extraBikeLines.map((l) => getBikeLineValue(l.uid).trim())].filter(Boolean);
   const isMultiBike = allBikeNames.length > 1;
   let bikeRequests;
   if (!isMultiBike) {
@@ -6752,7 +7063,19 @@ function renderResults() {
         k === 'bikeModel' ? bikeModelFieldMatches(row[k], vals[k]) : tokenMatch(row[k], vals[k])
       ));
 
-  const matches = sortByStatus(baseRows);
+  // Canceled contracts are excluded from Search entirely -- not just
+  // sorted last -- per Anton, 02/09/2026: once a contract is canceled it
+  // should be "gone from searches, from everything", including an exact
+  // name/number match. (Both spellings of the status are checked in
+  // case any older row used the double-L British spelling.) They're not
+  // deleted -- still in the underlying Contract sheet/JSON and any
+  // ledger/accounts records -- just not surfaced through this screen.
+  const notCanceled = baseRows.filter(row => {
+    const s = (row.status || '').toString().trim().toLowerCase();
+    return s !== 'canceled' && s !== 'cancelled';
+  });
+
+  const matches = sortByStatus(notCanceled);
 
   countEl.textContent = activeKeys.length === 0
     ? (matches.length + (matches.length === 1 ? ' contract' : ' contracts'))
@@ -6786,7 +7109,7 @@ function renderResults() {
     }
     return `
     <div class="result-card clickable">
-      <div class="rc-title">${highlight(r.name, vals.name)} — ${highlight(r.bikeModel, vals.bikeModel)}</div>
+      <div class="rc-title">${highlight(r.name, vals.name)} — ${highlight(r.bikeModel, vals.bikeModel)}${(r.linkedGroupId || '').toString().trim() ? '<span class="linked-badge">🔗 Linked booking</span>' : ''}</div>
       <div class="rc-row"><b>Status:</b> ${r.status || '—'}</div>
       <div class="rc-row"><b>Nationality:</b> ${highlight(r.nationality, vals.nationality) || '—'} &nbsp; <b>Passport:</b> ${highlight(r.passport, vals.passport) || '—'}</div>
       <div class="rc-row"><b>Number:</b> ${highlight(r.number, vals.number) || '—'} &nbsp; <b>Contact:</b> ${highlight(r.contact, vals.contact) || '—'}</div>
