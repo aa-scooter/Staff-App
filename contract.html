@@ -4182,6 +4182,43 @@ function driveViewUrl(fileId) {
 // extras the new route just ignores, kept so this stays a minimal diff.)
 function buildRegenerateContractPayload() {
   const r = currentEditRecord;
+
+  // Multi-bike support (2026-09-02): if this row is one bike of a linked
+  // multi-bike booking (see the "Create contract" submit handler's own
+  // bikeRequests comment), this function previously only ever knew about
+  // the ONE row being edited -- so "View Contract"/"Update Contract" on
+  // ANY bike of a multi-bike booking silently regenerated a single-bike
+  // contract: just that one bike's name, and its fractional even-split
+  // share of the total as if it were the whole booking's price (real bug
+  // hit live 2026-09-02 -- a 5-bike test booking's contract PDF showed
+  // one bike and a nonsense-looking total). Fixed by pulling every
+  // sibling row sharing this row's linkedGroupId out of the already-
+  // loaded Search dataset (sheetRows -- safe to rely on here since
+  // reaching this Edit modal at all requires Search to have loaded it
+  // first) and sending them as `bikes` (lib/contractDocGen.js's
+  // resolveMultiBikeFields joins every sibling's name/plate/cc/key-type/
+  // next-oil with " + " on the PDF -- see generateContractDocumentFromJson)
+  // plus the COMBINED total across every bike, exactly what the customer
+  // actually paid -- never any one bike's own split share.
+  const gid = (r.linkedGroupId || '').toString().trim();
+  const siblings = (gid && Array.isArray(sheetRows))
+    ? sheetRows
+        .filter((row) => (row.linkedGroupId || '').toString().trim() === gid)
+        .sort((a, b) => (Number(a.linkedBikeIndex) || 0) - (Number(b.linkedBikeIndex) || 0))
+    : [r];
+  const bikeNames = siblings.map((row) => row.bikeModel).filter(Boolean);
+  const isMultiBike = bikeNames.length > 1;
+  const combinedTotal = siblings.reduce((sum, row) => sum + (Number(row.totalPrice) || 0), 0);
+  // Helmets are booking-level and only ever get written onto the FIRST
+  // linked row (see bikeRequests' own comment -- every other bike's row
+  // has them zeroed out to avoid double/triple-counting). `siblings` is
+  // already sorted by linkedBikeIndex above, so siblings[0] IS that
+  // primary row regardless of which bike's row was open when "Update
+  // Contract" was clicked -- reading helmets off `r` itself instead would
+  // silently show ZERO helmets any time a non-primary bike's row happens
+  // to be the one currently loaded into the Edit modal.
+  const helmetSource = isMultiBike ? siblings[0] : r;
+
   return {
     rowNumber: r.rowNumber,
     name: r.name,
@@ -4189,27 +4226,29 @@ function buildRegenerateContractPayload() {
     passport: r.passport,
     number: r.number,
     bikeModel: r.bikeModel,
+    bikes: isMultiBike ? bikeNames : undefined,
     rentingDateFrom: toIsoDateForInput(r.rentingDateFrom),
     returnDate: toIsoDateForInput(r.returnDate),
     returnTime: r.returnTime,
     deliverToHotel: r.deliverToHotel,
-    totalPrice: r.totalPrice,
+    totalPrice: isMultiBike ? String(combinedTotal) : r.totalPrice,
     paidBy: r.paidBy,
     deposit: r.deposit,
     depositAmount: r.depositAmount,
     depositCurrency: r.depositCurrency,
     deliveryFeeApplies: !!(r.deliveryFee && r.deliveryFee.toString().toLowerCase() !== 'no'),
     deliveryFee: r.deliveryFee,
-    // Helmets -- straight from the loaded row, same as everything else in
-    // this payload (see this function's own comment above).
-    helmetHalfSizeQty: r.helmetHalfSizeQty,
-    helmetFullSizeS: r.helmetFullSizeS,
-    helmetFullSizeM: r.helmetFullSizeM,
-    helmetFullSizeL: r.helmetFullSizeL,
-    helmetFullSizeXL: r.helmetFullSizeXL,
-    helmetKidsQty: r.helmetKidsQty,
-    helmetFullFaceQty: r.helmetFullFaceQty,
-    helmetNone: String(r.helmetNone).toUpperCase() === 'TRUE'
+    // Helmets -- from helmetSource (see above), not necessarily `r`
+    // itself, so a multi-bike booking always shows its real helmet
+    // count no matter which bike's row was open.
+    helmetHalfSizeQty: helmetSource.helmetHalfSizeQty,
+    helmetFullSizeS: helmetSource.helmetFullSizeS,
+    helmetFullSizeM: helmetSource.helmetFullSizeM,
+    helmetFullSizeL: helmetSource.helmetFullSizeL,
+    helmetFullSizeXL: helmetSource.helmetFullSizeXL,
+    helmetKidsQty: helmetSource.helmetKidsQty,
+    helmetFullFaceQty: helmetSource.helmetFullFaceQty,
+    helmetNone: String(helmetSource.helmetNone).toUpperCase() === 'TRUE'
   };
 }
 
