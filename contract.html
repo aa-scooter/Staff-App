@@ -390,6 +390,11 @@
   .bike-lines{ display:flex; flex-direction:column; gap:8px; margin-top:10px; }
   .bike-line{ display:flex; align-items:flex-start; gap:8px; }
   .bike-line .field{ margin:0; flex:1; min-width:0; }
+  /* Manual per-bike amounts (2026-09-03) -- narrower fixed-width box next
+     to each bike name, see refreshMultiBikeAmountUi's comment. */
+  .bike-line .field.bike-amount-field{ flex:0 0 120px; }
+  .bike-amount-input{ width:100%; }
+  #totalPrice.computed-total{ background:#F2F5F3; color:#5B655F; }
   .bike-remove-btn{
     width:32px; height:32px; flex-shrink:0; margin:0; padding:0;
     border-radius:8px; border:1px solid var(--line); background:#fff;
@@ -914,9 +919,14 @@
     <div class="card">
       <h2>Rental</h2>
       <label for="bikeModel">Bike model</label>
-      <div class="field">
-        <input id="bikeModel" required placeholder="GT red 2" autocomplete="off">
-        <div class="ac-list" data-for="bikeModel"></div>
+      <div class="bike-line" id="primaryBikeLine">
+        <div class="field">
+          <input id="bikeModel" required placeholder="GT red 2" autocomplete="off">
+          <div class="ac-list" data-for="bikeModel"></div>
+        </div>
+        <div class="field bike-amount-field hidden" id="bikeAmountField">
+          <input id="bikeAmount" class="bike-amount-input" type="number" min="0" step="1" placeholder="Amount (฿)">
+        </div>
       </div>
       <div class="load-status" id="bikeModelLoadStatus">Loading bikes…</div>
 
@@ -3015,6 +3025,8 @@ function renderBikeLines() {
   extraBikeLines.forEach((l) => {
     const existing = document.getElementById('bikeLine_' + l.uid);
     if (existing) l.value = existing.value;
+    const existingAmt = document.getElementById('bikeLineAmount_' + l.uid);
+    if (existingAmt) l.amount = existingAmt.value;
   });
 
   if (!extraBikeLines.length) {
@@ -3026,6 +3038,9 @@ function renderBikeLines() {
       <div class="field">
         <input id="bikeLine_${l.uid}" class="bike-line-input" placeholder="Bike model" autocomplete="off" value="${(l.value || '').replace(/"/g, '&quot;')}">
         <div class="ac-list" data-for="bikeLine_${l.uid}"></div>
+      </div>
+      <div class="field bike-amount-field">
+        <input id="bikeLineAmount_${l.uid}" class="bike-amount-input" type="number" min="0" step="1" placeholder="Amount (฿)" value="${(l.amount === undefined || l.amount === null) ? '' : l.amount}">
       </div>
       <button type="button" class="bike-remove-btn" data-uid="${l.uid}" title="Remove">&times;</button>
     </div>
@@ -3039,19 +3054,64 @@ function renderBikeLines() {
     // trusts this alone anymore. See getBikeLineValue above.
     input.addEventListener('input', () => { l.value = input.value; });
     attachBikeModelAutocomplete('bikeLine_' + l.uid, getAvailableBikeNames);
+    // Manual per-bike amounts (2026-09-03) -- see refreshMultiBikeAmountUi's
+    // comment below for why this replaced the old even-split.
+    const amtInput = document.getElementById('bikeLineAmount_' + l.uid);
+    amtInput.addEventListener('input', () => { l.amount = amtInput.value; recomputeTotalFromBikeAmounts(); });
   });
   bikeLinesBox.querySelectorAll('.bike-remove-btn').forEach((btn) => {
     btn.addEventListener('click', () => {
       const uid = Number(btn.dataset.uid);
       extraBikeLines = extraBikeLines.filter((l) => l.uid !== uid);
       renderBikeLines();
+      refreshMultiBikeAmountUi();
     });
   });
 }
 addBikeBtn.addEventListener('click', () => {
-  extraBikeLines.push({ uid: ++bikeLineSeq, value: '' });
+  extraBikeLines.push({ uid: ++bikeLineSeq, value: '', amount: '' });
   renderBikeLines();
+  refreshMultiBikeAmountUi();
 });
+
+const bikeAmountField = document.getElementById('bikeAmountField');
+const bikeAmountInput = document.getElementById('bikeAmount');
+const totalPriceInput = document.getElementById('totalPrice');
+const totalPriceLabelEl = document.querySelector('label[for="totalPrice"]');
+const totalPriceLabelDefaultText = totalPriceLabelEl ? totalPriceLabelEl.textContent : '';
+
+// Manual per-bike amounts (2026-09-03, replaces the old even-split):
+// Anton wants each bike's price entered by hand -- bikes on the same
+// booking aren't always the same rate (a big scooter next to a moped),
+// so dividing the total evenly was wrong more often than not. Once a
+// 2nd bike is added, a small amount box appears next to EVERY bike
+// (primary included) and "Total price" flips to read-only, becoming
+// just the live sum of those boxes -- never typed into directly while
+// multi-bike. Every bike's amount is REQUIRED before submit (see the
+// form submit handler's validation below) -- staff must not be able to
+// leave one blank and have it silently count as zero.
+function refreshMultiBikeAmountUi() {
+  const multi = extraBikeLines.length >= 1;
+  bikeAmountField.classList.toggle('hidden', !multi);
+  totalPriceInput.readOnly = multi;
+  totalPriceInput.classList.toggle('computed-total', multi);
+  if (totalPriceLabelEl) {
+    totalPriceLabelEl.textContent = multi
+      ? totalPriceLabelDefaultText + ' — auto-calculated from bike amounts above'
+      : totalPriceLabelDefaultText;
+  }
+  if (multi) recomputeTotalFromBikeAmounts();
+}
+function recomputeTotalFromBikeAmounts() {
+  const primary = Number(bikeAmountInput.value) || 0;
+  const extras = extraBikeLines.reduce((sum, l) => {
+    const el = document.getElementById('bikeLineAmount_' + l.uid);
+    const v = el ? (Number(el.value) || 0) : (Number(l.amount) || 0);
+    return sum + v;
+  }, 0);
+  totalPriceInput.value = String(primary + extras);
+}
+bikeAmountInput.addEventListener('input', recomputeTotalFromBikeAmounts);
 
 /* ---------------- Pending contracts picker (Rent / Cancel) ---------------- */
 
@@ -5712,6 +5772,29 @@ form.addEventListener('submit', (e) => {
     }
   }
 
+  // Manual per-bike amounts (2026-09-03): once there's more than one
+  // bike, every single one MUST have its own amount filled in -- staff
+  // must not be able to save with one left blank and have it silently
+  // count as zero. See refreshMultiBikeAmountUi's comment above.
+  if (extraBikeLines.length >= 1) {
+    if (bikeAmountInput.value === '' || bikeAmountInput.value === null || isNaN(Number(bikeAmountInput.value))) {
+      statusBox.textContent = 'Please enter an amount for "' + (document.getElementById('bikeModel').value.trim() || 'this bike') + '".';
+      statusBox.className = 'status err';
+      bikeAmountInput.focus();
+      return;
+    }
+    for (const l of extraBikeLines) {
+      const amtEl = document.getElementById('bikeLineAmount_' + l.uid);
+      const v = amtEl ? amtEl.value : '';
+      if (v === '' || v === null || isNaN(Number(v))) {
+        statusBox.textContent = 'Please enter an amount for "' + (getBikeLineValue(l.uid).trim() || 'this bike') + '".';
+        statusBox.className = 'status err';
+        if (amtEl) amtEl.focus();
+        return;
+      }
+    }
+  }
+
   if (ctQueueFull()) {
     statusBox.textContent = '2 saves are already in progress — wait for one to finish before starting another.';
     statusBox.className = 'status err';
@@ -5751,19 +5834,25 @@ form.addEventListener('submit', (e) => {
     clientTxnId: genClientTxnId()
   };
 
-  // Multi-bike support (2026-09-02): additional bikes typed into the
-  // "+ Add another bike" lines become their OWN linked Contract rows --
-  // same shared customer/dates/deposit fields as `payload` above, own
-  // bike name, own even split of the combined total price (for bike-
-  // income accounting ONLY -- the contract/receipt always print the
-  // combined total exactly as entered, never the split; see
-  // lib/contractDocGen.js's resolveMultiBikeFields and this handler's
-  // onAllSuccess below). All rows share `linkedGroupId` so they can be
-  // grouped and independently Rented/Returned/Cancelled later, since
-  // each is a genuinely separate Contract row -- same as writing several
-  // contracts by hand, just entered together. A normal single-bike
-  // contract (extraBikeLines empty) produces the exact same single
-  // addContract request this always sent.
+  // Multi-bike support (2026-09-02, amounts now manual as of
+  // 2026-09-03): additional bikes typed into the "+ Add another bike"
+  // lines become their OWN linked Contract rows -- same shared
+  // customer/dates/deposit fields as `payload` above, own bike name, own
+  // STAFF-ENTERED amount (see refreshMultiBikeAmountUi/
+  // recomputeTotalFromBikeAmounts and the submit validation above -- an
+  // even split was wrong whenever bikes on the same booking weren't the
+  // same rate, e.g. a big scooter next to a moped). `payload.totalPrice`
+  // here is just the read-only auto-summed field, already validated
+  // above to equal the sum of every bike's own amount -- the contract/
+  // receipt still print that combined total exactly as shown, never any
+  // one bike's own share; see lib/contractDocGen.js's
+  // resolveMultiBikeFields and this handler's onAllSuccess below. All
+  // rows share `linkedGroupId` so they can be grouped and independently
+  // Rented/Returned/Cancelled later, since each is a genuinely separate
+  // Contract row -- same as writing several contracts by hand, just
+  // entered together. A normal single-bike contract (extraBikeLines
+  // empty) produces the exact same single addContract request this
+  // always sent, "Total price" untouched and still freely editable.
   const allBikeNames = [payload.bikeModel, ...extraBikeLines.map((l) => getBikeLineValue(l.uid).trim())].filter(Boolean);
   const isMultiBike = allBikeNames.length > 1;
   let bikeRequests;
@@ -5771,15 +5860,14 @@ form.addEventListener('submit', (e) => {
     bikeRequests = [{ action: 'addContract', payload }];
   } else {
     const linkedGroupId = 'LG-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
-    const totalNum = Number(payload.totalPrice) || 0;
-    const n = allBikeNames.length;
-    const base = Math.floor(totalNum / n);
-    const shares = new Array(n).fill(base);
-    shares[n - 1] += totalNum - base * n; // remainder on the last bike -- the rows still sum to exactly the entered total
+    const perBikeAmounts = [Number(bikeAmountInput.value) || 0, ...extraBikeLines.map((l) => {
+      const amtEl = document.getElementById('bikeLineAmount_' + l.uid);
+      return amtEl ? (Number(amtEl.value) || 0) : 0;
+    })];
     bikeRequests = allBikeNames.map((bikeName, i) => {
       const linePayload = Object.assign({}, payload, {
         bikeModel: bikeName,
-        totalPrice: String(shares[i]),
+        totalPrice: String(perBikeAmounts[i]),
         linkedGroupId,
         linkedBikeIndex: i,
         clientTxnId: genClientTxnId()
@@ -5821,7 +5909,9 @@ form.addEventListener('submit', (e) => {
   helmetNoneCheckbox.checked = false;
   rerenderHelmetLines();
   extraBikeLines = [];
+  bikeAmountInput.value = '';
   renderBikeLines();
+  refreshMultiBikeAmountUi();
   setDefaultsToNow();
   // Show a "Saving…"/"Queued…" indicator immediately (mirrors the
   // opt-row-badge convention used everywhere else in this file) instead of
