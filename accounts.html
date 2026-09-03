@@ -707,9 +707,27 @@ const ACCOUNTS_MONTH_FILES = {
   0: 'January', 1: 'February', 2: 'march', 3: 'april', 4: 'may', 5: 'June', 6: 'July', 7: 'August',
   8: 'September', 9: 'October', 10: 'November', 11: 'December'
 };
-// Only July/August actually carry any cell notes in this snapshot (matches
-// the full-workbook round-trip validation -- 99 notes total, all on
-// customer/Contract/July/August).
+// BUG (found 2026-09-03): this used to gate whether getAccountsDataFromJson
+// even bothered fetching a month's "<month>_notes" sidecar -- true only for
+// July/August (6, 7), because that's all that had notes in the one-time
+// migration snapshot this was built from ("99 notes total, all on
+// customer/Contract/July/August"). But new notes (expense type tags like
+// "To Transfer", bike splits) get WRITTEN for any month via
+// applyMonthNotesEditsFromJson/setExpenseTypeNoteFromJson regardless of
+// this map -- so from September on, every type-note save kept round-
+// tripping to Drive successfully (writeSheetJson returned 200, the sidecar
+// file genuinely had the row) but was silently never READ BACK, because
+// notesPromise below short-circuited to Promise.resolve([]) instead of
+// ever fetching the file. That's why marking an expense "To Transfer"
+// would flash yellow (optimistic UI update) and then revert on the very
+// next load/refresh -- nothing was actually lost, the app just stopped
+// looking for it. Fetching every month's notes file is cheap and already
+// falls back to [] on any error (a month that genuinely has no notes file
+// yet just 404s into that catch, same as before), so there's no reason to
+// gate this by month at all -- see notesPromise below, now unconditional.
+// ACCOUNTS_MONTH_HAS_NOTES itself is no longer read anywhere; left here
+// only as a historical note, not deleted, matching this file's own
+// dead-code convention (see the WRITE layer's "DEAD CODE" block above).
 const ACCOUNTS_MONTH_HAS_NOTES = { 6: true, 7: true };
 
 // ---- Reads live off Drive via /api/data/<sheet> (see api/data/[sheet].js)
@@ -946,9 +964,12 @@ async function getAccountsDataFromJson(monthIndex, year) {
   // doesn't fail the whole function."
   let rows, notes = [];
   const rowsPromise = fetchSheetJson(fileBase, year);
-  const notesPromise = ACCOUNTS_MONTH_HAS_NOTES[monthIndex]
-    ? fetchSheetJson(fileBase + '_notes', year).catch(() => [])
-    : Promise.resolve([]);
+  // Unconditional as of 2026-09-03 -- see ACCOUNTS_MONTH_HAS_NOTES's own
+  // comment above for why gating this by month silently broke every
+  // month after August. Missing/empty notes file still safely resolves to
+  // [] via the .catch below, same as it always did for a month with no
+  // notes at all.
+  const notesPromise = fetchSheetJson(fileBase + '_notes', year).catch(() => []);
   try {
     [rows, notes] = await Promise.all([rowsPromise, notesPromise]);
   } catch (err) {
