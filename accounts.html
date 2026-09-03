@@ -3174,6 +3174,16 @@ function optMetaHtml(entry, dateStr) {
   return dateStr || '';
 }
 
+// Escapes user-entered free text before it's inserted into innerHTML-built
+// markup below (expense/income descriptions, names, payment methods, etc.
+// are all staff-entered and must never be interpreted as HTML/script by
+// this page or anyone else's -- see BUG-03).
+function escapeHtml(s) {
+  return (s === null || s === undefined ? '' : String(s))
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
 function renderExpenses(expenses) {
   currentExpenses = expenses;
   const list = document.getElementById('expensesList');
@@ -3188,10 +3198,10 @@ function renderExpenses(expenses) {
       return `
       <div class="row${clickableClass}${optClass}" data-index="${i}" ${bg && !e._opt ? `style="background:${bg};"` : ''}>
         <div class="left">
-          <div class="title">${e.expense || '—'}</div>
+          <div class="title">${escapeHtml(e.expense) || '—'}</div>
           <div class="meta">${optMetaHtml(e, e.date)}</div>
           <div class="chips">
-            ${e.payment ? `<span class="chip pay">Payment: ${e.payment}</span>` : ''}
+            ${e.payment ? `<span class="chip pay">Payment: ${escapeHtml(e.payment)}</span>` : ''}
             ${e.type && e.type !== 'business' ? `<span class="chip name">${EXPENSE_TYPE_LABELS[e.type]}</span>` : ''}
           </div>
         </div>
@@ -3223,11 +3233,11 @@ function renderIncome(income) {
       return `
       <div class="row${clickableClass}${optClass}" data-index="${i}">
         <div class="left">
-          <div class="title">${r.income || '—'}</div>
+          <div class="title">${escapeHtml(r.income) || '—'}</div>
           <div class="meta">${optMetaHtml(r, r.date)}</div>
           <div class="chips">
-            ${r.name ? `<span class="chip name">Name: ${r.name}</span>` : ''}
-            ${r.paidBy ? `<span class="chip pay">Payment: ${r.paidBy}</span>` : ''}
+            ${r.name ? `<span class="chip name">Name: ${escapeHtml(r.name)}</span>` : ''}
+            ${r.paidBy ? `<span class="chip pay">Payment: ${escapeHtml(r.paidBy)}</span>` : ''}
           </div>
         </div>
         <div class="amt income">${money(r.amount)}</div>
@@ -4065,7 +4075,7 @@ function showCashDisambiguation(candidates, payload) {
     const amt = typeof c.amount === 'number'
       ? c.amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
       : (c.amount || '—');
-    return `<button type="button" class="disambig-option" data-row="${c.row}">${c.date || '—'} — ${c.text || '—'} — ฿${amt}</button>`;
+    return `<button type="button" class="disambig-option" data-row="${c.row}">${escapeHtml(c.date) || '—'} — ${escapeHtml(c.text) || '—'} — ฿${amt}</button>`;
   }).join('');
   cashDisambigList.querySelectorAll('.disambig-option').forEach((btn) => {
     btn.addEventListener('click', () => {
@@ -4279,9 +4289,9 @@ function openSaveReview(focusOptId) {
     : 'These saved fine, but the server flagged something worth a look.';
   listEl.innerHTML = items.map(([optId, item]) => `
     <div class="opt-item${item.kind === 'warning' ? ' warn' : ''}" data-optid="${optId}">
-      <div class="rt">${item.label}</div>
+      <div class="rt">${escapeHtml(item.label)}</div>
       <div class="rm">${item.isIncome ? 'Income' : 'Expense'} — ${MONTH_NAMES[item.monthIndex]}</div>
-      <div class="why">${item.message}</div>
+      <div class="why">${escapeHtml(item.message)}</div>
       <div class="actions">
         ${item.kind === 'failed' ? `<button type="button" class="opt-btn-retry" data-act="retry" data-optid="${optId}">Retry</button>` : ''}
         <button type="button" class="opt-btn-discard" data-act="${item.kind === 'failed' ? 'discard' : 'dismiss'}" data-optid="${optId}">${item.kind === 'failed' ? 'Discard' : 'Dismiss'}</button>

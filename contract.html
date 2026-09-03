@@ -5442,6 +5442,15 @@ editForm.addEventListener('submit', (e) => {
     // (see editContractEntry's comment on this).
     originalDeposit: currentEditRecord.deposit || '',
     originalDepositAmount: currentEditRecord.depositAmount || '',
+    // Total price / Paid-by / Status as they were BEFORE this edit -- same
+    // idea as originalDeposit just above, added 2026-09-03 fixing BUG-01:
+    // lets the backend tell whether a Rented contract's income/cash ledger
+    // needs correcting (price or payment method changed) or reversing
+    // (status moved away from Rented, e.g. a cancel-after-Rent) -- see
+    // editContractFromJson's own comment on this.
+    originalTotalPrice: currentEditRecord.totalPrice || '',
+    originalPaidBy: currentEditRecord.paidBy || '',
+    originalStatus: currentEditRecord.status || '',
     deliveryFeeApplies: e_deliveryFeeApplies.checked,
     deliveryFee: e_deliveryFeeApplies.checked ? e_deliveryFee.value : '',
     status: document.getElementById('e_status').value,
