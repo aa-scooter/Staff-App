@@ -3903,6 +3903,23 @@ restoreUnresolvedSaves();
 // customerIntakeFromJson's own guard in lib/contractWrites.js.
 function doRent() {
   if (!currentPendingRecord) return;
+  // DOUBLE-CLICK / DOUBLE-FIRE GUARD (added 2026-09-04, alongside the
+  // server-side fix -- see lib/contractWrites.js's logSecurityDepositFromJson
+  // and markTxnIdFromJson comments for the full incident this responds to:
+  // a real live booking whose security deposit got logged TWICE). The
+  // server-side clientTxnId guard is the real safety net (it also covers a
+  // dropped-connection retry, not just a literal double-click), but this
+  // is a cheap, synchronous first line of defense: disable the actual
+  // "Yes, rent it" button THE INSTANT it's clicked, before anything else
+  // runs, so two rapid clicks landing before the confirm modal visually
+  // closes can't both reach this function and fire two separate requests
+  // in the first place. Belt-and-suspenders with the server-side fix, not
+  // a replacement for it.
+  const confirmYesBtnEl = document.getElementById('confirmYesBtn');
+  if (confirmYesBtnEl) {
+    if (confirmYesBtnEl.disabled) return; // already processed this click -- ignore the duplicate
+    confirmYesBtnEl.disabled = true;
+  }
   // Multi-bike support (2026-09-02): a group-level "Rent all" confirm
   // (see openConfirmModalForGroup) reaches this same button/handler --
   // fan out to doRentGroup instead of building a single-row payload
