@@ -5,6 +5,75 @@ plan and running log built from it, not the methodology itself.
 
 ## 0. Handoff — read this first if picking up this testing session
 
+---
+### 🔴 LATEST HANDOFF -- 2026-09-04, mid-session login switch (READ THIS FIRST)
+
+Anton is switching to another login because this one ran out of usage.
+Picking-up session: do these in order.
+
+**1. Confirm the push actually landed.** I fixed BUG-04, BUG-05, and
+CONC-01 this session and committed them locally as `3c644fa` (the fix) and
+`734b9a3` (this file's own write-up of it) on `main`, in
+`AA-Scooters-Project Database/vercel-site` on Anton's connected machine.
+Git push is network-blocked from this cloud session, so Anton had to push
+from his own machine. He first ran the push in the WRONG repo (`~/property-app`
+-- a different, unrelated project), which I caught and corrected -- I gave
+him the right command (`cd` into the AA Scooters `vercel-site` folder, then
+`git push origin main`). His last message said "that push is going
+through" but I have NOT independently confirmed it landed (no `git log
+origin/main` check, no Vercel deploy confirmation) before this handoff.
+**First thing to do: run `git log -3 --oneline` in that folder and check
+`origin/main` includes commits `3c644fa`/`734b9a3` (e.g. `git log
+origin/main -3 --oneline` after a `git fetch`), then check the Vercel
+deployment has picked it up (the `X-Vercel-Id`/deploy timestamp, or just
+that the live site's behavior matches the fix -- see step 2).**
+
+**2. Retest BUG-04, BUG-05, and CONC-01 live**, exactly the same way
+BUG-01/02/03 were retested earlier this session (see their entries in §6
+for the pattern: reproduce the original repro steps against the LIVE
+deployed app, confirm the bug no longer reproduces, update §6's Status
+column for each from "Fix applied... pending retest" to "FIXED, verified
+live [date]", and update this handoff section accordingly):
+   - **BUG-04**: try to create/confirm TWO overlapping Rented bookings on
+     the same `ZZTEST` bike again (same repro as the original: Contract
+     rows 1299 + 1304 evidence in §6) -- confirm the second one is now
+     either hard-blocked (direct edit path) or produces a warning and the
+     Contract row stays Pending (customer-intake path) instead of
+     silently succeeding as Rented.
+   - **BUG-05**: post a fresh rental-income write to a `ZZTEST` bike (e.g.
+     rent it out, or an extend/deposit-deduction that credits its month
+     column) and confirm `bike-income.html`'s headline Income/Profit/Net
+     Profit for that bike now matches a hand-sum of its month columns
+     (previously it stayed frozen/stale -- see original BUG-05 repro
+     using ZZTEST-Bike-01/02/03).
+   - **CONC-01**: two-tab test on a test Expense row -- edit a DIFFERENT
+     field in each tab, save A then B, confirm B's save no longer
+     silently discards A's change (this is also §5.15's own CONC-01 test
+     case, not yet browser-verified either way).
+
+**3. Then continue the rest of the test plan** (see the "Next steps" list
+a little further down in this section, and §7 for what's already been
+run): 5.7/5.8 regression re-checks, and the remainder of §5.14 -- I was
+IN THE MIDDLE of **PRICE-01** (`pricing.html`) when this handoff happened:
+selected the "125CC" category, was trying to type a rental date range into
+the native `dd/mm/yyyy` date inputs (plain `type` with slashes didn't
+work -- the field stayed empty/placeholder after a "Calculate Price" click
+reset the form; a native HTML date input needs digits typed directly into
+its mm/dd/yyyy segments, no slashes, or use the "Enter number of days"
+toggle instead of "Pick return date" if that's simpler) -- **no result
+was ever produced, PRICE-01 is NOT done, start it fresh.** CAL-01, OIL-01,
+REPLY-01, SET-01 (rest of §5.14) and §5.16's own exploratory pass haven't
+been started at all yet.
+
+**4. Keep updating this file as you go**, same standing instruction from
+Anton all session: update TESTING.md whenever a bug is found AND whenever
+a fix/retest lands, so any future handoff (usage runs out again, a new
+login, whatever) can pick up from the file alone without needing this
+conversation's history.
+
+---
+
+
 **Status as of 2026-09-03 (created today):** this file is brand new — a plan
 only, nothing executed yet. Anton's explicit ask: build a comprehensive,
 whole-app test plan (not a shallow page-by-page checklist), modeled
