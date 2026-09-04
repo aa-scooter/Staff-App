@@ -11,22 +11,29 @@ plan and running log built from it, not the methodology itself.
 Anton is switching to another login because this one ran out of usage.
 Picking-up session: do these in order.
 
-**1. Confirm the push actually landed.** I fixed BUG-04, BUG-05, and
-CONC-01 this session and committed them locally as `3c644fa` (the fix) and
-`734b9a3` (this file's own write-up of it) on `main`, in
-`AA-Scooters-Project Database/vercel-site` on Anton's connected machine.
-Git push is network-blocked from this cloud session, so Anton had to push
-from his own machine. He first ran the push in the WRONG repo (`~/property-app`
--- a different, unrelated project), which I caught and corrected -- I gave
-him the right command (`cd` into the AA Scooters `vercel-site` folder, then
-`git push origin main`). His last message said "that push is going
-through" but I have NOT independently confirmed it landed (no `git log
-origin/main` check, no Vercel deploy confirmation) before this handoff.
-**First thing to do: run `git log -3 --oneline` in that folder and check
-`origin/main` includes commits `3c644fa`/`734b9a3` (e.g. `git log
-origin/main -3 --oneline` after a `git fetch`), then check the Vercel
-deployment has picked it up (the `X-Vercel-Id`/deploy timestamp, or just
-that the live site's behavior matches the fix -- see step 2).**
+**1. Push CONFIRMED successful -- just check the deploy finished.** I
+fixed BUG-04, BUG-05, and CONC-01 this session and committed them locally
+as `3c644fa` (the fix) and `734b9a3` (this file's own write-up of it) on
+`main`, in `AA-Scooters-Project Database/vercel-site` on Anton's connected
+machine. Git push is network-blocked from this cloud session, so Anton
+pushed from his own machine -- he first ran it in the WRONG repo
+(`~/property-app`), which got caught and corrected. Anton then sent a
+screenshot of the Vercel dashboard (staff-app project, Deployments tab,
+~2026-09-04 11:02am) showing commit `734b9a3` as the latest deployment,
+status **"Building"**, Production, branch `main`, "2m ago" -- so the push
+DID land on `origin/main` successfully. **First thing to do: check that
+deployment's status has since flipped from Building to Ready** (Vercel
+dashboard -> staff-app -> Deployments, top row) before retesting -- if
+it's still Building/queued, just wait for it. Once Ready, move to step 2.
+
+**IMPORTANT -- one more commit needs pushing:** AFTER that screenshot was
+taken, I made one further commit, `b5b9d09` (adds this very handoff
+section you're reading to TESTING.md), which is still LOCAL ONLY --
+Anton's push happened before it existed. Someone needs to `git push origin
+main` again from Anton's machine to get `b5b9d09` up (it's a docs-only
+change, doesn't affect the app itself, so it's not urgent/blocking for
+retesting the app, but push it when convenient so this file's own history
+matches what's live in the repo).
 
 **2. Retest BUG-04, BUG-05, and CONC-01 live**, exactly the same way
 BUG-01/02/03 were retested earlier this session (see their entries in §6
