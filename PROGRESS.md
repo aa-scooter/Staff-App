@@ -1,10 +1,130 @@
 # AA Scooters — JSON-parity rewrite progress tracker
 
-Last updated: 2026-08-21. Keep this file current — whenever a page's write
+Last updated: 2026-08-26. Keep this file current — whenever a page's write
 layer gets ported/tested/pushed, update its row below in the same commit.
 This exists because work on this project gets picked up across multiple
 Claude sessions/accounts with no shared memory between them — this file is
 the handoff.
+
+## ✅ calendar.html + lib/googleCalendarSync.js + lib/contractWrites.js:
+## nightly calendar sync was never actually running (missing CRON_SECRET),
+## and the FIRST real run of it exposed a serious pre-existing bug (legacy
+## Apps-Script event ids caused duplicate-not-update / delete-that-never-
+## deletes) — root-caused, fixed, self-healing. — CORE FIX DEPLOYED +
+## LIVE-CONFIRMED 2026-08-26; "Clean Up Duplicates" feature PENDING PUSH.
+
+Started from Anton's report: extending or returning a bike wasn't updating
+the calendar (wrong due-back date staying on extend, old entry staying on
+return), and the nightly automatic resync wasn't fixing it either.
+
+1. **Architecture recap.** Two sync paths exist: (a) live per-action sync
+   — `bikesWrites.js`/`contractWrites.js` call
+   `syncDueBackEventForCustomerRow`/`syncDeliveryEventForContractRow`
+   (`lib/googleCalendarSync.js`) on every extend/return/rent/etc, using the
+   STAFF's interactively-connected calendar; (b) a nightly Vercel Cron
+   safety-net sweep, `GET /api/contract/write?cron=dailySweep` (see
+   `vercel.json`, `0 15 * * *` UTC = 22:00 Bangkok), which walks every
+   customer/Contract row via `dailySweep()`, using a SEPARATE automation
+   account (`CALENDAR_AUTOMATION_REFRESH_TOKEN` env var).
+
+2. **First finding: the nightly cron has never actually run.** The cron
+   handler (`handleDailySweepCron` in `api/contract/write.js`) requires
+   `Authorization: Bearer <CRON_SECRET>`, but `CRON_SECRET` was never set
+   in Vercel — confirmed via the existing (25/08-added, previously
+   unused) `GET ?cron=sweepLog` diagnostic, which reported
+   `cronSecretSet: false`. Every night's cron hit has been silently 401ing
+   before `dailySweep()` ever runs. Generated a replacement secret
+   (`uyk1VktycmGPRNyMfme-9xt6NDoCvA3JpD9eqEFnlMU`, given to Anton) and exact
+   Vercel dashboard steps (Settings → Environment Variables → add
+   `CRON_SECRET`, Production → redeploy). **Status: unconfirmed whether
+   Anton has actually added this yet — next session should check
+   `?cron=sweepLog`'s `envStatus.cronSecretSet` first.**
+
+3. **Built a manual "Sync Now" trigger** so the sweep logic could be tested
+   without waiting for 22:00 or fixing the cron auth first. New
+   `manualCalendarSync` dispatch action in `lib/contractWrites.js`
+   (`manualCalendarSyncFromJson`) reuses `dailySweep()` verbatim (no logic
+   duplicated), authenticated as a normal staff POST action via the
+   session's own connected calendar. Button + result display added to
+   `calendar.html` (rows checked/changed, errors, all shown inline).
+   DEPLOYED, working.
+
+4. **Second finding — much bigger: `dailySweep()` itself had a live,
+   previously-invisible bug**, only exposed because Sync Now was the FIRST
+   thing to ever actually run it end-to-end (the cron never had, per #2).
+   First real click doubled every still-out due-back/delivery event
+   instead of updating in place, and left every returned bike's entry on
+   the calendar. Root cause: events created by the OLD Apps Script
+   (`Code.gs`) backend, before the calendar sync was rewritten against the
+   real Calendar REST API (18/08/2026), have their id stored in
+   `customer.json`/`Contract.json` in Apps Script's `CalendarEvent.getId()`
+   format — a string ending `@google.com`, which is actually an iCalUID,
+   NOT the REST API's own internal event id. `events.get()`/`update()`/
+   `delete()` all take `eventId` as the API's own id — passed the legacy
+   format they 404, which `getEventSafe()`/the delete catch blocks were
+   already (wrongly) treating as "event doesn't exist" — so upsert always
+   fell through to `insert()` (duplicate) and delete always silently
+   no-op'd. This is the SAME root cause behind the original extend/return
+   complaint that started this session, just far more visible when run
+   against every row at once instead of one at a time.
+
+5. **Fix, in `lib/googleCalendarSync.js`:** new `resolveRealEventId()`
+   (falls back to `calendar.events.list({iCalUID})` to find the real event
+   when a direct lookup fails) and `deleteEventByIdOrICalUid()` (tries a
+   direct delete, falls back to iCalUID resolution before concluding an
+   event is really gone), wired into `getEventSafe()`,
+   `applyDueBackEventPlan()`, and `applyDeliveryEventPlan()`. Self-healing:
+   a row's stored id gets corrected to the real REST-API id the first time
+   it's touched, so this only ever costs one extra lookup per legacy row,
+   never again after. **DEPLOYED, LIVE-CONFIRMED** — re-running Sync Now
+   after this fix: 401 due-back rows + 60 contract rows checked, 0 changed,
+   0 errors (correctly recognized every already-correct event instead of
+   duplicating it).
+
+6. **Duplicate-event report (read-only).** The one bad run before the fix
+   left ~24 duplicate-titled event pairs on the real calendar (rows'
+   stored ids got overwritten to point at the new duplicate, orphaning the
+   original — not traceable through the data anymore, calendar-side only).
+   Added a read-only scan to the same Sync Now response: lists upcoming/
+   recent 🛵/🏨/✅-titled events grouped by exact title, flags any
+   appearing more than once, with each one's direct Google Calendar link.
+   DEPLOYED, confirmed showing the real 24 duplicates.
+
+7. **"Clean Up Duplicates" (Anton's explicit ask, this same session) —
+   PENDING PUSH, not yet live or tested against real data.** New
+   `cleanupDuplicateCalendarEvents` dispatch action
+   (`cleanupDuplicateCalendarEventsFromJson` in `lib/contractWrites.js`):
+   re-scans the calendar the same way, and for each duplicate title where
+   EXACTLY ONE of the copies matches what the sheet currently points to as
+   that row's event id, deletes the other copy and keeps that one. Zero or
+   2+ matches are deliberately left alone and reported back as `ambiguous`
+   (with links) rather than guessed at. Frontend: a "Clean Up Duplicates
+   (N)" button appears on `calendar.html` only when Sync Now finds
+   duplicates, gated behind one `confirm()` (same convention as the
+   existing Disconnect button). **Not yet pushed — git commands below.**
+
+**Still outstanding, in order:**
+- Push `lib/contractWrites.js` + `calendar.html` (Clean Up Duplicates) —
+  see git commands below.
+- Click Clean Up Duplicates once live and confirm it actually clears the
+  24 known duplicate pairs (and check the `ambiguous` list for anything it
+  couldn't resolve).
+- Confirm `CRON_SECRET` actually got added in Vercel (`?cron=sweepLog`'s
+  `envStatus.cronSecretSet` should read `true`) — status unknown as of
+  this writing.
+- The ORIGINAL thing Anton asked to test — return a real bike through the
+  app and confirm the calendar entry disappears immediately (live
+  per-action sync, not Sync Now) — was never actually confirmed end to
+  end; got derailed by the Sync Now duplication incident before it could
+  be checked.
+
+```
+cd ~/AA-Scooters-Project\ Database/vercel-site
+git status
+git add lib/contractWrites.js calendar.html PROGRESS.md HANDOFF_2026-08-26.md
+git commit -m "Add automated duplicate calendar event cleanup; update project docs"
+git push
+```
 
 ## ✅ contract.html + lib/contractWrites.js: deposit now stores a direct
 ## reference to its own ledger row instead of best-effort name/amount

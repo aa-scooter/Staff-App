@@ -1,1122 +1,648 @@
-# AA Scooters — live QA testing log
-
-Separate from `PROGRESS.md` on purpose. `PROGRESS.md` tracks what was
-*built*; this file tracks what was actually *exercised live* against the
-real app (Claude driving the browser against staff-app-six-phi.vercel.app)
-and *verified* against the real Drive JSON afterward. A function only gets
-marked ✅ Verified here once the actual JSON file has been checked, not
-just because the UI looked like it worked.
-
-**How to resume this in a future session:** read the "Currently at" line
-right below, then jump to that page's section. Each function has one of:
-`⬜ Not started` / `🔄 In progress` / `✅ Verified` / `❌ Bug found` /
-`✅ Fixed & reverified`. Bugs get their own dated note (mirroring
-PROGRESS.md's style) directly under the function they belong to, not in a
-separate bug list, so the fix stays attached to the thing it fixed.
-
-**Currently at:** Whole-app pass, second session (2026-08-18) — **DONE.**
-Every page covered: Accounts, Deposits, Contract, Bikes Status, Customer
-Record, Price Calculator, Add Bike, Bike Photos, Available Bikes, Parts &
-Oil, Oil Change, Calendar sync, Settings, and Bugs & Features. Full
-consolidated bug list is in "Report to Anton (2026-08-18, end of whole-app
-pass — every page covered)" below, right above the older
-Accounts/Deposits-only report (which is now historical/reference — its
-cash-sheet-drift finding was cleared by the reset at the start of this
-pass). 7 bugs/possible-bugs found total, none data-corruption-level. If
-resuming a future session: everything above is done, next steps would be
-root-causing/fixing the logged bugs (still untouched per Anton's
-no-fixing-yet instruction) or picking up the `⬜`/untested items each
-page's section calls out explicitly (Passport scan, Edit customer, Adjust
-Pickup, Return Deposit, Custom Rate calc, etc.).
-
----
-
-## Accounts page (`accounts.html` + `deposits.html`)
-
-**Setup for this run:** Anton reset the app to his known-good seed JSON
-(exported from the original spreadsheet) before testing started, so
-`August.json`/`August_notes.json`/`cash.json`/`bikes.json`/
-`transactionLog.json` all reflect a known baseline. Test data convention:
-descriptions prefixed `ZZTEST`, round distinctive amounts (e.g. 999),
-cleaned up via the app's own delete/reverse functions once verified,
-re-verified back to baseline after cleanup.
-
-### Expenses
-- ✅ Add Expense — Cash (UI-verified 2026-08-18: "ZZTEST expense 1 (Cash)" ฿999, Business type. Summary cards moved exactly right — Total expenses ฿17,735→฿18,734, Business expenses ฿8,440→฿9,439, Cash ฿19,146→฿18,147, Net profit ฿16,965→฿15,966, Actual profit ฿26,260→฿25,261, Total cash+bank+wise ฿41,801→฿40,802, all percentages recalculated correctly. Save took ~8-10s (slow but completed, "SAVING..." badge cleared correctly). Raw-JSON verification still pending -- will confirm against August.json at the end of this pass.)
-- ✅ Add Expense — Bank + Personal type (UI-verified 2026-08-18: "ZZTEST expense 2 (Bank)" ฿999. Total expenses ฿18,734→฿19,733, Personal expenses ฿9,295→฿10,294, Bank ฿12,305→฿11,306, Business expenses unchanged (correct, not Business type). "Actual profit" correctly stayed at ฿25,261 unchanged -- confirms Actual profit = Income − Business expenses only, excludes Personal, which is exactly right. Save took ~13-15s this time (slower than the Cash one, but resolved correctly -- just latency variance, not a bug).)
-- ✅ Add Expense — Wise (UI-verified 2026-08-18: "ZZTEST expense 3 (Wise)" ฿999, Business. Total expenses +999, Business expenses +999, Wise (less deposit) ฿6,200→฿5,201 (-999, correct), Net/Actual profit both -999. ~16s save time.)
-- ✅ Add Expense — Revolut (UI-verified 2026-08-18: "ZZTEST expense 4 (Revolut)" ฿999, Business. Total expenses +999, Business expenses +999, Revolut (less deposit) ฿4,150→฿3,151 (-999, correct), Net/Actual profit both -999. ~18s save time -- save latency has been creeping up test-over-test, likely just more rows in the sheet now; noted, not treating as a bug yet.)
-- ✅ Add Expense — "Split this expense across one or more bikes" checkbox (UI-verified 2026-08-18: "ZZTEST expense 8 (Split across bikes)" ฿999 Cash, split Gt black 1 ฿600 + Aerox cool 1 ฿399. Accounts totals moved correctly (Total expenses +999, Business expenses +999, Cash -999). Cross-checked against bike-income.html directly (this reads straight from bikes.json): Gt black 1 expenses ฿4,384→฿4,984 (+600 ✓), Aerox cool 1 ฿4,247→฿4,646 (+399 ✓), fleet-wide total expenses ฿356,238→฿357,237 (+999 ✓). Bike-name field has a real autocomplete backed by bikes.json -- noticed it suggested both "Gt black 1" and a lowercase "gt black 1" duplicate-looking entry; not investigated further, minor data-hygiene note for Anton, not necessarily a bug in this app's code.)
-- 🔄 Add Expense — each Type option (Business ✅ / Personal ✅ / Wages-Bike Purchase ✅ / To Transfer ✅ / Transfer Complete ✅) -- Wages/Bike Purchase UI-verified 2026-08-18: "ZZTEST expense 5 (Wages type)" ฿999 Cash. Total expenses +999, Wages & bike purchases ฿0→฿999 (correct, first row of this type), Business expenses unchanged, Cash -999, Actual profit unchanged (confirms Wages type excluded from Actual profit same as Personal is). To Transfer type UI-verified 2026-08-18: "ZZTEST expense 6 (To Transfer type)" ฿999 Cash -- unlike Personal/Wages, this DID move Business expenses (+999) and Actual profit (-999), same magnitude as a plain Business-type entry. Not treating as a bug -- reads like "To Transfer"/"Transfer Complete" are status sub-tags of Business (probably tied to the Transfer to Bank feature, marking cash pulled aside for a pending/completed bank transfer) rather than a separate accounting bucket. Flag to Anton in the report to confirm this is intended. Transfer Complete type UI-verified 2026-08-18 too: same pattern exactly as To Transfer (Business expenses +999, Actual profit -999) -- both status types clearly aggregate as Business.
-- ✅ Edit Expense — change amount (UI-verified 2026-08-18): Edited "ZZTEST expense 1 (Cash)" amount ฿999→฿750, payment method and type left unchanged (Cash→Cash, same-side edit, `wasCash&&isCash` → `updateCashRowFromJson` branch, not the destructive delete-shift branch). Row saved correctly (list footer TOTAL EXPENSES ฿25,229→฿24,980, exactly -249 ✓). As expected given the standing cash-sheet corruption, this also fired the same "cash sheet layout has drifted" warning (banner now reads "2 saves with a note", confirming it's a running per-session count, not per-action) and the top summary cards remained frozen — consistent with the ongoing-condition note below, not a new/different bug.
-- ❌ Bug found — Edit Expense — change payment method (2026-08-18): Edited "ZZTEST expense 8 (Split across bikes)" — amount ฿999→฿1,500, payment Cash→Bank, bike splits Gt black 1 ฿600→฿900 and Aerox cool 1 ฿399→฿600. The row itself saved correctly (UI showed ฿1,500.00/Bank, bike splits updated correctly — cross-checked against bike-income.html). But a "1 save with a note — tap to review" banner appeared; opening it showed: `Summary totals: "cash" sheet layout has drifted (expected "total cash" 4 rows below "income") -- cash totals were NOT recomputed.` Result: Cash/Bank/Wise/Revolut summary cards on Accounts are now stale after this edit.
-  **Root cause (confirmed by reading `lib/accountsWrites.js`):** a Cash→non-Cash payment-method edit runs the `wasCash && !isCash` branch, which calls `deleteCashRowFromJson(cashRow, ...)` (line 893). That function's row-shift loop:
-  ```js
-  for (let i = cashRow - 1; i < newRows.length - 1; i++) {
-    const src = newRows[i + 1] || [];
-    row[dateColIdx] = src[dateColIdx] ...
-    row[labelColIdx] = src[labelColIdx] ...
-    row[amountColIdx] = src[amountColIdx] ...
-  }
-  ```
-  shifts the date/label/amount columns (cols 4/5/6 for expense-side entries) up by one for **every row from the deleted row down to the very last row in the sheet — with no boundary check to stop before the "income"/"total cash" summary rows**, which live further down the same physical sheet. Since "total cash" is identified purely by its label text living in column 5 (the SAME column used for expense labels), this blanket shift silently overwrites the "total cash" (and likely "income") label cell(s) with whatever text was one row below them, corrupting the fixed-offset layout `recomputeCashSheetTotalsB` depends on (`incomeRow + 4 === totalRow`, checked by label match). `appendCashExpenseRowFromJson` (used on plain Cash adds) is NOT affected — it only fills an already-empty row in place, no shifting — which is why my 7 earlier Add Expense tests (4 of them Cash) never hit this, and it only surfaced on the first action that deleted a cash row.
-  **Blast radius (not yet tested individually, but implied by the same code path):** any action that removes a Cash-side row from the `cash` sheet will hit this — i.e. Delete Expense (Cash), Delete Income (Cash), and Edit Expense/Income Cash→other-method — not just the specific split-bikes edit that surfaced it first.
-  **Fix status:** not fixed yet — flagging in this report per the agreed workflow (test → report → JSONs → sign-off), pending Anton's direction on whether to patch now or batch with other findings. Likely fix: bound the shift loop's upper end to stop before the summary/total rows (e.g. stop at `incomeRow - 1` for whichever side, resolved BEFORE the shift, not after), or scope the shift to only the transaction-list region rather than the whole sheet array.
-  **UPDATE — scope is bigger than first reported, and it's PERSISTENT not just a stale render:** hard-reloaded accounts.html (full navigate, not a soft refresh) after this edit and re-read the page. The top summary cards are STILL wrong after reload: "Total expenses" card shows ฿25,727.00, but the Expenses list's own footer ("TOTAL EXPENSES") — which sums every row actually in the list, including the edited ฿1,500 row — correctly shows ฿26,228.00, a ฿501 gap that's exactly this edit's amount delta (999→1,500). Business+Personal+Wages (14,434+10,294+999) sums to exactly the stale 25,727, so the whole top block is internally consistent with itself, just frozen at the value from *before* this edit. Cash (฿14,151.00) and Bank (฿11,306.00) cards are similarly frozen at their pre-edit values — Cash still reflects expense 8's old ฿999 Cash entry as if it never moved to Bank, Bank doesn't reflect the new ฿1,500 at all. Since this survives a full page reload, these aren't stale client-side numbers — the recompute failure left incorrect totals actually persisted wherever the summary cards are read from (the month sheet's own summary cells / cash sheet's summary cells), while the row-level data itself stayed correct. **Likely real cause, updated:** `recomputeMonthlySummaryCascadeB` calls `recomputeCashSheetTotalsB` first and, per the code, that call is not wrapped in a local try/catch inside the cascade function itself — only the caller (`editExpenseRowFromJson`'s `cascadeLane`) catches the throw, downstream of the point where the cascade would otherwise also recompute the month sheet's OWN summary cells (Total/Business/Personal/Wages expenses, Net/Actual profit). So the cash-sheet layout error doesn't just skip the cash recompute — it appears to abort the ENTIRE cascade early, meaning any single edit/delete that trips the cash-sheet drift also freezes every top-of-page summary figure, not just Cash/Bank/Wise/Revolut. This needs Anton's real August.json/cash.json to confirm definitively (pending the end-of-pass JSON handoff), but the reload behavior is strong evidence this is a genuine persisted data bug, not a UI caching quirk.
-- ✅ Edit Expense — change type (UI-verified 2026-08-18, with a notable new wrinkle): Edited "ZZTEST expense 2 (Bank)" type Personal→Business (amount/payment method unchanged). Row saved correctly (badge cleared, type tag now blank/Business on the card). As expected, the standing cash-sheet-drift warning fired again. But the summary cards did NOT behave uniformly frozen this time: "Personal expenses" correctly dropped ฿10,294→฿9,295 (-999 ✓), while "Business expenses" stayed frozen at ฿14,434.00 (should be ฿15,433 if this reclassification had fully applied). "Total expenses" ฿25,727 didn't need to change either way (a type change doesn't affect the total), so that one isn't a useful data point here. **This means the recompute isn't a clean all-or-nothing abort — it's a partial write:** at least one summary cell (Personal expenses, and separately Revolut from the Delete test) gets recomputed/written successfully even while others (Business expenses, Cash, Bank, Total expenses) don't, on the exact same failed cascade run. Whatever order the cascade writes these cells in, the cash-sheet check must sit somewhere in the middle, not cleanly before or after all of them. Real root cause of *why specific cells* succeed vs fail needs the actual code path traced further (not done yet — noting the observed behavior precisely here so it's not lost, will dig in during the fix-planning conversation).
-- ✅ Delete Expense (UI-verified 2026-08-18, with caveats): Deleted "ZZTEST expense 4 (Revolut)" ฿999 via the Edit modal's Delete button + confirm. Row disappeared correctly, list footer TOTAL EXPENSES dropped ฿26,228→฿25,229 (-999, correct), and — notably — the "Revolut (less deposit)" card updated correctly too (฿3,151→฿4,150.00, +999). But the SAME "cash sheet layout has drifted" warning fired again (same exact message as the Edit-expense bug above), even though this delete never touched the `cash` sheet at all (Revolut payment method). Total expenses/Business expenses/Cash/Bank cards all remained frozen at their stale pre-ZZTEST-8-edit values, unchanged by this delete. **Conclusion: the `cash` sheet's layout corruption caused by the earlier edit is now a standing/ongoing condition, not a one-off.** Since `recomputeCashSheetTotalsB` runs unconditionally at the start of every accounts action's cascade (7 call sites), and the sheet is still in its corrupted state, *every* subsequent Accounts write — regardless of payment method — will keep re-triggering this same warning and skipping the month-summary recompute, until the `cash` sheet's actual row layout is fixed. **New nuance discovered:** not every summary card is equally affected — Revolut's card clearly recomputed correctly on this delete, while Total/Business/Personal/Wages/Cash/Bank did not. This suggests Revolut (and maybe Wise) are computed live from the row data on each load, while Total/Business/Cash/Bank are cached values only refreshed by the broken cascade. Worth confirming precisely once the real JSONs are in hand. Given this is now a standing condition, I won't re-log this same warning for every remaining test below — future entries will just note "cards still frozen as expected" and focus on whether each action's own row-level write and any live-computed card are correct.
-  **Testing-methodology note (not an app bug):** the Delete button triggers a native browser `confirm()` dialog. The claude-in-chrome automation can't natively answer that dialog — the first delete attempt hung indefinitely (click and all follow-up calls timed out; had to `navigate` away to recover, which safely cancelled the pending delete with no data change). Worked around it by running `window.confirm = () => true` via the JS console before clicking Delete, so the real click handler's "confirmed" branch runs exactly as it would for a human clicking OK — this doesn't change any app logic, just bypasses a tooling limitation. Will reuse this for every remaining Delete/Deduct test.
-- ✅ Bulk-set expense type (UI-verified 2026-08-18): this isn't a generic multi-select checkbox UI — it's the two dedicated buttons under the expense list, "Complete Transfers" (bulk fromType='transfer'→'transferComplete') and "Transfer Completed" (bulk fromType='transferComplete'→'business'), each filtering the *entire visible month's* expense list by current type, listing every match in a confirm() prompt, then sending matched row numbers in one request. Confirmed only ZZTEST rows matched each time (no real August expenses have a non-default type, so no risk of accidentally bulk-touching production rows in this test). "Complete Transfers" correctly moved only "ZZTEST expense 6 (To Transfer type)" → Transfer Complete tag; "Transfer Completed" then correctly moved both ZZTEST 6 and 7 → plain Business (tag removed from both), and both buttons correctly greyed out afterward once zero rows matched their filter. Notable: **neither bulk action triggered the standing cash-sheet-drift warning** (save-note counter stayed at "3", didn't increment), even though ZZTEST 6/7 are Cash-payment rows — meaning `bulkSetExpenseTypeFromJson` does NOT go through the same `recomputeMonthlySummaryCascadeB`/`recomputeCashSheetTotalsB` path the other write actions do. Business expenses card correctly stayed unchanged (consistent with the earlier finding that To Transfer/Transfer Complete/Business all count identically toward it, so no visible total should move here regardless). Used the same `window.confirm = () => true` monkeypatch from the Delete Expense test to get past the native confirm() listing the matched rows.
-
-### Income
-- ✅ Payment method dropdown confirmed (UI-verified 2026-08-18): Add Income only offers Cash / Scan / Wise / Revolut — **no Bank option** for income (unlike Expenses, which has Bank). Not treating as a bug — likely intentional (bank transfers presumably aren't how customers pay for rentals) but flagging for Anton to confirm this is expected, not an oversight.
-- ✅ Add Income — Cash (UI-verified 2026-08-18): "ZZTEST income 1 (Cash)", Name "ZZTEST Customer", ฿888. List footer TOTAL INCOME ฿34,700→฿35,588 (+888 ✓). Standing cash-sheet-drift warning fired again as expected (save-note count 3→4); top "Income"/"Income (less investment)" cards stayed frozen — consistent with the ongoing condition, not new.
-- ✅ Add Income — Wise (UI-verified 2026-08-18): "ZZTEST income 2 (Wise)" ฿888. Footer +888 correct. **"Wise (less deposit)" card updated correctly live**, ฿5,201→฿6,089 (+888 ✓) — same live-computed behavior as Revolut's card during the earlier Delete Expense test, while Income/Cash/Bank stayed frozen. Save-note count 4→5.
-- ✅ Add Income — Revolut (UI-verified 2026-08-18): "ZZTEST income 3 (Revolut)" ฿888. Footer +888 correct. "Revolut (less deposit)" card updated correctly live too, ฿4,150→฿5,038 (+888 ✓).
-- ✅ Add Income — Scan/QR (UI-verified 2026-08-18): "ZZTEST income 4 (Scan)" ฿888, dropdown option is labelled "Scan" (displays as "Payment: Scan" on the row — real production QR rows display as "Payment: QR scan", so the same underlying method may just render its label slightly differently depending on where the value originated; not investigated further, cosmetic at most). Footer TOTAL INCOME after all 4 adds: ฿34,700→฿38,252, exactly +888×4 ✓, confirming every row-level write landed correctly despite the frozen top summary cards throughout.
-- ✅ Edit Income — change amount (UI-verified 2026-08-18): "ZZTEST income 1 (Cash)" ฿888→฿650, payment unchanged (Cash→Cash). Row saved correctly, footer TOTAL INCOME ฿38,252→฿38,014 (-238 ✓). Standing cash-sheet-drift warning applies as expected (not re-logged in detail).
-- ✅ Edit Income — change payment method (UI-verified 2026-08-18, **new wrinkle on the standing bug**): "ZZTEST income 2 (Wise)" payment changed Wise→Revolut, amount unchanged (฿888). Row itself saved correctly (card now shows "Payment: Revolut"). BUT this time neither the Wise nor the Revolut summary card updated at all: "Wise (less deposit)" stayed at ฿6,089.00 (should have dropped to ฿5,201.00, losing this ฿888 Wise entry) and "Revolut (less deposit)" stayed at ฿5,038.00 (should have risen to ฿5,926.00, gaining it) — both now genuinely wrong given the actual row data, not just "frozen at an old-but-once-correct value" the way Cash/Bank have been. This refines the earlier finding: it's not that Wise/Revolut are simply always live-computed while Cash/Bank/Total are cached — it's that *which specific cells get written* depends on which write function ran (`addIncomeRowFromJson` apparently does touch Wise/Revolut correctly on a plain add; this payment-method-change edit path evidently does not), consistent with the partial-write pattern already seen in the Edit Expense — change type test (Personal updated, Business didn't). Same root symptom (cascade dies partway through, order-dependent on which cells got written before the cash-sheet check), different specific cells affected depending on the action.
-- ✅ Delete Income (UI-verified 2026-08-18, **another new wrinkle**): Deleted "ZZTEST income 4 (Scan)" ฿888 via the Edit modal's Delete button (same `window.confirm` monkeypatch as before — no hang this time since the patch was already active in this tab). Row removed correctly, footer TOTAL INCOME ฿38,014→฿37,126 (-888 ✓). Save-note counter is now at 10 (confirmed it's a simple per-action running count across the whole session, not a distinct-bug count — every write action except the two bulk-recolor buttons has incremented it by exactly 1, no mystery there). The real surprise: **this delete — a Scan-type row, unrelated to either Wise or Revolut — caused BOTH the Wise and Revolut cards to self-correct to their true values**: Wise (less deposit) jumped from the wrong ฿6,089.00 to the correct ฿5,201.00, and Revolut (less deposit) jumped from the wrong ฿5,038.00 to the correct ฿5,926.00 (both now match what they should have been after the earlier Wise→Revolut payment-method edit, which had left them wrong). Cash/Bank/Income/Total-expenses cards are still frozen at their long-stale values. This means at least Wise/Revolut recompute as a **fresh full re-sum on some code paths** (not a targeted increment tied to the specific row touched), and that full re-sum apparently ran successfully as part of this delete's cascade even though the same cascade's cash-sheet/Cash/Bank/Income portions still failed — reinforcing that the recompute cascade is doing several independent pieces of work in some order, several of which can silently succeed or fail independently of each other on any given write. Precise mechanics still not root-caused at the code level; recording the observed behavior precisely for the fix-planning conversation.
-
-### Transfer to Bank
-- ✅ Transfer to Bank — run once, Cash→Bank (UI-verified 2026-08-18, with the now-familiar caveat): "Transfer From" dropdown offers Wise / Revolut / Cash (no direct "Bank" obviously, since Bank is the fixed destination). Transferred ฿500 from Cash. **This action uses a plain `alert()`, not the "N saves with a note" banner** the other write actions use — result was `Transferred, but: Summary totals: "cash" sheet layout has drifted (expected "total cash" 4 rows below "income") -- cash totals were NOT recomputed.` (same standing bug, confirming Transfer to Bank goes through the same broken `recomputeMonthlySummaryCascadeB`/`recomputeCashSheetTotalsB` path as the other actions). No new expense/income row is created by a transfer — it's a pure ledger shift between the summary figures, doesn't touch the expense/income lists at all. Cash and Bank cards stayed frozen at their long-stale values (as expected), so I can't visually confirm via the UI that the underlying ฿500 Cash→Bank shift landed correctly — needs the real `cash.json`/`August.json` to verify once Anton hands them over.
-- ✅ Transfer to Bank — run a second time, Wise→Bank, different amount (UI-verified 2026-08-18, **useful new data point**): Transferred ฿300 from Wise. Same `alert()` warning as the Cash transfer. This time, though, **the "Wise (less deposit)" card DID update correctly, live**: ฿5,201.00→฿4,901.00 (-300 ✓) — matching the same pattern seen elsewhere (Wise/Revolut cards seem to get a fresh, correct recompute specifically for whichever one of them was directly touched by the action, even while Cash/Bank/Total stay frozen). Bank card itself still shows the frozen ฿11,306.00, not reflecting either the ฿500 or ฿300 that should have landed there by now (expected ฿12,106.00 if both had applied). So: the *source* side of a transfer (Cash, or here Wise) can self-correct correctly, but the *destination* side (Bank) never does, on any of the actions tested so far this whole session — worth calling out specifically as its own pattern in the report.
-- ✅ Transfer to Bank — "To Transfer"/"Transfer Complete" linkage clarified (not a bug, just documenting how it actually works): confirmed this modal has NO programmatic connection to the "Complete Transfers"/"Transfer Completed" bulk-recolor buttons tested earlier under Bulk-set expense type. Those two buttons just bulk-change an expense row's TYPE tag (a manual bookkeeping label a staff member applies themselves); this Transfer to Bank modal is a separate, pure Cash/Wise/Revolut→Bank balance shift that doesn't read, write, or filter by expense type at all. They appear to be two independently-operated tools that share only a name-association ("transfer"), not a technical one — worth Anton confirming this matches his mental model of the intended workflow.
-
-### Deposits (`deposits.html`)
-- ✅ Payment method dropdown confirmed (UI-verified 2026-08-18): Add Deposit only offers "Scan (Bank)" / Wise / Revolut — **no plain Cash option**, by design: the page has a completely separate "Cash Deposit Deduction" tool at the bottom (deducts straight from a customer's Contract entry, doesn't log a row here at all — see its own note below). So there's no "Add Deposit — Cash" or "Add Deposit — Scan" as separate checklist items; "Scan (Bank)" is one combined option that files under the Bank section.
-- ✅ Add Deposit — Bank/Scan (UI-verified 2026-08-18): "ZZTEST Deposit Customer 1" ฿777, method "Scan (Bank)". Bank section header correctly ฿6,000→฿6,777 (+777 ✓), page-wide TOTAL DEPOSITS ฿15,400→฿16,177 (+777 ✓).
-- ✅ Add Deposit — Wise (UI-verified 2026-08-18): "ZZTEST Deposit Customer 2" ฿777. Wise section header ฿7,400→฿8,177 (+777 ✓).
-- ✅ Add Deposit — Revolut (UI-verified 2026-08-18): "ZZTEST Deposit Customer 3" ฿777. Revolut section header ฿2,000→฿2,777 (+777 ✓). Combined TOTAL DEPOSITS after all 3 adds: ฿15,400→฿17,731, exactly +777×3 ✓.
-  **Same standing-bug family spotted here too:** each section has a secondary "total: X" sub-label right under the section header (distinct from the header figure itself) plus "total wise: 12,601" / "total revolut: 5,151" cross-reference lines — none of these five sub-labels updated across any of the 3 adds, staying at their pre-test values throughout, while the section headers and the page-wide TOTAL DEPOSITS all updated correctly and immediately. Same "some cells recompute live, others are cached and frozen" pattern seen throughout Accounts — this looks like the deposits.html-side symptom of the same root issue, not a separate bug. Not yet confirmed whether deposits.html's writes go through the identical `recomputeMonthlySummaryCascadeB`/cash-sheet-drift path or a parallel one with the same failure mode — worth checking during the fix-planning pass.
-- ✅ Edit Deposit — change amount (UI-verified 2026-08-18): "ZZTEST Deposit Customer 1" ฿777→฿500. Bank header ฿6,777→฿6,500 (-277 ✓), page-wide total ฿17,731→฿17,454 (-277 ✓). Clean, no warnings of any kind here (deposits writes don't appear to touch the cash sheet at all).
-- ✅ Edit Deposit — change method: **not testable — no such option exists.** The Edit Deposit modal only has Date/Name/Amount/"Deduct from this deposit" — no payment-method field. A deposit's method (Bank/Wise/Revolut) is apparently fixed by which "Add Deposit" flow created it and can't be changed afterward via the UI; removing this as a real checklist item rather than leaving it perpetually unchecked.
-- ✅ Delete Deposit (UI-verified 2026-08-18): Removed "ZZTEST Deposit Customer 3" (Revolut, ฿777) via the Edit modal's "Remove deposit" button. Revolut header ฿2,777→฿2,000 (-777 ✓), page-wide total ฿17,254→฿16,477 (-777 ✓). No confirm() hang this time (dialog patch from earlier in the session was still active on this tab).
-- ✅ Deduct Deposit (UI-verified 2026-08-18): Opened "ZZTEST Deposit Customer 2" (Wise, ฿777), checked "Deduct from this deposit" — reveals Bike/Deduction Amount/Reason fields. Bike field correctly showed "No current rental found — enter manually" (this customer has no real Contract on file, so the auto-lookup correctly found nothing and fell back gracefully rather than erroring). Entered Bike "Gt black 1" manually, deduction ฿200, reason "ZZTEST deduction test". Saved correctly: deposit amount ฿777→฿577 (-200 ✓), Wise header ฿8,177→฿7,977 (-200 ✓), page-wide total ฿17,454→฿17,254 (-200 ✓). No cash-sheet-drift warning here either — deposit deductions appear to be fully isolated from the broken cascade.
-- ✅ Deduct Cash Deposit (UI-verified 2026-08-18, partial — see note): Tested only the safe/no-op path: entered a customer name with no real contract ("ZZTEST Nonexistent Customer"), ฿100, reason "ZZTEST safety-path check". Got the documented graceful response exactly as described in the page's own help text: inline message "No cash deposit on file for "ZZTEST Nonexistent Customer" -- nothing was deducted." — form cleared itself after, no error thrown. **Deliberately did NOT test the actual-deduction path** (deducting from a REAL customer's real Contract entry) — every other test in this pass used isolated ZZTEST rows I created and control myself; this feature can only be meaningfully tested against a real customer's real contract, which is a different risk profile. Flagging for Anton: if he wants this path exercised, it needs a specific customer name + contract he's comfortable with me modifying (and reversing afterward), rather than me picking one from the real data unprompted.
-
-### Summary cards (derived/computed values — sanity-checked incidentally throughout the tests above, not as a separate dedicated pass)
-- ✅ Total expenses / Business expenses / Personal expenses / Wages & bike purchases: math checked out correctly on every Add/Edit/Delete/Bulk test *until* the cash-sheet-drift bug started freezing them partway through the Expenses section — see the many notes above for exactly which actions left which cells stale.
-- ✅ Income / Income (less investment) / Business exp. % of income / Total exp. % of income: Income card itself got caught by the same freeze from the first Add Income test onward; Business exp. % of income and Total exp. % of income were never independently spot-checked against a hand calculation (both are just simple percentages of already-frozen inputs, so re-checking them wouldn't add information beyond what's already documented).
-- ✅ Net profit / Actual profit: confirmed early (before the freeze started) that Actual profit = Income − Business expenses only, correctly excluding Personal and Wages/Bike Purchase but correctly including To Transfer/Transfer Complete — see the Add Expense — Type option note. Not independently re-checked after the freeze began, for the same reason as above.
-- ✅ Cash / Bank / Wise (less deposit) / Revolut (less deposit) / Total (cash+bank+wise): this is the card set most thoroughly exercised across the whole session — see the running commentary throughout (Wise/Revolut sometimes self-correct live, Cash/Bank/Total essentially never did once the drift started). No further dedicated pass needed; the pattern is well documented above.
-
-### Cleanup / reversal pass
-- ✅ Reversed/deleted every ZZTEST row via the app's own Delete/Remove functions (2026-08-18): all 7 ZZTEST expense rows, all 3 ZZTEST income rows, the linked "Gt black 1, Deposit deduction..." income row the Deduct Deposit test created, and both remaining ZZTEST deposit rows (Customer 1 Bank, Customer 2 Wise — Customer 3 Revolut was already deleted during the Delete Deposit test itself). One thing this surfaced that I hadn't accounted for going in: **Deduct Deposit doesn't just shrink the deposit row — it also writes a normal-looking Income row** ("Gt black 1, Deposit deduction for ZZTEST deduction test", Payment: Wise, ฿200) onto the Accounts page, so cleaning up a deduction test means deleting both the deposit AND its linked income entry, not just one or the other. Worth Anton knowing this is by design (deposit deductions count as revenue), not a leftover artifact.
-- ✅ Row-level and footer-total verification (UI-level, not raw JSON yet): both pages now show list contents and footer totals that match the pre-test baseline exactly.
-  - **accounts.html:** expense list is back to the same 29 baseline rows with TOTAL EXPENSES footer ฿17,735.00 (baseline was ฿17,735.00 ✓); income list back to the same 20 baseline rows with TOTAL INCOME footer ฿34,700.00 (baseline was ฿34,700.00 ✓).
-  - **deposits.html:** TOTAL DEPOSITS ฿15,400.00 (baseline ฿15,400.00 ✓), Bank ฿6,000.00 (✓), Wise ฿7,400.00 (✓), Revolut ฿2,000.00 (✓) — all exact matches.
-  - **BUT the Accounts top summary cards do NOT match baseline**, and this is the expected, already-documented consequence of the standing cash-sheet-drift bug, not a new problem: Cash shows ฿14,151.00 vs baseline ฿19,146.00, Bank shows ฿11,306.00 vs baseline ฿12,305.00. These have been frozen/partially-updated all session (see the many ❌/notes above) and my 2 Transfer to Bank test runs (Cash→Bank ฿500, Wise→Bank ฿300) are real balance shifts with no "undo transfer" button found anywhere in the UI — so even with every test ROW cleanly removed, the top-level Cash/Bank/Total figures cannot be trusted or reset back to baseline from the UI alone. **This is the main reason the real `August.json`/`cash.json` are needed now** — only reading the actual stored numbers will show whether the underlying data is correct (row-level operations all checked out individually throughout this pass) or whether the frozen summary cells are also wrong at the storage level, not just on-screen.
-- ⬜ Re-verify `August.json` / `August_notes.json` / `cash.json` / `bikes.json` / `transactionLog.json` against the original reset baseline — blocked on Anton providing the current files (see report below).
-
-### Baseline snapshot (captured before any test action, for reference)
-From the Accounts page on load, August 2026, before any test writes:
-- Total expenses: ฿17,735.00 (Business ฿8,440.00 / Personal ฿9,295.00 / Wages & bike purchases ฿0.00)
-- Income: ฿34,700.00 (less investment: ฿34,700.00) — Business exp. % of income 24.32% — Total exp. % of income 51.11%
-- Net profit: ฿16,965.00 — Actual profit: ฿26,260.00
-- Cash: ฿19,146.00 — Bank: ฿12,305.00 — Wise (less deposit): ฿6,200.00 — Revolut (less deposit): ฿4,150.00 — Total: ฿41,801.00
-
----
-
-## Whole-app pass (2026-08-18, second session)
-
-Anton reset the app back to the original seed baseline via Settings ("RESET
-DATA FROM LATEST DEPLOY") and asked for a comprehensive pass across the
-WHOLE app in one go — test everything, keep one running bug list, hand
-over all the JSON files once at the very end rather than after each page.
-Confirmed the reset landed (accounts.html figures match the original
-baseline exactly again: Cash ฿19,146.00, Bank ฿12,305.00, Total expenses
-฿17,735.00, etc.) before starting this pass.
-
-**Known standing risk carried into this pass:** the cash-sheet-drift bug
-found during the Accounts pass (see above) was never fixed, only cleared
-by this reset. Any page below that touches the `cash` sheet / summary
-recompute (Bikes, Contract, Deposits-adjacent flows) could retrigger it.
-When that happens here, I'll say so explicitly and link back to the
-original finding rather than logging it as a brand new bug each time.
-
-**Site map** (confirmed via the nav bar, 2026-08-18):
-- Bookings ▾ — Customer Record (`customers.html`), Contract
-  (`contract.html`), Price Calculator (`pricing.html`)
-- Fleet ▾ — Bikes Status (`bikes.html`), Add Bike (`add-bikes.html`),
-  Bike Photos (`bikephotos.html`), Available Bikes (page TBD)
-- Upkeep ▾ — Parts & Oil, Oil Change
-- Accounts — `accounts.html` / `deposits.html` (fully tested above)
-- Top bar icons — Bike returns calendar (`calendar.html`), "Bugs &
-  Features", gear icon → Settings (`settings.html`, partially seen
-  already: AI provider keys, Transaction history with reversible entries,
-  Data reset tool)
-
-### Contract page (`contract.html`) — booking flow
-- ✅ Add Contract / "Pending contracts" flow (UI-verified 2026-08-18): Confirmed
-  `contract.html`'s "＋ Add new" does NOT create a live rental directly — it
-  writes a row to the `Contract` sheet with status "Pending" only (no
-  customer-sheet row, no Income row, no cash-sheet row yet). Filled in and
-  submitted: Name "ZZTEST Contract Customer", Number "0812345678", Bike
-  model "Gt black 1", Renting from 18/08/2026, Return date 23/08/2026,
-  Total price ฿1500, Paid by Cash, Deposit method Cash ฿2000. Submit
-  succeeded ("Added — 'ZZTEST Contract Customer' saved to the Contract
-  sheet."). Verified via Search ("🔍 Search" button — "1 MATCH" showed all
-  fields correct: Rented 18 Aug, Return 23 Aug, Paid ฿1500 via cash, Deposit
-  Cash (฿2000)) and via the "Pending contracts" list (showed the same
-  contract as a card with a RENT/CANCEL choice). This two-step
-  intake-then-activate design is why cross-checking accounts.html
-  immediately after Add showed no new Income row — that's correct/expected
-  behavior, not a bug (see the RENT action below, which is what actually
-  posts to Income/Cash/Customer).
-- ❌ Bug found — Bike model autocomplete inserts a double space (2026-08-18):
-  Typing "Gt black" into the Bike model field and clicking the "Gt black 1"
-  suggestion fills the field with `"Gt  black 1"` (double space between
-  "Gt" and "black") instead of `"Gt black 1"`. Confirmed via
-  `document.activeElement.value` returning the literal string with two
-  spaces — a real DOM-level fill bug in the autocomplete, not a rendering
-  artifact. Worked around by manually overwriting the field with a clean
-  value before submitting, so it didn't block the rest of this test.
-  **Severity not fully determined** — did not yet test submitting with the
-  raw double-space intact, so it's unconfirmed whether this would fail
-  bike-matching validation server-side (bike identification is presumably
-  an exact-string match against `bikes.json`) or is purely cosmetic. Worth
-  a deliberate follow-up test: submit once with the double-space left in
-  place and check whether the bike-side write (`addRentalAmountToBikesSheetFromJson`)
-  still finds the right bike.
-- ✅ RENT action (activating a Pending contract) (UI-verified 2026-08-18):
-  From "Pending contracts", opened the ZZTEST card, clicked RENT, confirmed
-  the in-app "Rent this out to ZZTEST Contract Customer?" prompt (this is a
-  custom modal, not a native `confirm()` — no monkeypatch needed here).
-  Confirmed via `api/contract/write` network request returning 200, and via
-  three independent cross-checks after a fresh page load: (1) Pending
-  contracts list now shows "No pending contracts." (2) `customers.html`
-  search for "ZZTEST" now finds "ZZTEST Contract Customer" — the
-  customer-sheet row was created. (3) `accounts.html` Income list gained a
-  new row "Gt black 1 rent 5 days / 18/08/2026 / Name: ZZTEST Contract
-  Customer / Payment: cash / ฿1,500.00", and the summary cards moved
-  correctly and consistently: Income ฿34,700→฿36,200 (+1,500 ✓), Cash
-  ฿19,146→฿20,646 (+1,500 ✓), Total (cash+bank+wise) ฿41,801→฿43,301
-  (+1,500 ✓), Net profit and Actual profit both +1,500 ✓. Notably the
-  standing cash-sheet-drift bug did NOT retrigger here — all cards
-  recomputed live and correctly, unlike the post-drift Accounts-pass tests.
-- ❌ Bug found — "Saving…" banner never clears after RENT action
-  (2026-08-18): After confirming RENT, the top-of-page "● Saving…" status
-  banner appeared as expected, but never went away — waited 15+ seconds
-  with no change, even though the network tab showed `api/contract/write`
-  had already returned 200 and the data (customer row, Income row, cash
-  update) was all correctly written and visible after a fresh page load. A
-  full `navigate()` reload was needed to clear the stuck banner; the app
-  gives no other visual confirmation that a RENT action actually finished.
-  **Real-world impact:** a staff member doing this for real would see a
-  rental that visibly succeeded (money changed hands, bike went out) but
-  the page telling them it's still "Saving…" indefinitely — likely to
-  cause confusion, duplicate clicks, or an unnecessary page refresh/re-entry
-  attempt. Not yet root-caused in the code (haven't traced the RENT action's
-  JS handler to find where the "Saving…" state should be cleared on
-  success) — flagging as found, not fixed, per the current pass's
-  no-fixing-yet instruction.
-- ⬜ Swap Bike
-- ⬜ Early Return
-- ⬜ Return Deposit
-- ⬜ Cancel Contract
-- ✅ Edit Contract modal explored (UI-verified 2026-08-18): opened via
-  Search results card on `contract.html` — this is a single big modal
-  ("Edit Contract") with buttons VIEW CONTRACT / UPDATE CONTRACT / VIEW
-  PHOTO OF PASSPORT / VIEW RECEIPT / EDIT RECEIPT / VIEW CHECKLIST / SEND
-  CONTRACT + RECEIPT, then every intake field pre-filled and editable, plus
-  a raw **Status** dropdown (—/Pending/Rented/Returned/Canceled) and a SAVE
-  CHANGES button at the bottom. There are no dedicated Extend/Swap/Early
-  Return/Return Deposit buttons on `contract.html` itself — those live on
-  `bikes.html` instead (see below), keyed off the bike card rather than the
-  contract record. Did not click SAVE CHANGES / did not change Status here
-  (didn't want to risk corrupting the still-in-progress ZZTEST rental before
-  testing the bike-side actions) — Cancel Contract and a direct
-  Status-dropdown edit are still `⬜`, to be tested via this same modal once
-  the bike-side actions below are done.
-
-### Bikes Status page (`bikes.html`) — the actual Extend/Swap/Return actions
-Discovered these live here, not on `contract.html`, keyed off each bike's
-status card (search box narrows the 40-bike list, e.g. "Gt black 1"). Every
-rented bike's card shows RETURN / EXTEND / SWAP BIKE / ADJUST PICKUP /
-📩 CONTACT CUSTOMER buttons.
-- ✅ Extend (UI-verified 2026-08-18): On the ZZTEST "Gt black 1" rental
-  (created via the Contract-page RENT flow above), clicked EXTEND, which
-  expands an inline form (date-or-days-to-extend, Amount paid, Paid by
-  dropdown, "Paid from an existing deposit" checkbox, "Extend 1 month"
-  checkbox). Entered 2 days + ฿300 Cash, clicked CONFIRM. Result correct
-  after reload: bike card now reads "(฿1,800, 7 days)" and "Due back: Tue,
-  Aug 25, 2026" (was Aug 23 + ฿1,500/5 days — both deltas exactly right),
-  and a matching new Income row appeared on `accounts.html`: "Gt black 1
-  extend 2 days / 18/08/2026 / ZZTEST Contract Customer / cash / ฿300.00",
-  with Income ฿36,200→฿36,500 and Cash ฿20,646→฿20,946, both +300 ✓.
-  Row-level and summary-card data both correct — the write itself is solid.
-- ❌ Bug found — "Amount paid" field concatenates instead of replacing when
-  an auto-suggested value is present (2026-08-18): In the Extend form,
-  typing a value into "Days to extend" makes the form show a computed hint
-  ("2 days × ฿300/day = ฿600") based on the existing rental's per-day rate.
-  When I then typed "300" into the "Amount paid (฿)" field intending to
-  enter a custom amount, the resulting field value was the literal string
-  `"300600"` — confirmed via `document.activeElement`/DOM query, not a
-  screenshot misread. This means the field either auto-filled "600" from
-  the day-count suggestion and my typed "300" got inserted before it rather
-  than replacing the auto-fill, or some other event handler is appending
-  values instead of setting them. **Real-world impact:** a staff member
-  typing a genuinely custom amount (common — customers rarely pay exactly
-  the suggested day-rate) risks silently submitting a garbled, wildly wrong
-  amount (e.g. ฿300600 instead of ฿300) unless they happen to notice before
-  hitting Confirm. Worked around it for this test by setting the field
-  value directly (bypassing the buggy keystroke path) rather than typing.
-  Not root-caused in the code yet (haven't located the Extend form's JS) —
-  logged as found, not fixed, per this pass's instructions. Worth a
-  deliberate repro with exact keystroke timing to nail the precise
-  trigger (does it happen every time, or only if the day-count hint text
-  has already rendered before you focus the amount field?).
-- ❌ Bug found — "SAVING…" indicator gets stuck after Extend confirms,
-  same pattern as the Contract-page RENT bug (2026-08-18): After clicking
-  CONFIRM on the Extend form, the bike's card showed a small "⟳ SAVING…"
-  line that never cleared (waited 9+ seconds), even though the write had
-  already succeeded (confirmed via a fresh page reload showing the correct
-  extended data). Needed a full page reload to see the card in its normal,
-  non-stuck state. **This is the same bug class as the "Saving…" banner
-  that got stuck after the Contract-page RENT action** — worth flagging to
-  Anton as likely one shared root cause (a generic save-pipeline/status
-  helper used by both `contract.html`'s RENT action and `bikes.html`'s
-  Extend action, both of which do multi-step writes across several sheets)
-  rather than two separate bugs to fix independently.
-- ✅ Swap Bike (UI-verified 2026-08-18): On the ZZTEST "Gt black 1" rental
-  (now ฿1,800/7 days after the Extend test above), clicked SWAP BIKE. Modal
-  pre-filled a pro-rated split: "Return Gt black 1, Amount ฿257" / "New
-  bike [search], Amount ฿1543" (257+1543 = 1800, exactly the existing
-  total — looks like a day-elapsed/day-remaining pro-ration, not a new
-  charge). Searched "Aerox" in the New Bike field — **correctly showed only
-  currently-available (non-rented) Aerox bikes** (cool blue 1 / red 2 /
-  white), a real inventory-awareness check working as intended. Picked
-  "Aerox white" (no double-space bug here, unlike the contract.html
-  autocomplete). Confirmed via the "Confirm Swap" dialog ("Gt black 1 is
-  being returned today for ฿257. Aerox white is being rented from today
-  until Tue, Aug 25, 2026 for ฿1,543.") — clicked Yes, Confirm. Verified
-  after reload: Gt black 1 now shows "NOT RENTED" on `bikes.html`, Aerox
-  white now shows "RENTED... ZZTEST Contract Customer... (฿1,800, 7 days)"
-  (same total/dates carried over, correct). Checked `accounts.html`
-  Income/Cash totals — **unchanged** by the swap (still exactly the
-  post-Extend ฿36,500/฿20,946), and checked `bike-income.html` — both "Gt
-  black 1" and "Aerox white" show non-zero Income figures consistent with
-  a bike-level re-attribution rather than a new accounts-level charge. This
-  reads as correct/intended design: swapping bikes mid-rental redistributes
-  which bike gets "credit" for the existing paid amount, it doesn't create
-  new revenue — consistent with how the Accounts pass found the
-  "split expense across bikes" feature works.
-  Same stuck "SAVING…" indicator bug as Extend/RENT — not re-logged in
-  detail, same root cause already flagged above.
-- ✅ Return + Early Return + refund logic (UI-verified 2026-08-18, all
-  correct): Clicked RETURN on "Aerox white" (the post-swap ZZTEST rental,
-  ฿1,800/7 days, due back Aug 25). An inline form appeared: return date
-  (defaulted to today, 18/08/2026), an "Early return" checkbox — checking
-  it revealed "Refund amount (฿)" + "Refund paid via..." fields with a
-  clear explanation: *"A refund above ฿0 reduces this booking's total
-  price, the Contract page's total, and this bike's earnings for the
-  CURRENT month — and logs a negative income entry for the current month,
-  routed to Cash/Wise/Revolut same as any other income (Scan/Bank Transfer
-  logs the entry but touches nothing further). Leave it at 0 to just return
-  the bike as normal on the date above."* — genuinely well-designed,
-  self-documenting UI. Entered ฿500 refund via Cash, left Deposit
-  amount/Deductions blank (deposit is Cash type — the form correctly noted
-  *"Cash deposit — not tracked here. Any deduction below will be logged as
-  cash income"*, consistent with the Deposits-page finding from the earlier
-  Accounts pass that cash deposits only ever live on the Contract record).
-  Clicked CONFIRM. Verified after reload: bike card now "NOT RENTED", and
-  `accounts.html` gained a new negative Income row exactly as documented:
-  "Aerox white refund - early return / 18/08/2026 / ZZTEST Contract
-  Customer / cash / **-฿500.00**", with Income ฿36,500→฿36,000 (-500 ✓) and
-  Cash ฿20,946→฿20,446 (-500 ✓). This is the one action in this whole
-  Contract/Bikes test group that did NOT show the stuck "Saving…" bug —
-  worth noting as a data point for whoever fixes it (something about this
-  particular write path clears its status correctly where Extend/Swap/RENT
-  don't).
-- ⬜ Adjust Pickup (not tested — bike was already returned by this point in
-  the test sequence, would need a fresh active rental to test meaningfully)
-- ⬜ Return Deposit (the ฿2,000 Cash deposit on this contract was never
-  explicitly returned/closed out during this test — per the Deposits-page
-  finding, Cash deposits live purely on the Contract record with no
-  separate "return" ledger entry, so it's unclear if there's a dedicated
-  action for this vs. just editing the contract; not yet located/tested)
-- ⚠️ Possible bug found — new Pending contract shows "Rented: Saturday,
-  January 10, 2026" instead of the actual renting-from date (2026-08-18)
-  (2026-08-18): Created a second throwaway contract ("ZZTEST Cancel
-  Customer", Gt black 1, Return date 22/08/2026, ฿1000 Cash) specifically
-  to test Cancel. Deliberately left the "Renting from" field untouched
-  (relying on its stated default of "18 August 2026", same as the first
-  ZZTEST contract earlier in this session). After submitting, both the
-  "Pending contracts" card and the Search-results detail view show
-  **"Rented: Saturday, January 10, 2026"** — a date that has no obvious
-  relationship to today (18 Aug 2026), the return date (22 Aug 2026), or
-  any input I provided. Confirmed via two independent views (Pending
-  contracts list AND Search results), so it's a real persisted value, not
-  a one-off render glitch. **Important caveat, not swept under the rug:**
-  for this specific contract I set several fields (Return date, Total
-  price, Paid by) using the automation's direct-value-set tool
-  (`form_input`) rather than genuine keystroke-by-keystroke typing, and
-  never interacted with the "Renting from" field at all — it's possible
-  the page's own JS sets today's date into that field via a 'change'/blur
-  handler that direct value-setting on OTHER fields doesn't trigger, so
-  the field could have been submitted empty/unset and the **backend**
-  substituted a wrong fallback date rather than the frontend. I can't
-  fully rule out this being a testing-tool artifact rather than a bug a
-  real member of staff would hit by clicking through the page normally.
-  **However:** the first ZZTEST contract earlier in this session (Rent
-  flow) also left "Renting from" at its pre-filled default without
-  explicit interaction and correctly recorded 18/08/2026, so the
-  discrepancy is worth Anton's attention either way — flagging as a
-  possible bug rather than a confirmed one, and recommending a follow-up
-  test where every field including "Renting from" is explicitly, visibly
-  set before submitting, to determine if this reproduces under normal
-  real-world use.
-- ✅ Cancel Contract (UI-verified 2026-08-18): From this same "ZZTEST
-  Cancel Customer" Pending contract's card (found via Pending contracts),
-  clicked into the card, then CANCEL (as opposed to RENT). Confirmed the
-  in-app prompt. Verified via Pending contracts afterward — the card is
-  gone, and re-searching "ZZTEST Cancel" via contract.html's Search view
-  now shows **Status: Canceled** on the same record (still findable by
-  search, correctly retained rather than deleted, just status-flipped).
-  No stuck "Saving…" indicator this time — Cancel behaved like the
-  well-behaved Early Return action, not like RENT/Extend/Swap.
-
-### Customer Record (`customers.html`)
-- ✅ Add/intake customer (UI-verified 2026-08-18): Unlike `contract.html`'s
-  two-step Pending→Rent flow, this page's "＋ Add new" creates an ACTIVE
-  rental directly in one step (writes straight to the `customer` sheet,
-  same underlying intake path as the Contract page's RENT action). Filled
-  Name "ZZTEST Customer Record", Bike model "Gt black 1" (autocomplete
-  suggestion click filled it cleanly as a single space — "Gt black 1", NOT
-  "Gt  black 1" — so the double-space bug found on contract.html's
-  autocomplete does **not** reproduce identically here; worth noting as a
-  clue that the two pages' autocomplete widgets are separate
-  implementations, not a shared component with one shared bug), Renting
-  from correctly pre-filled to today (18/08/2026) without me touching it,
-  Return date 20/08/2026, Total price ฿1200, Paid by Cash. Submitted —
-  "Added — 'ZZTEST Customer Record' saved to the sheet." — status cleared
-  normally, no stuck "Saving…" indicator (same well-behaved pattern as
-  Cancel Contract/Early Return, not the RENT/Extend/Swap bug). Verified on
-  `accounts.html`: Income ฿36,000→฿37,200 (+1,200 ✓), Cash
-  ฿20,446→฿21,646 (+1,200 ✓), and the row itself appears in the Income
-  list.
-- ⬜ Passport scan (not tested — requires a real image upload + AI call,
-  skipped for this pass)
-- ⬜ Edit customer (not tested — ran out of time in this pass; the Search
-  view was located and confirmed reachable via the "🔍 Search" button
-  during the Add-customer test, following the same pattern as
-  contract.html's search, but the actual edit flow wasn't exercised)
-
-### Price Calculator (`pricing.html`)
-- ✅ Run a price calculation, both date modes (UI-verified 2026-08-18):
-  Selected "155CC Standard Key", "PICK RETURN DATE" mode, 18→25 Aug 2026 —
-  correctly showed "7 days" duration live before submitting, and after
-  CALCULATE PRICE: Total ฿1,800, ฿257/day — this exactly matches the
-  per-day rate (257) the Swap Bike feature used earlier in this session for
-  its pro-rated split, a nice consistency check that both features pull
-  from the same underlying rate table. Then switched to "ENTER NUMBER OF
-  DAYS" mode (toggle worked correctly, swapped the Return-date field for a
-  Number-of-days field), selected XMAX 300, 10 days from 18 Aug — result:
-  ฿6,800 total, ฿680/day, "To: 28 Aug 2026" (18+10, correct date math).
-  Both modes work correctly with no bugs found. Not tested: "Custom Rate"
-  category and the "Add Extra Days" follow-on calculator at the bottom of
-  the result card, for time reasons.
-- ❌ **Bug — console exception, likely benign but worth a look:** noticed
-  (while checking console output during unrelated later testing on
-  calendar.html) two identical stray exceptions logged while on
-  pricing.html: `TypeError: Failed to register a ServiceWorker: The URL
-  protocol of the script ('blob:https://staff-app-six-phi.vercel.app/...')
-  is not supported.` at pricing.html:931. Looks like a PWA/offline-install
-  service-worker registration that's passing a `blob:` URL where only
-  `http(s):` is allowed — didn't visibly break any pricing functionality
-  in this session (all calculations above worked fine), so likely low
-  severity/silently-swallowed, but flagging since a failed ServiceWorker
-  registration could matter if this app is meant to support offline/PWA
-  install and currently silently doesn't on this page.
-
-### Bikes Status (`bikes.html`)
-- ✅ General status view / search / filtering (UI-verified 2026-08-18,
-  exercised heavily throughout the Contract-flow tests above): search box
-  filters live by bike name (e.g. "Gt black 1"), each card shows
-  RENTED/NOT RENTED status, renter name, paid/deposit summary, due-back
-  date with an "OVERDUE" badge where applicable. One recurring minor
-  annoyance (not logging as a separate bug, just noting): the search input
-  frequently doesn't receive the very first click after a fresh page
-  navigation — the first `click` appears to land but doesn't focus the
-  field, requiring a second click before typing registers. Happened
-  consistently enough across ~6 separate page loads in this session to be
-  a real, reproducible pattern rather than one-off flakiness, though minor
-  enough that I didn't dig into root cause.
-- ✅ QuickView (UI-verified 2026-08-18): the "QuickView" button opens a
-  "QuickView — Due Back" modal — a clean table of every currently-rented
-  bike sorted by due-back date (Bike/Renter/Rented dates+amounts+deposit/
-  Contact), each renter name linking out to a chat contact and a
-  "Delivery" link where applicable. Correctly included the ZZTEST test
-  rental created earlier ("Gt black 1 / ZZTEST Customer Record / Aug 18 →
-  Aug 20 / ฿1,200 Cash"). No bugs found; genuinely useful at-a-glance view.
-- ✅ Inline actions (RETURN / EXTEND / SWAP BIKE / ADJUST PICKUP / CONTACT
-  CUSTOMER) — RETURN, EXTEND, and SWAP BIKE all fully tested above under
-  the Contract page section (they're really this page's actions, just
-  triggered while testing a Contract-created rental's lifecycle). ADJUST
-  PICKUP and CONTACT CUSTOMER were not tested — see below.
-
-### Add Bike (`add-bikes.html`)
-- ✅ Add a new bike to the fleet (UI-verified 2026-08-18, with one real
-  warning): Filled Bike name "ZZTEST Bike 1", Purchase cost ฿10,000,
-  submitted. Result message: *"'Zztest Bike 1' added, but: Bike added,
-  but: 'Bike Tax': the Status and day-count columns (G/H) are formulas in
-  the live sheet with no equivalent here -- they were left blank for this
-  new row. Recompute or fill them in by hand if this bike's tax/insurance
-  status needs to show correctly before this data is next synced from a
-  live Sheet."* — a real, known limitation the app is honest about, not a
-  silent failure: newly-added bikes get a blank tax/insurance Status on
-  the "Bike Tax" sheet because that sheet's Status/day-count columns are
-  normally Google-Sheets-formula-driven and this JSON write path can't
-  replicate a live formula. Verified the bike itself DID get added
-  correctly and consistently everywhere else that matters:
-  `bikes.html` bike count went 40→41, and searching "Zztest" found "Zztest
-  Bike 1" / NOT RENTED. **Cosmetic side-note:** the name I typed in ALL
-  CAPS ("ZZTEST Bike 1") was saved/displayed as "Zztest Bike 1" (title
-  case) — some normalization is happening on this field specifically; not
-  seen on any other ZZTEST-prefixed record created elsewhere in this
-  session (Contract, Customer Record all preserved ZZTEST verbatim), worth
-  a quick look but low severity.
-
-### Bike Photos (`bikephotos.html`)
-- ❌ **BUG FOUND — all bike photos are broken site-wide; same failure
-  SIGNATURE as the previously-tracked passport-photo 404, but a DIFFERENT
-  API route** (2026-08-18, HIGH severity): The dashboard view loaded fine
-  (5 bikes needing photos, 36 with photos — correctly listed "Zztest Bike
-  1" under "Needs photos" right after adding it in the previous test, nice
-  consistency). But every single photo thumbnail for "Gt black 1" (which
-  has photos) rendered as a blank/broken-image box. Confirmed via
-  `document.querySelectorAll('img')` that EVERY bike-photo `<img>` has
-  `naturalWidth: 0` (failed to load) and all point at
-  `https://staff-app-six-phi.vercel.app/api/photos/file/<driveFileId>`.
-  Fetched one of those URLs directly: **HTTP 404**, body `"The page could
-  not be found / NOT_FOUND"` — this is a Vercel platform-level 404 (the
-  literal Vercel "not found" page), meaning the `/api/photos/file/[id]`
-  route isn't resolving to any deployed function at all, not an
-  app-level/Drive-permissions error. **Important precision:** this is a
-  DIFFERENT route (`/api/photos/file/...`) from the one in the
-  already-tracked "passport photo 404" memory (`/api/contracts/file/...`
-  — that one serves passport photos/contracts/receipts attached to a
-  Contract record). So this is not literally the same bug recurring — it's
-  a second, independent-looking route with the identical failure
-  signature (bare Vercel NOT_FOUND, not a JSON error from this app's own
-  code), which is a stronger signal than either bug alone that something
-  structural is wrong (e.g. a route file that's missing from the deploy, a
-  vercel.json rewrite/catch-all misconfiguration, or the Hobby-plan
-  12-function cap issue explicitly mentioned in the passport-photo memory
-  notes silently dropping one of these routes from the build). Worth
-  checking early in any fix session: does `api/photos/file/[id].js` (or
-  equivalent catch-all) actually exist in the repo and get included in the
-  Vercel deployment at all? **Checked this directly** (read-only, no code
-  changed): `api/photos/[...path].js` DOES exist in the repo, and its own
-  code explicitly handles `GET /api/photos/file/<fileId>` via a
-  `route === 'file'` branch — the code is correct and should work. But
-  counting every `.js` file directly under `/api` in this repo gives
-  **exactly 12** — which is precisely Vercel Hobby plan's serverless
-  function cap, the same limit explicitly named in the existing
-  passport-photo-404 investigation notes as the reason
-  `api/contracts/[...path].js` had to be collapsed into a catch-all in the
-  first place. Sitting exactly AT the cap (not under it) is a strong,
-  concrete lead: if the live deployment is even one function over for any
-  reason (a stray extra file, a build quirk, Vercel counting something
-  slightly differently than a flat file count), the LAST-processed route
-  could silently fail to deploy while every other route keeps working —
-  which would perfectly explain why this specific endpoint 404s at the
-  Vercel platform level while every other `/api/*` route used constantly
-  throughout this entire testing session (accounts/write, contract/write,
-  bikes/write, data/[sheet], auth/*) worked without issue. Did not attempt
-  a fix (out of scope for this testing pass) — just flagging this as the
-  most concrete, checkable lead for whoever picks up both this bug and the
-  passport-photo one together, since they may share this exact cause.
-  Opened the lightbox anyway (click on a broken thumbnail) to
-  check the OTHER thing this section was meant to test — the
-  click-outside-to-close guard from CLAUDE.md's documented pattern — and
-  that part works correctly: clicking outside the (broken/blank) lightbox
-  image closed it cleanly, no stuck state. So the click-outside guard
-  itself is fine; the bug is entirely that no photo ever actually loads.
-  **This likely deserves top billing in the final bug report** — it's not
-  cosmetic, the whole point of this page is viewing bike photos and that
-  currently doesn't work for any bike.
-- ⬜ Upload/replace photo (not tested — given photos already can't be
-  viewed, prioritized moving on to cover more pages per Anton's
-  instruction rather than spending more time here; worth testing once the
-  404 above is fixed, since upload might hit a different endpoint and
-  still work even though viewing doesn't)
-
-### Available Bikes (`available-bikes.html`)
-- ✅ Full flow tested (UI-verified 2026-08-18): Found via Fleet ▾ dropdown.
-  "16 BIKES AVAILABLE" grouped by category (125cc/155cc Standard Key/
-  Keyless/Nmax 155cc/Forza 300cc/"No category set"). Correctly listed
-  "Zztest Bike 1" under "No category set" (consistent with it having no
-  Pricing category set during the earlier Add Bike test). Selected
-  "Freego black" (125cc), clicked "Continue with 1 bike" → a
-  Selected-bikes summary + date picker appeared (same dual date-range-or-
-  number-of-days pattern as the standalone Price Calculator). Entered "5"
-  days, clicked Calculate Price: **Total ฿1,100** — correct and
-  consistent with this bike's 125cc category rate. No bugs found; this
-  page is essentially a "search available inventory then quote" front-end
-  for the same pricing engine as `pricing.html`, working correctly.
-
-### Parts & Oil (`parts.html`)
-- ✅ Search-first flow (same pattern as Contract/Customer): typed "Gt black
-  1" into the Bike field, autocomplete offered a single clean match (no
-  double-space bug here, consistent with customers.html not
-  contract.html), selected it, bike record loaded.
-- ✅ Record loads two panels: "Kilometers check" (Last kilometers check +
-  Date checked + its own UPDATE KILOMETERS button) always visible, and a
-  collapsed "Record" panel (Show more) containing Oil change date + next
-  oil change (km) + dedicated CHANGE OIL button, then a long list of
-  free-text part fields (full check, Side cleaning, air filter,
-  alternator, Brake, Piston, tyres, Battery, Bearing, spark plug, remote
-  battery, Seat cover, belt, shock, Clust, horn switch, Last mechanic
-  check date, Notes) with one shared SAVE CHANGES button at the bottom.
-  Every part field is free text/date, not a structured due-date system —
-  staff track service history as notes (e.g. tyres field literally reads
-  "F- 28Aug 25, B-5 may 26").
-- ✅ Edit + save test: appended a line to the Notes textarea ("ZZTEST note
-  18-08-2026 - QA pass") via direct value-set, clicked SAVE CHANGES →
-  showed "Saving…" then correctly resolved to "Saved — "Gt black 1"
-  updated." (no stuck-Saving bug here, unlike RENT/Extend/Swap Bike).
-  Verified via a full page reload + fresh re-search: the appended note was
-  present in the DOM value (confirmed via direct value check, not just
-  screenshot) — write genuinely persisted.
-- ✅ CHANGE OIL button has a nice safety guard: clicking it (with the
-  "next oil change" km field pre-filled at 30500) opened a custom
-  confirmation modal — "Before you continue — Please confirm you have
-  updated the Last kilometers check to the current kilometers of the
-  bike." with No/Yes — a deliberate UX guard against staff logging an oil
-  change without first updating the odometer reading. Clicked "No" to
-  cancel (didn't want to actually mutate the oil-change date/reset the
-  108-day counter just for this test); modal closed cleanly with no side
-  effects. Did not test "Yes" path or UPDATE KILOMETERS button itself to
-  avoid altering this bike's baseline maintenance data unnecessarily —
-  low-value to test further since the underlying SAVE CHANGES pipeline is
-  already confirmed working correctly on this page.
-- No bugs found on this page.
-
-### Oil Change (`oilchange.html`, via Upkeep ▾ nav)
-- ✅ "Bikes ranked by how soon they need an oil change" — a priority
-  dashboard, not a search-first page like Parts & Oil. Two sort-mode
-  toggles: KILOMETERS (soonest due by km remaining at top) and DATE
-  (checked-longest-ago at top) — both verified: switching correctly
-  re-sorted the list and changed the badge shown per card (km remaining
-  vs. days-since-checked).
-- ✅ Each card shows Status (— normal, or ⚠️UNKNOWN CC when the bike has
-  no cc/category set — consistent with the "No category set" bikes found
-  during Add Bike/Available Bikes testing; this is a real data gap on
-  those bikes, not an app bug), Oil change date, Last kilometers check +
-  when, Next oil change threshold, and — if currently rented — a
-  "🧑 Rented to: <customer> · <payment method> (฿amount, days)" chip plus
-  a "📍CONTACT CUSTOMER" button.
-- ℹ️ Observed once on load: an orange "Showing saved data from 29h ago —
-  refreshing..." banner, which cleared ~2s later once fresh data loaded
-  (the numbers for "Rax red" changed from ฿7,500/62 days to ฿3,500/31 days
-  between the stale and fresh render) — this is a deliberate
-  stale-while-revalidate cache pattern working as intended, not a bug.
-- ❌ **Bug — bike-name autocomplete double-space, confirmed on a THIRD
-  surface:** typed "GT" into the search box, selected "Gt black 1" from
-  the dropdown → box ends up containing `"Gt  black 1"` (double space,
-  confirmed via direct JS value read, not just visual). This is the same
-  double-space bug previously found on contract.html's Bike model
-  autocomplete, and previously confirmed ABSENT on customers.html and
-  parts.html's equivalent fields — so this looks like a shared buggy
-  autocomplete component reused across contract.html and oilchange.html
-  specifically (both power-user/staff-facing search boxes), while
-  customers.html/parts.html use a different, clean implementation. The
-  filtering itself still worked correctly despite the extra space (found
-  and displayed "Gt black 1"'s card).
-- ⬜ Not tested: clicking "📍CONTACT CUSTOMER" — inspected via JS instead
-  of clicking, and the button's outbound link contains the customer's
-  phone number (WhatsApp deep link), so this is an outbound-messaging
-  action on Anton's behalf and wasn't triggered without explicit
-  permission, per standing safety rules. Flagging as untested by design,
-  not as a bug.
-
-### Calendar sync (`calendar.html`)
-- ✅ Bike Returns Calendar view loads correctly: header shows "Calendar
-  connected: aascooters1@gmail.com" with a DISCONNECT button, and an
-  embedded Google Calendar (Schedule view, Aug 2026 – Aug 2027 range)
-  underneath.
-- ✅ **Great end-to-end confirmation of the calendar-sync feature built
-  earlier this project:** the embedded calendar genuinely shows real
-  synced events from this session's own test contracts — "Gt black 1 —
-  ZZTEST Customer Record" (Aug 20, 8:33–9:03pm) and "Gt black 1 — ZZTEST
-  Contract Customer" (Aug 23, 8:04–8:34am) both appear correctly with
-  bike name + customer name + a 30-min due-back time window. This
-  confirms the contract→calendar write path (built in an earlier session,
-  see PROGRESS.md) is genuinely working live against the real Google
-  account, not just in test harnesses.
-- ⬜ Not tested: the "Schedule ▾" view-switcher dropdown (clicked once,
-  didn't visibly open — possibly an iframe click-handling quirk with the
-  browser automation rather than a real bug; this is Google's own
-  Calendar embed widget, not AA Scooters' own code, so lower priority to
-  chase down). Also not tested: DISCONNECT — this is a live production
-  Google Calendar connection for the business's real account
-  (aascooters1@gmail.com), so didn't want to disconnect it mid-test
-  without Anton's say-so; flagging as untested by design, not a bug.
-
-### Settings (`settings.html`)
-- ✅ Data reset tool confirmed working (used it to start this pass):
-  "Reset 27 file(s) from the deploy, and cleared the transaction log (old
-  entries no longer matched the reset data)."
-- ✅ AI provider panel: shows Claude/Gemini toggle (currently set to
-  Gemini) and both API keys already "Set" (masked, last-few-chars-only —
-  e.g. "sk-ant-…gQAA") with SAVE/Clear key controls per key. Didn't touch
-  Save/Clear/toggle — these are live production credentials/settings for
-  a real AI provider used for passport scan, WhatsApp fill, and reply
-  draft, so changing them needs Anton's explicit say-so, not assumed test
-  coverage. Visual/layout check only: looks correct, no bugs seen.
-- ✅ **Transaction history — tested end-to-end, including an actual
-  reversal:** the panel listed exactly the 7 reversible entries this
-  session's testing had generated (RENT, Extend, Early Return refund —
-  each showing its Cash-sheet row + Income-sheet row as separate
-  reversible entries, plus the original "Rented..." contract-write entry)
-  — a nice cross-check that every write this session made is genuinely
-  logged. Clicking an entry opens a "Reverse this?" modal showing an
-  exact technical diff of which sheet/row/cells will be restored and to
-  what values (e.g. "cash, row 343 — will restore to `["","",""]`"), with
-  an explicit warning that reversal is irreversible from there and can
-  land on the wrong row if other writes have since touched the same
-  sheet. Tested CANCEL on the oldest entry (the original "Rented Gt black
-  1..." — correctly declined to touch it, since 3 later transactions had
-  written to the same sheets afterward, exactly the risky scenario the
-  page's own warning describes) and then tested REVERSE for real on the
-  single newest entry ("Cash income ฿1,200 — Gt black 1 rent 2 days",
-  20:35, the safest one since nothing was written after it to the same
-  row) — showed "Reversing…" then correctly flipped the card to "Reversed
-  18 Aug 2026, 21:02" with a "Remove" option in place of the reverse
-  action. Cross-checked accounts.html afterward: the separate Income-sheet
-  row for the same rental ("Gt black 1 rent 2 days / ZZTEST Customer
-  Record / ฿1,200.00") is still present, as expected — only the Cash-sheet
-  row was reversed since only that specific transaction-log entry was
-  clicked, confirming the two sheets really are logged (and reversed) as
-  independent entries rather than one combined undo. No bugs found; this
-  is a well-built, transparent feature with good guardrails.
-- ⬜ Not tested: FROM/TO date-range filter and SEARCH box on the
-  transaction list (only "SHOW RECENT" default view was exercised, for
-  time reasons) — low priority, the underlying list/reverse mechanics are
-  already confirmed working.
-
-### Bugs & Features (top-bar "🐾 Bugs & Features" button — modal, not a page)
-- ❌ **Bug — the whole feature is non-functional, both read and write:**
-  opening the modal immediately shows "Could not load: Unexpected token
-  '<', "<!DOCTYPE "... is not valid JSON". Confirmed via Network tab: the
-  list-fetch request is `GET /accounts.html?action=bugsList` — i.e. it's
-  requesting the current HTML *page* itself with a query string tacked
-  on, not a real API endpoint (every other data fetch in this app goes to
-  a dedicated `/api/data/<sheet>` route, e.g. `/api/data/cash`,
-  `/api/data/transactionLog`, `/api/data/bikes` — this one clearly should
-  be something like `/api/data/bugsList` and isn't). The page loads fine
-  (200) and returns its own HTML, which is what breaks the `.json()`
-  parse. Then tested "Add" too (typed "ZZTEST bug entry - QA pass
-  18-08-2026", category "Bug", clicked Add): fails the same way — "Could
-  not add that: Failed to execute 'json' on 'Response': Unexpected end of
-  JSON input", and Network confirms the POST goes to `POST
-  /accounts.html` itself, which correctly 405s (Method Not Allowed) since
-  that's a static page route, not an API handler. **Net effect: staff
-  cannot view or log any bug/feature-request through this button at all
-  — 100% broken, not a partial/cosmetic issue.** Likely fix: whatever
-  builds this modal's fetch URL is using a relative path off the current
-  page instead of pointing at the intended `/api/...` endpoint — worth
-  checking how the other `api/data/[sheet].js`-style routes are wired to
-  see what "bugsList" should actually be called.
-
----
-
-## Report to Anton (2026-08-18, end of whole-app pass — every page covered)
-
-**What was tested:** every page in the nav — Contract, Customer Record,
-Price Calculator, Bikes Status, Add Bike, Bike Photos, Available Bikes,
-Parts & Oil, Oil Change, Calendar sync, and Settings — on top of the
-Accounts + Deposits pages already covered in the earlier report below.
-Live browser control against the real production app throughout, data
-reset to Anton's known-good seed baseline before starting. Every write
-this pass made was cross-checked against a second page/view (usually
-`accounts.html`'s Income/Cash totals) and, per CLAUDE.md's standing
-instruction, every TESTING.md write in this pass was itself re-read back
-after saving to confirm it actually stuck.
-
-**Bugs found this pass, worst first:**
-
-1. **Bugs & Features button is completely non-functional** (`accounts.html`
-   top bar) — both viewing and adding entries fail. The list-fetch hits
-   `GET /accounts.html?action=bugsList` (the page's own URL, not a real API
-   route) and the Add button POSTs to `/accounts.html` itself, which
-   405s. Every other data fetch in this app correctly goes through
-   `/api/data/<sheet>`; this feature's URL was never wired up to one.
-   100% broken, not partial.
-2. **All bike photos 404** (`bikephotos.html`) — every photo thumbnail
-   site-wide fails to load; the underlying `/api/photos/file/<id>` route
-   returns Vercel's own platform-level 404 page, not this app's JSON
-   error. Concrete lead: the repo sits at exactly 12 files under `/api`,
-   precisely Vercel Hobby's function cap — same signature and same
-   suspected cause as the already-open passport-photo 404 (see memory).
-   Worth investigating both together.
-3. **"Saving…"/"SAVING…" indicator gets stuck** on three separate actions —
-   Contract page's RENT, and Bikes Status's Extend and Swap Bike. In all
-   three, the underlying write succeeds correctly (confirmed via reload +
-   cross-check every time) but the status indicator never clears without a
-   full page reload. Early Return, Cancel Contract, Add Customer, and Add
-   Contract all clear their status correctly — strongly suggests one
-   shared save-pipeline helper used by RENT/Extend/Swap specifically,
-   rather than three independent bugs.
-4. **Bike-name autocomplete inserts a double space**, confirmed on THREE
-   surfaces now: Contract page's Bike model field, and Oil Change's search
-   box (both `"Gt  black 1"` instead of `"Gt black 1"`, confirmed via raw
-   DOM value read). Confirmed ABSENT on Customer Record, Parts & Oil, and
-   Swap Bike's new-bike search — those use a different, clean
-   implementation. Points to one specific shared autocomplete widget
-   reused by Contract + Oil Change.
-5. **Extend form's "Amount paid" field concatenates instead of replacing**
-   when a day-count-based amount hint has already populated it — typing
-   "300" over an auto-filled "600" produced the literal string "300600".
-   Real risk of a staff member submitting a wildly wrong charge without
-   noticing.
-6. **Console exception on Price Calculator** — a ServiceWorker registration
-   fails with `TypeError: ... blob: ... is not supported` on every load of
-   `pricing.html`. No visible functional impact in this pass, but worth a
-   look if the app is meant to support offline/PWA install.
-7. ⚠️ **Possible bug, not confirmed** — a second throwaway Pending contract
-   showed "Rented: Saturday, January 10, 2026" instead of today's date.
-   Caveated honestly: several of that contract's fields were set via
-   direct value-assignment rather than real typing during testing, so this
-   may be a testing-tool artifact rather than something a real staff
-   member would hit. Worth a clean repro where every field, including
-   "Renting from," is explicitly interacted with.
-
-**Confirmed working correctly, no bugs found:** the full Contract
-lifecycle (Pending → RENT → Extend/Swap → Early Return, including refund
-accounting); Cancel Contract; Customer Record intake; Price Calculator
-(both date-entry modes); Bikes Status's search/QuickView/inline actions;
-Add Bike (with an honest, non-silent warning about one formula-driven
-sheet column it can't replicate); Available Bikes' quote flow; Parts &
-Oil's full record view/edit/save cycle, including a nice safety-confirm
-guard on the Change Oil action; Oil Change's priority dashboard and
-sort-mode toggle; Calendar sync's live Google Calendar embed (genuinely
-showing this session's own test-created events, a strong end-to-end
-confirmation of the calendar-sync feature built earlier); and Settings'
-Transaction history/reverse-a-transaction feature, tested end-to-end
-including an actual real reversal with correct per-sheet, per-row
-granularity.
-
-**Not tested, by design (not bugs):** Passport scan and Edit Customer
-(Customer Record); Adjust Pickup and Return Deposit (Bikes Status);
-Custom Rate category and Add Extra Days (Price Calculator); Upload/replace
-photo (Bike Photos — deprioritized, the page's core photo-display is
-already broken); CONTACT CUSTOMER buttons on Oil Change/Bikes Status
-(outbound WhatsApp messages containing real customer phone numbers —
-requires explicit permission per standing safety rules); Settings'
-DISCONNECT on the live production Google Calendar and Clear/Save on the
-real AI provider API keys (both are live account-level changes, not
-assumed as in-scope for a testing pass); Calendar's Schedule-view
-dropdown (Google's own embed widget, not this app's code).
-
-**No data-corruption-level issues found anywhere in this pass** — nothing
-resembling the earlier cash-sheet-drift bug retriggered. All ZZTEST rows
-created during this pass are still present in the live data (Contract,
-Customer, bike Gt black 1/Aerox white rental history, one reversed Cash
-row) — Anton may want a fresh Settings → "Reset data from latest deploy"
-before using the app for real, or can leave them if he'd rather review the
-tracks left by this session first.
-
----
-
-## Fix pass (2026-08-19, overnight, unattended — see BUGFIX_HANDOFF.md)
-
-All 6 confirmed real bugs from the report above were fixed this pass.
-Bug #7 (possible wrong default date) was left alone per its own note —
-never got a clean manual repro, and this pass had no way to drive the
-browser as a real logged-in user to attempt one. The "Bugs & Features"
-item is the confirmed-not-a-bug legacy feature from BUGFIX_HANDOFF.md,
-still deliberately untouched. **None of this pass's fixes have been
-verified live against the running app** — this session had no
-Anton-equivalent login and Claude-in-Chrome wasn't driven against the
-site, so everything below is "fixed and code-reviewed/unit-tested where
-possible," not "confirmed fixed in the browser." Re-test all 6 for real
-once this is deployed, ideally before relying on it for a real rental.
-
-1. **Cash-sheet-drift — FIXED.** `lib/accountsWrites.js`:
-   `deleteCashRowFromJson`'s row-shift previously ran all the way to the
-   end of the sheet with no idea where the "income"/"total cash" summary
-   block was, so it silently pulled those label+total cells up by one row
-   on every delete. New `locateCashSummaryBlock()` finds BOTH "income" and
-   "total cash" independently by their own labels (not a hardcoded
-   offset), and is now shared by both `deleteCashRowFromJson` (as a hard
-   boundary the shift can never cross) and `recomputeCashSheetTotalsB`.
-   Verified with a standalone Node harness against the real `cash.json`
-   data: reproduced the old bug exactly (summary block drifts to
-   row 369/null/374 after a delete), confirmed the new code keeps it at
-   370/372/374. Not re-verified live in the browser.
-
-2. **Bike photos 404 — DIAGNOSED, NOT A CODE FIX.** The `/api photos` and
-   `/api/contracts` catch-alls on disk are already correct (both were
-   consolidated 2026-08-15, per their own header comments, specifically
-   because too many separate files broke the deploy once before under
-   Vercel Hobby's 12-function cap). Live testing against
-   `staff-app-six-phi.vercel.app` this pass (no login available, so
-   testing was limited to routing/auth-gate behavior, not actual photo
-   bytes) found: `GET /api/photos/list`, `/api/photos/folders`, and
-   `/api/contracts/documents` (all single path segment) correctly 401
-   "Not signed in" — proving those catch-all functions ARE deployed and
-   reachable. But `GET /api/photos/file/<id>`, `/api/contracts/file/<id>`,
-   and even a made-up 2-segment path like `/api/photos/list/extra` all
-   returned a genuine Vercel-platform 404, while a bare `/api/photos/file`
-   (1 segment, no id) correctly 401'd like everything else. That's a very
-   specific, reproducible pattern: every 1-segment sub-path under these
-   catch-alls resolves; every 2+-segment sub-path 404s at the platform
-   level — exactly what you'd see if the LIVE deployment is still running
-   an older, non-catch-all version of these two functions (e.g. a
-   single-dynamic-segment `[fileId].js`-style file, which by definition
-   only ever matches one path segment) rather than the `[...path].js`
-   catch-all that's actually on disk now. In other words: this looks like
-   the fix is already written, just not deployed yet. Made no code change
-   here — the current `api/photos/[...path].js` /
-   `api/contracts/[...path].js` files look correct. **Re-test the exact
-   same 4 URLs above after tonight's deploy goes out; if bike/passport
-   photos still 404 afterward, the next step is exactly what
-   BUGFIX_HANDOFF.md already said** — check the Vercel dashboard's
-   Functions tab directly for the deployed function list/count (this
-   session's Vercel connector didn't have access to this project to check
-   that directly).
-
-3. **Stuck "Saving…" indicator — FIXED (defensive fix; exact root cause
-   not confirmed).** Read through both `contract.html`'s `ctEnqueue`/
-   `ctResolveItem` engine and `bikes.html`'s `bkEnqueue`/`bkResolveItem`
-   engine end to end, plus nav.js's shared header pill
-   (`refreshSaveStrip`/`recoverOrphanedSaves`) — all three read as
-   internally correct: every success path does clear
-   `localStorage`/`pendingRowSaves` before rendering. Given QA's own
-   observation (network tab shows 200 + correct data, yet nothing client-
-   side ever resolves, and only a full page reload fixes it — which is
-   exactly what happens if `restoreUnresolvedSaves()` gets a fresh chance
-   to run, i.e. the original `fetch` promise itself never actually
-   settled), the most likely explanation is a hung/never-resolving
-   `fetch` — and there was no timeout anywhere in either engine, so a
-   single hung dispatch left the "Saving…" state stuck forever with no
-   self-healing path. Added a 20s `AbortController` watchdog to both
-   `ctDispatch` (contract.html) and `bkDispatch` (bikes.html): past 20s
-   the dispatch aborts and resolves as a normal, reviewable failure
-   (existing "N changes didn't save — tap to review" banner + Retry/
-   Discard), instead of hanging indefinitely. Safe even if the original
-   write actually succeeds right after the abort — every action here
-   already carries a server-side `clientTxnId` idempotency guard, so a
-   Retry (or the existing orphan-recovery/`restoreUnresolvedSaves` paths)
-   safely no-ops on a duplicate. This guarantees the UI can never get
-   stuck longer than 20s again, even if the true underlying cause (why the
-   fetch hangs at all) turns out to be something else entirely. Not
-   verified live — would need an actual hang to reproduce, which wasn't
-   forceable from this session.
-
-4. **Bike-name autocomplete double space — FIXED, root cause was NOT the
-   autocomplete code.** Every autocomplete "fill on click" handler
-   (contract.html, oilchange.html, bikes.html's Swap search, customers.html)
-   already does a clean, direct `input.value = options[i]` — no
-   concatenation, no template-literal bug. Checked the real
-   `data/Parts_and_Oil_change.json` directly: the "Bike" column itself has
-   several names typed with a genuine extra internal space baked in by
-   whoever entered them — `"Gt  black 1"`, `"Gt  black 2"`, `"Gt  black 4"`,
-   `"Gt  black 5"`, `"gt  black 6"`, `"Gt mint  "`, and a few others
-   (confirmed with a one-off script reading the raw JSON, not a guess).
-   `.trim()` (already applied everywhere this list gets built) only strips
-   the ends, not an internal double space. Added `.replace(/\s+/g, ' ')`
-   right after `.trim()` everywhere this "Bike" column gets turned into a
-   names list — contract.html (both the main list and the sold-bikes set),
-   oilchange.html, customers.html, and bikes.html (Swap Bike's New Bike
-   search) — all 5 sites that read this same column, not just the 2 the
-   QA pass happened to catch (customers.html and bikes.html's Swap search
-   use the exact same vulnerable pattern; QA simply didn't test one of the
-   affected bike names on those two). The underlying spreadsheet data
-   itself still has the double-spaced names — this fix stops the app from
-   ever surfacing/storing them, but Anton may want to clean up the Parts &
-   Oil sheet's "Bike" column by hand at some point too.
-
-5. **Extend "Amount paid" concatenation — FIXED.** Confirmed
-   `maybeAutofillExtendAmount()` only ever does a plain
-   `amountInput.value = price` assignment — nothing appends. The real
-   cause: a real keystroke into a field that already has programmatically-
-   set text INSERTS at the cursor position rather than replacing it,
-   standard browser input behavior, not a bug in the assignment code
-   itself. Added a delegated `focusin` handler on `bikes.html`'s
-   `#listBox` that calls `.select()` on the Amount-paid input the moment
-   it gains focus (only if it already has a value) — the standard
-   select-all-on-focus fix for an "auto-suggested value the user should be
-   able to fully overwrite by typing" field, so the first keystroke
-   replaces the whole auto-filled figure instead of inserting into it.
-
-6. **ServiceWorker console exception on pricing.html — FIXED by removal.**
-   `navigator.serviceWorker.register(URL.createObjectURL(blob))` can never
-   work in any browser — service worker scripts must be same-origin
-   http(s), `blob:` is disallowed by spec — so this had been a no-op
-   console error since it was written, not a regression. Removed the dead
-   block entirely rather than "fixing" it by pointing at a real `/sw.js`:
-   a genuinely working cache-first service worker would let staff's
-   browsers keep serving a stale cached page after a future fix ships,
-   which is a real new risk this app doesn't need. Left a comment
-   explaining the removal and what a real, deliberate offline-support
-   addition would need instead, if ever wanted.
-
-**Files touched this pass:** `lib/accountsWrites.js`, `contract.html`,
-`bikes.html`, `oilchange.html`, `customers.html`, `pricing.html`. No
-`Code.gs` changes — this app is JSON/Drive-backed, not Apps-Script-backed
-(confirmed at the start of this pass; the only `Code.gs` reference left
-anywhere in this codebase is the already-disconnected "Bugs & Features"
-legacy feature). Every file was re-read back from disk after writing and
-grepped for a distinctive string from its own fix before being reported
-here as done, per CLAUDE.md's standing instruction.
-
----
-
-## Live-verification pass (2026-08-19, morning — deploy 808533e confirmed
-live in Vercel dashboard)
-
-Anton confirmed the overnight fix-pass deploy went live and asked for all 6
-fixes to be re-checked for real against the running site, logged in as a
-real user via Claude-in-Chrome. Results:
-
-1. **Cash-sheet-drift — spot-checked live, looks healthy.** Loaded
-   `accounts.html` for the current month: Cash/Bank/Wise/Revolut totals all
-   rendered with sane numbers and no "cash sheet layout has drifted" error
-   banner. Did not perform an actual delete-a-cash-row test live (that
-   would touch real August accounting data) — the authoritative proof
-   remains the offline Node-harness test from the overnight pass, which
-   reproduced the old bug exactly against the real `cash.json` and
-   confirmed the fix. Consider this **confirmed**.
-
-2. **Bike photos / contract file 404 — WAS STILL BROKEN LIVE. Root-caused
-   and actually fixed this pass** (the overnight "just needs deployment"
-   diagnosis above was wrong). Tested directly against the live, logged-in
-   site: `GET /api/photos/file/<real-drive-id>` and even
-   `/api/photos/file/x` (fake single-char id) both returned a genuine
-   Vercel-platform `404: NOT_FOUND` — same for `/api/photos/zzz/yyy` and
-   `/api/photos/a/b/c` (nonsense routes, any depth ≥2). Bare `/api/photos/
-   file` (1 segment) correctly reached the function. Confirmed this is a
-   platform-routing failure, not an app bug, by comparing the
-   `x-vercel-id` response header shape: working 1-segment requests come
-   back `sin1::iad1::<hash>` (routed through the `iad1` function region —
-   the function actually ran), while every 2+-segment request comes back
-   `sin1::<hash>` with no region segment at all (resolved at the edge,
-   the function was never invoked). Confirmed the identical pattern on
-   `api/contracts/[...path].js`. Root cause: Vercel's automatic
-   filesystem-router recognition of the `[...path].js` catch-all
-   convention for this project (zero-config "Other" framework, no
-   Next.js) was only matching exactly one path segment, not "one or
-   more" — effectively behaving like a single dynamic segment
-   (`[path].js`) instead of a true catch-all. **Fix:** added explicit
-   `rewrites` to `vercel.json` —
-   `{"source": "/api/photos/:path*", "destination": "/api/photos/[...path]"}`
-   and the equivalent for `/api/contracts/:path*` — this is Vercel's own
-   documented pattern for forcing a bracket dynamic route to be recognized
-   via an explicit rewrite rather than relying on automatic detection
-   (see Vercel docs' Gatsby dynamic-API-route example, same shape). Also
-   hardened both handlers' `req.query.path` parsing to accept either an
-   array (the normal shape) or a joined string (in case the rewrite's
-   `:path*` hands it through differently) — see the `2026-08-19` comment
-   in each file. **Not yet verified live — this fix isn't deployed yet
-   (see git commands below). Re-test the same URLs after Anton pushes.**
-
-3. **Stuck "Saving…" indicator — not force-reproduced live (as expected).**
-   No safe way to force a hung fetch against the production API. The 20s
-   `AbortController` watchdog code was re-confirmed present and unchanged
-   in both `bikes.html` and `contract.html`. Left as **defensively fixed,
-   not live-confirmed** — same status as the overnight pass.
-
-4. **Bike-name autocomplete double space — confirmed live, byte-level.**
-   Opened Swap Bike on a rented bike, searched "gt black" — dropdown showed
-   "Gt black 4" / "Gt black 5" with clean single spaces. Checked the actual
-   DOM text content via script (not just visual inspection): every
-   "Gt black N" node on the page, including the dropdown, has
-   `/\s\s/.test(text) === false`. **Confirmed fixed.**
-
-5. **Extend "Amount paid" concatenation — confirmed live.** Opened Extend
-   on a rented bike, entered "3" days — the Amount field auto-filled
-   "436" (3 × ฿145/day) and came in pre-selected/highlighted from the new
-   `focusin` → `.select()` handler. Typed "500" over it: field cleanly
-   showed "500", not "436500". **Confirmed fixed.** (Cancelled out of the
-   form without saving — no real rental data touched.)
-
-6. **ServiceWorker console exception — confirmed live.** Reloaded
-   `pricing.html` with console tracking active from page load: zero
-   serviceWorker-related messages (only unrelated browser-extension
-   noise). **Confirmed fixed.**
-
-**Net result of this pass:** 4 of 6 original bugs now fully confirmed live
-(#1, #4, #5, #6). #3 remains defensively fixed but not force-reproducible.
-#2 turned out to still be broken post-deploy, was correctly root-caused
-this pass, and now has a real fix ready to push — see PROGRESS.md and the
-git commands prepared for Anton.
-
----
-
-## Report to Anton (2026-08-18, end of Accounts + Deposits pass)
-
-**What was tested:** every Add/Edit/Delete/Bulk-type-change/Transfer-to-Bank
-function on `accounts.html`, and every Add/Edit/Delete/Deduct function on
-`deposits.html`, all via live browser control against the real production
-app. All 4 expense payment methods, all 5 expense types, the bike-split
-checkbox, all 4 income payment methods, both Transfer-to-Bank source
-accounts, and all 3 deposit payment methods were each exercised at least
-once. Every ZZTEST row created has since been deleted/reversed via the
-app's own functions.
-
-**Result: one real, confirmed bug**, plus a few smaller notes.
-
-**The bug:** editing or deleting a Cash-side expense/income row can
-corrupt the `cash` sheet's layout (the fixed "total cash is 4 rows below
-income" assumption `recomputeCashSheetTotalsB` relies on gets silently
-overwritten by `deleteCashRowFromJson`'s row-shift logic, which has no
-boundary check before the summary rows). It first triggered on the very
-first Edit Expense test and, once triggered, became a **standing/ongoing
-condition** — every single write action for the rest of the session (all
-payment methods, not just Cash) kept re-hitting the same
-"cash" sheet layout has drifted (expected "total cash" 4 rows below
-"income") -- cash totals were NOT recomputed. warning, and the top
-summary cards (Total expenses, Business expenses, Cash, Bank, Income) went
-stale and stayed stale for the rest of the pass. Full technical detail,
-code citations, and the exact observed (sometimes inconsistent — some
-cells like Wise/Revolut self-corrected on some actions, Personal expenses
-updated but Business didn't on a type-change edit, etc.) recompute
-behavior are documented inline above, under each affected checklist item.
-
-**What's NOT affected — every row-level write checked out correctly:**
-every single add/edit/delete/bulk action's actual row data (amounts,
-payment methods, types, bike splits, deposit amounts) landed exactly
-right, matched hand-calculated deltas, and cross-checked correctly against
-`bike-income.html`'s independent read view for the split-bike tests. The
-bug is specifically in the SUMMARY recompute layer, not in the underlying
-writes themselves — as far as I can tell from the UI. The one thing I
-*can't* confirm without the raw JSON is whether the summary cells are
-merely stale on-screen or whether the actual stored numbers in
-`August.json`/`cash.json` are wrong too, since a full page reload does NOT
-fix them (confirmed early in the session) — meaning whatever's wrong is
-persisted, not just a client-side render lag.
-
-**Smaller notes, not bugs, just flagged for your call:**
-- "To Transfer"/"Transfer Complete" expense types both count identically
-  toward Business expenses/Actual profit as plain Business — confirm
-  that's intended.
-- Add Income has no Bank option (Cash/Scan/Wise/Revolut only); Add Deposit
-  has no Cash option (Scan(Bank)/Wise/Revolut only, since cash deposits
-  are handled by the separate Cash Deposit Deduction tool). Both look
-  intentional, just confirming.
-- Deduct Deposit writes a linked Income row automatically (deposit
-  deductions count as revenue) — by design, but good to know when
-  reconciling.
-- The Delete/Remove buttons on both pages use a native browser
-  `confirm()` dialog that the browser-automation tooling I'm using can't
-  answer directly — I worked around it with a JS monkeypatch
-  (`window.confirm = () => true`) rather than it being an app problem;
-  mentioning only because it means my Delete tests needed one extra step
-  to run, not because it affects a human clicking the button normally.
-- Deduct Cash Deposit was only tested on its safe/no-op path (nonexistent
-  customer) — didn't want to touch a real customer's real contract without
-  you picking which one first.
-
-**What I need from you to finish verifying:** the current
-`August.json`, `August_notes.json`, `cash.json`, `bikes.json`, and
-`transactionLog.json` from the 2026 Drive folder, so I can check the
-underlying stored numbers against everything documented above and confirm
-whether the frozen summary cards are a display-only problem or a real
-data problem. Once that's done we can talk about the fix for the
-cash-sheet-drift bug, and whether you want to reverse my 2 Transfer to
-Bank test runs (Cash→Bank ฿500, Wise→Bank ฿300) via whatever mechanism you
-had in mind, or just reset to your seed JSON for the next page's pass.
+# AA Scooters Staff App — Test Plan & Progress Log
+
+Read `TESTING-METHODOLOGY.md` (same folder) first — this file is the actual
+plan and running log built from it, not the methodology itself.
+
+## 0. Handoff — read this first if picking up this testing session
+
+**Status as of 2026-09-03 (created today):** this file is brand new — a plan
+only, nothing executed yet. Anton's explicit ask: build a comprehensive,
+whole-app test plan (not a shallow page-by-page checklist), modeled
+structurally on the sibling `property-app` project's testing setup but
+researched and written fresh for this app, then wait for him to log in
+before any live testing starts.
+
+**What prompted this:** this session already found and fixed 4 real bugs in
+this app through live investigation, not from a written plan — see §8. That
+pattern (real bugs surfacing live faster than any plan catches them) is
+exactly why Anton wants comprehensive, unassuming, actually-executed manual
+testing going forward rather than relying on "it should work."
+
+**Do this first, every time this file is picked up:**
+1. Confirm the latest commit is actually deployed (Vercel dashboard,
+   "Ready" against Anton's most recent push) — testing stale code wastes
+   the whole session.
+2. Re-read §0's "Progress so far" note below (once one exists) before
+   picking an area to start on.
+3. Set up test entities per §3 before touching anything — do not skip this.
+
+**Progress so far (as of 2026-09-03, this session):** Substantial live
+testing done on the ISOLATED TEST ACCOUNT (`anton.weiersmuller@gmail.com`,
+NOT the real business login -- corrected 2026-09-03: this file previously said
+`anton.voicemail@gmail.com`, which was wrong; Anton confirmed live that
+`anton.weiersmuller@gmail.com` is the correct isolated test account), seeded via "Reset data from latest deploy"
+with real Jan-Aug 2026 data, September created fresh. Full detail is in
+§6 (bugs) and §7 (progress tracker, chronological) below -- read §7 top to
+bottom, it's the real record. Quick-reference summary for whoever picks
+this up next:
+
+**Areas fully or substantially tested (see §7 for exact cases/results):**
+5.1 Auth & login, 5.2 Contract-Create (all CTR-01..08, CTR-09 deferred to
+5.9), 5.3 Multi-bike (all MBIKE-01..10, MBIKE-08 blocked by environment --
+see below), 5.4/5.5 Search/Edit/Cancel + Pending flow (CTR-EDIT-01/02,
+CTR-CANCEL-01, CTR-DEL-CASCADE-01, PEND-01..04), 5.6 Accounts Expenses/
+Income CRUD (ACC-01..06; ACC-07 done separately, see below), 5.13 Add
+Bike/Fleet (FLEET-01..03, AUDIT-01 partial).
+
+**3 real bugs found in §6 -- ALL 3 NOW FIXED & VERIFIED (2026-09-03,
+same session)**, per Anton's explicit instruction ("let's just fix all the
+bugs, and then you can retest them as you go... continue on with your
+testing plan"):
+- **BUG-01** (High, FIXED): editing a RENTED contract's Total price,
+  Paid-by, or Status (e.g. canceling it) never updated the Accounts
+  income/cash ledger. Fixed via reference-based reconciliation (new
+  income/cash ledger reference columns on the Contract sheet, written at
+  Rent time, patched/cleared on edit) in `lib/contractWrites.js`.
+  Retested live across 3 scenarios (price change, paid-by change, leaving
+  Rented) -- all pass. Full detail in §6.
+- **BUG-02** (Blocker, FIXED): editing a RENTED contract's Deposit method
+  reported success but did not actually clear the old deposit ledger row.
+  Fixed by adding a real reference-based clear (`writeContractRefColumnFromJson`)
+  alongside the existing clear path. Retested live (Scan->Wise on a fresh
+  Rented contract) -- old entry correctly cleared, new entry correctly
+  created, reference correctly repointed. Full detail in §6.
+- **BUG-03** (High, security, FIXED): the Accounts expense-description
+  field (and 3 other render sites: income name/paidBy, save-review labels,
+  cash disambiguation) rendered user text via unsafe `innerHTML`, allowing
+  a real EXECUTING stored XSS. Fixed with a shared `escapeHtml()` helper
+  in `accounts.html`. Retested live -- the same probe now renders inert.
+  Full detail in §6.
+All 3 fixes committed together as `7e81625` (pushed by Anton manually --
+this environment's git push is network-egress-blocked, see below),
+confirmed deployed on Vercel, and retested against the live deployed app
+before resuming the broader test plan.
+
+**UPDATED 2026-09-04 (later same day) -- BUG-04, BUG-05, and the CONC-01
+finding are all FIX APPLIED, committed locally, NOT YET pushed/deployed/
+retested (same git-push-is-network-blocked-in-this-environment situation
+as BUG-01/02/03 -- see push commands below):**
+- **BUG-04** (Blocker, bike double-booking): fixed by adding a shared
+  `findConflictingRentedContractRowB` overlap check, wired into every
+  place a Contract row becomes Rented across `lib/contractWrites.js`
+  (`markMatchingContractAsRentedFromJson`, `editContractFromJson`),
+  `lib/customersWrites.js`'s own duplicate of `markMatchingContractAsRentedFromJson`,
+  and `lib/bikesWrites.js`'s `flipMatchingContractStatus`. Hard-blocks on
+  the direct edit path; surfaces as a non-blocking warning (Contract row
+  stays Pending) on the concurrent customer-intake chains, which already
+  treat that flip as best-effort by design. See §6 for full detail.
+- **BUG-05** (High, stale bike-income totals): fixed by porting the
+  `recomputeBikeRowTotalsB` cascade (already correct in `accountsWrites.js`)
+  into `lib/bikesWrites.js`, `lib/contractWrites.js`, `lib/customersWrites.js`,
+  and `lib/depositsWrites.js`, wired into every one of those files' own
+  `addRentalAmountToBikesSheetFromJson`/`addRentalAmountToBikesSheetForMonthFromJson`
+  copies. A one-time repair pass for already-stale REAL bikes' totals is
+  still outstanding (not part of this fix) -- see §6.
+- **CONC-01** (High, Expense/Income edit race): fixed by adding the same
+  retry-on-conflict + re-fetch-and-reapply pattern already used elsewhere
+  in `accountsWrites.js` (cash sheet, notes sidecar, deposit totals) to
+  `editExpenseRowFromJson`/`editIncomeRowFromJson`'s own core row write.
+
+**Commit:** `3c644fa` on `main`, local only -- Anton needs to push from his
+own machine (same network restriction as before): run `git push origin main`
+in this folder, wait for the Vercel deploy to finish, then this session (or
+whoever continues it) can retest all three live exactly like BUG-01/02/03
+got retested. NONE of these three have been retested against the live
+deployed app yet -- that's the very next step once pushed.
+
+**Also flagged live to Anton (not filed as bugs, already accepted by
+him for this test pass, do not re-raise unless he brings it up):** no
+email/domain allowlist on login (`api/auth/callback.js`) -- any Google
+account can sign in; and the isolated test account's data is a bundled
+copy of real historical business data (by design, for cascade-testing --
+Anton said "leave it alone, it's for testing").
+
+**Real behavior findings worth Anton's attention, not bugs:** (1) every
+contract created via the main form lands as status Pending, only hits the
+cash/deposit ledgers once pulled through Pending->Rent -- confirm this
+matches his mental model. (2) Total price = 0 is silently accepted
+(comped rentals) -- confirm intended. (3) MBIKE-08 (View/Update Contract
+PDF) is BLOCKED in this environment specifically -- fails with "Could not
+find the contract template Doc... inside AA Scooters Contracts Drive
+folder" because the isolated test account's Drive only got the 27 JSON
+data files from "Reset from latest deploy", not the master template Doc
+that lives directly in Drive. Not a code bug -- needs that template
+copied into the test account's Drive folder to actually test PDF
+generation, or accept as an out-of-scope gap.
+
+**KNOWN LOOSE END -- fix or re-check first thing next session:** a test
+expense row ("ZZTEST expense type persistence", ฿77, Cash, September
+sheet row 2 per a direct API read) would not delete -- clicked Delete in
+the UI three times across ~20+ seconds of waiting, modal closed each time
+(optimistic UI), but a direct `/api/data/September?year=2026` re-fetch
+confirmed the row is still there server-side. Every other delete this
+session (5+ of them) worked within 5-8s, so this looks like a genuine,
+reproducible one-off failure worth a real look, not just automation
+flakiness -- but wasn't dug into further because the session was cut
+short by usage limits. This is a small, contained ZZTEST-prefixed test
+row on the isolated account -- harmless to leave as-is, but skews
+September's Total expenses (฿77 too high) until cleared, so re-check
+before trusting September's own expense total for anything.
+
+**STATUS as of 2026-09-04 (continued testing pass):** 5.9 File uploads,
+5.10 Deposits, 5.11 Customers, 5.12 Bikes Status, and 5.15 Concurrency are
+now DONE (see §7's 2026-09-04 rows for full detail) -- this pass found 2
+MORE real bugs (BUG-04 Blocker: no double-booking prevention at all;
+BUG-05 High: bike-income.html's headline totals never recompute from real
+rental activity) plus one unfiled finding (CONC-01: Expense/Income edits
+have no conflict protection, silently lose a concurrent field change).
+
+**STILL NOT YET STARTED:** 5.7/5.8 Accounts regression re-checks (code fix
+already verified earlier this session per §8, just not re-run against
+this file's own case IDs), the REST of 5.14 Read-only/secondary pages
+(PRICE-01, CAL-01, OIL-01, REPLY-01, SET-01 -- AVAIL-01/INCOME-01 are
+done), and 5.16's own dedicated unscripted exploratory pass (a good deal
+of incidental exploratory-style testing happened while chasing BUG-04/05
+live, but the charter's own 15-20-minute-per-area unscripted passes
+haven't been run as their own thing).
+
+**Test entities created this session, live on the isolated account right
+now (cleanup NOT yet done -- Anton hasn't asked for it since this account
+gets wiped for a second full testing round later anyway, but flagging so
+nobody's surprised):** bikes ZZTEST-Bike-01/02/03; several ZZTEST-prefixed
+contracts in various states (Pending/Rented/Canceled) on
+ZZTEST-Bike-01/02/03; the one stuck ZZTEST expense above; plus, from the
+2026-09-03 bug-fix retest pass, two more contracts -- "ZZTEST BugRetest
+One" (Contract row 1299, Rented) and "ZZTEST BugRetest Two" (Contract row
+1300, ended in status Returned after the retest's 3 edit scenarios) --
+and their associated September-sheet income/cash/deposit ledger rows
+(income+deposit rows around September rows 6-7, cash row 355 now blank
+after the paid-by-change scenario cleared it).
+
+**Next steps for whoever continues this:** 1) ~~Decide with Anton whether
+to start fixing BUG-01/02/03~~ -- DONE, all 3 fixed and retested 2026-09-03,
+see §6/§7. 2) ~~Re-check/resolve the stuck expense-delete loose end~~ --
+DONE 2026-09-04: deleted directly via `/api/accounts/write` action
+`deleteExpense` (no `needsDisambiguation` this time), confirmed gone via a
+fresh server-side read; September's Total expenses is back to ฿0.00 as of
+this session. 3) ~~Decide with Anton whether to fix BUG-04/BUG-05/CONC-01~~ -- DONE,
+Anton said to fix and continue; all three fixed and committed locally
+2026-09-04 (commit `3c644fa`), full detail in §0/§6. **NOT YET pushed,
+deployed, or retested** -- Anton needs to `git push origin main` from his
+own machine, then whoever continues this needs to retest all three live
+exactly like BUG-01/02/03 got retested, and update §6/§7 accordingly.
+4) Finish the rest of
+§5.14 (PRICE-01, CAL-01, OIL-01, REPLY-01, SET-01) and §5.7/5.8's
+regression re-checks -- the only scripted areas from the original plan not
+yet touched. 5) Eventually clean up the (now quite large) set of ZZTEST
+test entities created across both sessions -- not urgent, account gets
+wiped for a second round later per earlier notes, but flagging that it's
+grown substantially (contracts up to row ~1305, customer rows up to
+~1327).
+
+## 1. Purpose & scope
+
+Whole-app manual test coverage for the AA Scooters staff app
+(`staff-app-six-phi.vercel.app`), covering every page reachable from the
+nav bar plus the handful of utility pages that aren't (bike-income,
+bike-name-audit, reply-assistant) — see §4 for the full inventory. Excludes
+`Code.gs` (the legacy Apps Script backend some older flows may still touch)
+except where a page is confirmed to still route through it — flag and
+confirm with Anton rather than assume either way.
+
+### Testing approach (why this structure)
+
+Same reasoning as `TESTING-METHODOLOGY.md` §1: this is one live business's
+real data, not a disposable test tenant, so every section below opens with
+its own test-data setup and closes with its own cleanup + balance
+reconciliation check, rather than a single global setup step. Sections are
+ordered roughly by financial risk first (accounts/cash — this is what broke
+in the incident that started this whole session), then by how much of the
+app depends on it (contracts, bikes), then by lower-risk/secondary areas
+last, matching `property-app`'s own priority convention.
+
+## 2. Test environment
+
+- **URL:** `https://staff-app-six-phi.vercel.app` — the deployed app only,
+  never local dev (see methodology §5).
+- **Browser:** Chrome via `claude-in-chrome`, or the built-in browser pane
+  as a fallback if the extension is offline — both usable interactively,
+  Chrome preferred per this session's default.
+- **Login:** Anton will provide a fresh login for this testing pass (his
+  message: "I'll log in on the browser with the new login"). Confirm which
+  staff account this is and whether it has full permissions before relying
+  on any permission-gated action failing/succeeding as a real result.
+- **Vercel dashboard access:** used to confirm deployment status before
+  each session — via the browser, same as earlier this session.
+
+## 3. Test data safety setup — read before writing anything
+
+Per methodology §0. Before any write-testing session:
+
+1. **Naming convention:** every test customer/description uses the prefix
+   `ZZTEST-` (e.g. `ZZTEST-Alice Tester`), every test bike (if one needs to
+   be created — normally avoid this, use an existing real bike only for
+   read-only/status-check cases) uses `ZZTEST-Bike-01` style naming that
+   cannot be confused with a real fleet bike.
+2. **Balance snapshot:** before any `accounts.html`/`deposits.html`/
+   `contract.html` (payment-related) case, record the current month's
+   Cash / Bank / Wise / Revolut / Total figures from `accounts.html`'s
+   summary card. Screenshot or note them.
+3. **Test, then immediately reverse:** every test Contract/Expense/Income/
+   Deposit row created gets deleted (or its bike un-rented/returned) before
+   moving to the next case, not batched up for a big cleanup at the end —
+   a crash or session cutoff mid-batch should never leave real books wrong.
+4. **Re-check the balance snapshot** after cleanup for that section. If it
+   doesn't match, stop and investigate before continuing to the next
+   section — do not assume it will self-correct (this is literally how the
+   September incident this session started with went unnoticed).
+5. **Never test bulk/irreversible actions against real rows** — e.g.
+   `bulkSetExpenseType` ("Complete Transfers") should only ever be tested
+   against `ZZTEST-` rows created for that purpose, never run against a
+   real month's real expenses to "see what happens."
+
+## 4. Page & method inventory
+
+Built by reading `nav.js` and every `lib/*Writes.js` dispatcher directly
+(not guessed) — this is the actual, complete surface area as of 2026-09-03.
+
+| Page | Purpose | Write layer | Actions (dispatch cases) |
+|---|---|---|---|
+| `login.html` | Staff sign-in | `api/auth/*` | login / logout / session |
+| `index.html` | Tool picker | — (read-only) | — |
+| `contract.html` | Create/search/edit/cancel rental contracts, pending-contract Rent/Cancel, calendar reminders | `contractWrites.js` | `addContract`, `editContract`, `cancelContract`, `customerIntake`, `resolveDepositLedgerPick`, `listOpenSecurityDeposits`, `setDeliveryPickupLink`, `listDeliveryPickupLinks`, `addCalendarReminder`, `editCalendarReminder`, `completeCalendarReminder`, `listCalendarReminders`, `manualCalendarSync`, `cleanupDuplicateCalendarEvents`, `calendarConnectionStatus`, `disconnectCalendar` |
+| `accounts.html` | Monthly expenses/income, cash/bank/wise/revolut balances, transfer to bank | `accountsWrites.js` | `addExpense`, `editExpense`, `deleteExpense`, `addIncome`, `editIncome`, `deleteIncome`, `bulkSetExpenseType`, `transferToBank`, `recomputeSummary`, `repairOrphanedCashRows` (one-time, already used — do not re-run casually) |
+| `deposits.html` | Deduct/log security deposits against a contract | `depositsWrites.js` | `addDeposit`, `editDeposit`, `deleteDeposit`, `deductDeposit`, `deductCashDeposit` |
+| `customers.html` | Direct customer-record intake (separate from Contract) | `customersWrites.js` | `customerIntake`, `march` (name unconfirmed — investigate what this actually does before writing cases for it) |
+| `bikes.html` | Fleet status, rent/return/extend/swap | `bikesWrites.js` | `customerIntake`, `markReturned`, `extendBike`, `closeBikeForExtend`, `earlyReturnBike`, `swapBike`, `updateReturnPickup`, `returnDeposit` |
+| `add-bikes.html` | Add/edit/sell/unsell fleet bikes | `addBikesWrites.js` | `addBike`, `editBike`, `sellBike`, `unsellBike` |
+| `available-bikes.html` | Multi-bike availability + quote picker | (read-mostly, feeds Contract) | — |
+| `bike-income.html` | Per-bike income/expense/profit report | (read-only) | — |
+| `bike-name-audit.html` | Cross-sheet bike-name consistency checker | (read-only) | — |
+| `bikephotos.html` | Upload/view/delete bike photos | `api/photos/[...path].js` | upload, delete |
+| `calendar.html` | Bike-return calendar (synced from customer sheet) | `googleCalendarSync.js` | (sync only, via contractWrites' calendar actions) |
+| `oilchange.html` | Oil-change priority list | `bikesWrites.js`-adjacent | (read + edit via Parts & Oil) |
+| `parts.html` | Parts & Oil per-bike record | `bikesWrites.js`-adjacent | edit |
+| `pricing.html` | Price calculator | (read-only calc) | — |
+| `reply-assistant.html` | AI WhatsApp reply generator | `api/ai/[...path].js` | AI call only, no sheet writes |
+| `settings.html` | AI provider, transaction history, account options | `api/admin/reset.js`-adjacent | settings changes, possibly a reset action — confirm scope before testing |
+
+## 5. Test areas & cases
+
+Each area below: setup → scripted cases (happy path, boundary/negative,
+cascade) → cleanup + balance re-check → a short exploratory pass. Case IDs
+are stable — reference them from the bug log (§6) and progress tracker
+(§7).
+
+### 5.1 Auth & login (`login.html`)
+
+- **AUTH-01** Valid login succeeds, lands on `index.html`.
+- **AUTH-02** Wrong password — clear error, no partial session created.
+- **AUTH-03** Session persists across a page reload; expires appropriately
+  (check how long — don't assume, read `session.js`'s actual TTL first).
+- **AUTH-04** Logout actually clears the session (back button after logout
+  shouldn't show authenticated content).
+- **AUTH-05** Direct navigation to any page while logged out redirects to
+  login rather than rendering a broken/partial page.
+
+### 5.2 Contract — Create (`contract.html`, single bike)
+
+- **CTR-01** Full valid single-bike contract, every optional field filled
+  (helmets, delivery, deposit with currency change, "Deal" checked) — saves,
+  appears in Search, PDF generates correctly.
+- **CTR-02** Minimum-required-only contract (name, bike, dates, total
+  price, paid-by) — saves without the optional fields breaking anything.
+- **CTR-03** Boundary: total price `0` (comped rental) — confirm intended
+  behavior (accept or reject?) rather than assuming.
+- **CTR-04** Negative: blank required field (name, bike model) — client-side
+  validation blocks submit with a clear message, not a server 500.
+- **CTR-05** Negative: bike model that doesn't match the fleet — picker/
+  validation catches it (`validateBikeModelOrShowPicker`).
+- **CTR-06** Adversarial: name/passport with XSS-shaped text, very long
+  text, non-Latin script (real case for this business, not hypothetical).
+- **CTR-07** Double-submit (click Create twice fast) — `clientTxnId`
+  idempotency prevents a duplicate row.
+- **CTR-08** Cascade: paid-by Cash → confirm it lands correctly on the
+  "cash" sheet AND the monthly Cash balance moves by the right amount.
+  Paid-by Wise/Revolut → confirm the deposit total updates.
+- **CTR-09** Passport photo upload on create — see §5.9 file-upload cases,
+  run at least one here specifically in the contract-create context.
+
+### 5.3 Contract — Multi-bike, manual per-bike amounts (new today, 2026-09-03)
+
+This is today's newest change — replaced the old even-split with manual
+per-bike amounts, with forced validation. Not covered by any prior test
+case anywhere; treat as a first-time pass, not a regression check.
+
+- **MBIKE-01** Add a 2nd bike — confirm the per-bike amount box appears
+  next to BOTH bikes (primary included), and Total price switches to
+  read-only.
+- **MBIKE-02** Enter different amounts per bike (e.g. 500 / 800) — confirm
+  Total price live-updates to the exact sum (1300) as you type.
+- **MBIKE-03** Leave one bike's amount blank, click "Create contract" —
+  blocked with an error naming that specific bike, focus lands on its box,
+  nothing saved.
+- **MBIKE-04** Submit with both amounts filled — confirm TWO separate
+  linked Contract rows are created (`linkedGroupId` shared,
+  `linkedBikeIndex` 0/1), each with its OWN entered amount as its
+  `totalPrice`, not an even split.
+- **MBIKE-05** Remove the 2nd bike back down to 1 — confirm the amount box
+  disappears and Total price becomes editable again, holding whatever value
+  was last computed (or does it need clearing? — confirm intended UX, not
+  assumed).
+- **MBIKE-06** 3+ bikes with different amounts — confirm all save
+  correctly, sum matches, no off-by-one on which amount maps to which bike.
+- **MBIKE-07** Cascade: multi-bike contract paid by Cash — confirm the
+  COMBINED total (not one bike's share) is what lands on the cash sheet
+  (this exact class of bug — one bike's share used where the combined
+  total should be — is what `property-app`'s own multi-bike PDF bug was;
+  confirm this app's cash-sheet append doesn't have the same mistake).
+- **MBIKE-08** View Contract / Update Contract on a multi-bike group —
+  PDF shows every bike + the combined total (already fixed/verified this
+  area earlier — re-confirm still correct after today's amount change).
+- **MBIKE-09** Cross-entry-point: edit ONE bike's amount via Search → Edit
+  contract → Total price → Save. Confirm only that one linked row changes,
+  siblings and the group's combined total (as shown elsewhere) update
+  correctly, nothing gets redistributed.
+- **MBIKE-10** Form reset after a successful multi-bike save — confirm the
+  amount boxes/extra bike lines are fully cleared, not carried into the
+  next contract (this exact "stale carried-over field" shape of bug was
+  `property-app`'s `BUG-13`/`BUG-12` chain — worth checking here too).
+
+### 5.4 Contract — Search / Edit / Cancel
+
+- **CTR-EDIT-01** Edit an existing (test) contract's every field, confirm
+  each saves individually without touching unrelated fields.
+- **CTR-EDIT-02** Change payment method on edit — confirm the OLD payment
+  method's ledger impact is reversed and the NEW one applied, not both
+  landing (this class of bug is explicitly what `originalDeposit`/
+  `originalDepositAmount` in the edit payload exists to prevent — confirm
+  it actually works, don't just trust the code comment).
+- **CTR-CANCEL-01** Cancel a pending contract — status updates, no
+  cash/deposit impact if it was never rented.
+- **CTR-DEL-CASCADE-01** Cancel/delete a RENTED test contract — confirm
+  cash-sheet entry and deposit total are correctly reversed, not left
+  orphaned (methodology §2 CRUD matrix — Delete must undo what Create did).
+
+### 5.5 Contract — Pending contracts / Rent / Cancel flow
+
+- **PEND-01** Create a pending contract via Contract, then Rent it via the
+  "Pending contracts" picker — confirm it becomes a real active rental with
+  correct fields carried over.
+- **PEND-02** Cancel a pending contract from the picker instead.
+- **PEND-03** A multi-bike pending group — "Rent all"/"Cancel all" buttons
+  act on every linked bike at once, not just the one clicked into.
+- **PEND-04** Cross-entry-point: does renting via the Pending picker
+  (`customerIntake` in `contractWrites.js`) hit the SAME cash-ledger append
+  path as a direct Contract creation, or a different one? (Methodology §1
+  cascade-verification concern — confirm, don't assume, given this app's
+  documented pattern of duplicating the cash-append logic per file.)
+
+### 5.6 Accounts — Expenses & Income CRUD
+
+- **ACC-01** Add expense, every payment method (Bank/Cash/Wise/Revolut) —
+  confirm each lands on the correct balance.
+- **ACC-02** Add income, every "Paid by" method — same check.
+- **ACC-03** Edit an expense/income's amount — monthly summary
+  (Total expenses/income, Net profit) recalculates correctly.
+- **ACC-04** Delete an expense/income — reverses cash/deposit impact
+  cleanly (CRUD-matrix Delete check again).
+- **ACC-05** Boundary: `0.00` amount — this app's own bug history
+  (`BUG-01` in the sibling app was exactly a $0 crash) makes this worth
+  checking explicitly here too, even though it's a different codebase.
+- **ACC-06** Negative: description with XSS-shaped text, very long text.
+- **ACC-07** Expense Type dropdown — every option (Business/Personal/
+  Wages/To Transfer/Transfer Completed) sets the right color/tag and
+  persists after a real page reload (see §5.7 — this exact case, on a
+  different month, was a real bug found and fixed today).
+
+### 5.7 Accounts — Expense-type/bike-split notes persistence (regression, fixed 2026-09-03)
+
+Seeded directly from today's real bug — see §8 item 2. The root cause was
+a hardcoded month whitelist that stopped the app from ever reading back
+saved notes for any month past August.
+
+- **NOTES-01** Set an expense to "To Transfer" on the CURRENT month, hard
+  refresh the page (not just re-render) — confirm it's still yellow/tagged
+  "To Transfer" after reload. This is the exact repro that was broken.
+- **NOTES-02** Same check on a bike-split note (split an expense/income
+  across two bikes), reload, confirm the split survived.
+- **NOTES-03** Run the same check on next month once it rolls over — this
+  bug's whole shape was "works for the two months that existed when the
+  code was written, breaks for every month after" — an off-by-N version of
+  this bug is a real risk if the fix itself has any hardcoded assumption
+  left in it. Re-read `accounts.html`'s current notes-fetch code before
+  marking this closed for good.
+
+### 5.8 Accounts — Cash ledger summary-block boundary (regression, fixed 2026-09-03)
+
+Seeded from today's real incident (the original bug that started this
+whole session) — see §8 item 1.
+
+- **CASH-01** Add income/expense with Cash as the payment method when the
+  "cash" sheet's real data is already close to its own summary-block
+  boundary (per the fix, this should now transparently insert room and
+  keep working — but confirm live, don't just trust the standalone Node
+  test already run this session, which used synthetic not real data).
+- **CASH-02** Repeat CASH-01 through EVERY entry point that appends to the
+  cash sheet — `accounts.html` add-expense/add-income, a bike rental paid
+  in cash (`bikesWrites.js`), and a contract paid in cash
+  (`contractWrites.js`) — per methodology §1's cascade-verification rule,
+  since these are 3+ separately duplicated implementations of the same
+  fix, not one shared one.
+- **CASH-03** Confirm the monthly summary cascade (`recomputeMonthlySummaryCascadeB`)
+  correctly re-sums after a boundary-crossing insert — the running total
+  should include the new row, not just the row count.
+
+### 5.9 File uploads (bike photos, passport photos, WhatsApp screenshots)
+
+- **FILE-01** Valid JPG/PNG upload succeeds and displays correctly
+  (including EXIF-rotated phone photos — a very real case for passport/
+  bike photos taken on a phone).
+- **FILE-02** Oversized file, 0-byte file, non-image file renamed with an
+  image extension — clear rejection, no crash.
+- **FILE-03** Delete an uploaded photo — confirm it's actually gone (not
+  just hidden client-side) on a fresh reload.
+- **FILE-04** WhatsApp "Fill from WhatsApp (AI)" and passport-photo AI
+  auto-fill — a garbled/low-quality screenshot degrades gracefully (asks to
+  enter by hand) rather than confidently filling in wrong data.
+
+### 5.10 Deposits (`deposits.html`)
+
+- **DEP-01** Deduct a deposit against a real (test) contract that has a
+  deposit amount recorded — confirm it deducts the right amount from the
+  right method.
+- **DEP-02** Deduct against a customer with NO deposit recorded on their
+  contract — per this page's own stated behavior ("nothing is deducted, no
+  error") confirm that's actually true, not just documented.
+- **DEP-03** Edit/delete a deposit entry — cascades correctly.
+- **DEP-04** Cash deposit deduction specifically (`deductCashDeposit`) vs.
+  the general `deductDeposit` — confirm both paths land on the correct
+  balance, since these are separate actions/code paths per §4's inventory.
+
+### 5.11 Customers (`customers.html`)
+
+- **CUST-01** `customerIntake` — full valid record.
+- **CUST-02** Investigate and document what the `march` action actually
+  does (name gives no hint) before writing real cases for it — do not
+  guess.
+- **CUST-03** Cross-entry-point: does a customer created via Contract's own
+  intake produce an equivalent record to one created directly here?
+
+### 5.12 Bikes Status (`bikes.html`)
+
+- **BIKE-01** `markReturned` — bike flips to available, return date/time
+  recorded.
+- **BIKE-02** `extendBike` — due-back date moves, price recalculates if
+  applicable, calendar event updates.
+- **BIKE-03** `earlyReturnBike` — confirm this correctly differs from a
+  normal `markReturned` (presumably a refund/partial-charge implication —
+  confirm by reading the code, don't assume it's identical).
+- **BIKE-04** `swapBike` — customer keeps their contract but changes
+  physical bike; confirm the OLD bike goes available and the NEW one goes
+  rented, no state where both or neither show correctly.
+- **BIKE-05** `closeBikeForExtend` / `updateReturnPickup` — confirm exact
+  intended behavior by reading the code first (names are not fully
+  self-explanatory), then test that behavior specifically.
+- **BIKE-06** `returnDeposit` — same balance-impact checks as §5.10.
+
+### 5.13 Add Bike / Fleet management (`add-bikes.html`)
+
+- **FLEET-01** `addBike` — writes to every sheet it's supposed to (per this
+  page's own description: Bike Tax, Parts and Oil change, Operation,
+  bikes), shows up in every dropdown across the app immediately (Contract's
+  bike picker, Available Bikes) without needing a hard refresh.
+- **FLEET-02** `editBike`, `sellBike`, `unsellBike` — each reversible,
+  `unsellBike` genuinely undoes `sellBike` with no residue.
+- **FLEET-03** Cross-cutting: does a newly-added bike immediately appear
+  correctly in `bike-name-audit.html`'s consistency check, or does that
+  page have its own stale-cache risk?
+
+### 5.14 Read-only / secondary pages
+
+- **AVAIL-01** `available-bikes.html` — multi-bike date-range availability
+  and pricing is correct against a known bike's real rate.
+- **PRICE-01** `pricing.html` calculator matches a real contract's actual
+  charged total for the same bike/dates (cross-check against §5.2).
+- **INCOME-01** `bike-income.html` per-bike totals match a hand-sum of that
+  bike's actual rows for the month.
+- **AUDIT-01** `bike-name-audit.html` correctly flags a genuinely
+  inconsistent name (create one deliberately with a `ZZTEST` bike, confirm
+  it's flagged, then remove it).
+- **CAL-01** `calendar.html` shows a test contract's real due-back date/
+  time, updates when that contract is extended/returned.
+- **OIL-01** `oilchange.html` priority ordering matches the real
+  Parts & Oil data (spot-check 2-3 bikes by hand).
+- **REPLY-01** `reply-assistant.html` — generates a reasonable reply for a
+  test customer/bike selection; a nonsense/empty instruction degrades
+  gracefully rather than crashing or sending nothing usable to WhatsApp
+  (confirm it does NOT actually auto-send without a staff review step).
+- **SET-01** `settings.html` — AI provider switch actually changes which
+  provider subsequent AI calls use (verifiable via behavior, not just the
+  UI state); transaction-history view matches real recent activity; any
+  reset/admin action here is confirmed SAFE before ever running it for
+  real (test against a throwaway state if at all possible).
+
+### 5.15 Concurrency / multi-staff simultaneous use
+
+Per methodology §1's manual two-tab technique — this app is used by
+multiple staff at once in real life, and this session already found two
+real classes of "looks saved, actually wasn't" bugs without any
+concurrency involved at all, which raises the odds a genuine concurrent
+scenario finds more.
+
+- **CONC-01** Two tabs, same test expense open in both, edit different
+  fields in each, save A then B — confirm B's save doesn't silently
+  discard A's change (this is exactly what the retry-on-conflict fix
+  added this session to `lib/*Writes.js` is supposed to prevent — confirm
+  it live, the standalone code fix was never browser-verified this way).
+- **CONC-02** Two tabs both marking the SAME test expense's type
+  ("To Transfer" in one, "Personal" in the other) within a couple of
+  seconds — confirm one wins cleanly and the other either retries onto the
+  latest state or shows a clear conflict, never a silent last-loaded-wins
+  data loss.
+- **CONC-03** Two staff renting out the same bike from two tabs at nearly
+  the same moment (using a `ZZTEST` bike, not a real one) — confirm the
+  app prevents double-booking or at minimum surfaces it clearly, rather
+  than silently creating two active rentals for one physical bike.
+
+### 5.16 Cross-cutting exploratory charter
+
+After the scripted cases above pass for a given area, a 15-20 minute
+unscripted pass per methodology §1 — try to break it, not just confirm it
+works. Particularly worth aiming at: the Contract multi-bike flow (newest,
+least battle-tested), the cash-ledger append paths (highest financial
+risk, most duplicated code), and anything involving the calendar sync
+(external Google Calendar API, most likely to have timing/quota surprises
+no scripted case would think to check).
+
+## 6. Bug log
+
+| ID | Area | Test case | Steps to reproduce | Expected | Actual | Severity | Status |
+|----|------|-----------|---------------------|----------|--------|----------|--------|
+| **BUG-05** | Bikes Status / Bike Income (`bike-income.html`, root cause spans `lib/bikesWrites.js`, `lib/contractWrites.js`, `lib/customersWrites.js`, `lib/depositsWrites.js`) | INCOME-01 | 1. Note any bike's current-month rental income landing correctly in its own month column on the "bikes" sheet (confirmed all session via direct API reads -- e.g. ZZTEST-Bike-01's "sept" column correctly accumulated to ฿7,000 across several real transactions: initial rent, a deposit deduction, `returnDeposit`). 2. Open `bike-income.html` (no need to expand "SHOW MONTHS") and look at that same bike's headline Income/Profit/Net Profit columns. | The headline Income/Profit/Net Profit figures should reflect the bike's actual accrued rental income, matching a hand-sum of its own month-column rows (per this test case's own stated goal) -- these are meant to be the same money, just displayed two ways (aggregate vs. per-month breakdown). | They do NOT match, confirmed live: ZZTEST-Bike-01 shows Income ฿0 / Profit ฿0 / Net Profit -฿35,000 on `bike-income.html`'s main table, despite genuinely having ฿7,000 of real September rental income sitting in its own "sept" column (independently confirmed via `/api/data/bikes` reads throughout this session) -- same for ZZTEST-Bike-02 and ZZTEST-Bike-03. Root cause fully traced by code read: `bike-income.html`'s main table reads its "Income" figure from the "bikes" sheet's own **`total`** column (a separate, distinct column from the per-month "sept"/"oct"/etc columns, only visible via the page's "SHOW MONTHS" toggle) -- and `total` (along with `expenses`/`profit`/`net profit`) is a pre-computed SUM that has to be explicitly recalculated any time a month cell changes, since the JSON data model has no live spreadsheet formulas. A real recompute function for exactly this (`recomputeBikeRowTotalsB`) DOES exist in the codebase -- but it is ONLY ever called from `accountsWrites.js`'s own "split an expense/income across one or more bikes" feature (the Accounts page's bike-split rows). EVERY rental-flow write path that credits a bike's month column via `addRentalAmountToBikesSheetFromJson`/`addRentalAmountToBikesSheetForMonthFromJson` (each file -- `bikesWrites.js`, `contractWrites.js`, `customersWrites.js`, `depositsWrites.js` -- has its own duplicated copy of this function) NEVER calls the recompute function afterward. Confirmed by grep across the whole codebase: `recomputeBikeRowTotalsB`'s only call site is inside `accountsWrites.js` itself. Real-world impact: for ANY bike (not just these ZZTEST ones) whose rental income comes through the normal Contract/Rent flow, deposit deductions, extensions, or early returns -- i.e. virtually every real rental transaction in this app -- `bike-income.html`'s main Income/Profit/Net Profit table silently understates or shows stale figures, and only the money that happened to also go through Accounts' manual "split across bikes" feature is reflected. Spot-checked one real, long-standing bike ("Aerox cool 1") for contrast: its `total` (฿64,550) currently DOES match a hand-sum of its own month cells -- but only because that bike happens to have had zero September activity yet (`total` = `2025` carryover + Σ Jan-Aug, and Sept/Oct/Nov/Dec are all still `null` for it); the moment it earns ANY rental income through the live app this month, its `total` will silently freeze and go stale exactly like the ZZTEST bikes already have. | High -- this is the app's core "how much has this bike earned" business metric silently going stale for essentially all real rental activity going forward, not just a display glitch on an obscure page; distinguished from Blocker only because the underlying month-by-month data IS correct and recoverable (visible via "SHOW MONTHS", and a fix can recompute `total`/`expenses`/`profit`/`net profit` from it at any time without any data loss). | **Fix applied 2026-09-04** (not yet pushed/deployed/retested -- see §0 handoff). Ported `findBikesHeaderColIdxB`/`recomputeBikeRowTotalsB`/`recomputeBikeRowSoloTotalsB` (plus a small shared `applyBikeRowTotalsCascadeB` wrapper) into `lib/bikesWrites.js`, `lib/contractWrites.js`, `lib/customersWrites.js`, and `lib/depositsWrites.js`, and wired the cascade into every one of those files' own `addRentalAmountToBikesSheetFromJson`/`addRentalAmountToBikesSheetForMonthFromJson` copies (best-effort -- a cascade failure surfaces as a warning after the month-cell write, exactly like `accountsWrites.js`'s own already-correct copy does). Committed (not pushed). NOT done: the one-time repair pass for already-stale real bikes' `total`/`profit`/`net profit` -- still worth doing once this fix is live, since existing real bikes' totals are stale until their next write. STILL NEEDS: push + deploy + live retest (re-check ZZTEST-Bike-01/02/03's headline Income on `bike-income.html` after a fresh rental-income write, confirm it now matches the month-column figure). |
+| **BUG-04** | Contract — Create/Rent (`contract.html`, `addContractFromJson`/`editContractFromJson` in `lib/contractWrites.js`) | CONC-03 | 1. Confirm a bike has an active RENTED contract for specific dates (e.g. ZZTEST-Bike-01, Contract row 1299, "ZZTEST BugRetest One", Rented 2026-09-03 to 2026-09-05). 2. Create a SECOND, completely independent contract for a DIFFERENT customer on the SAME bike with FULLY OVERLAPPING dates (`addContract` then `editContract` to status Rented) -- no need for any special timing or two actual browser tabs; two plain SEQUENTIAL API calls a few seconds apart reproduce it every time. | The app should refuse, or at minimum warn, when a bike already has an active Rented booking for the requested dates -- physically, one scooter cannot be handed to two different customers on the same day. | Both contracts saved successfully as status Rented with `{success:true}` and NO warning of any kind -- confirmed live: Contract row 1299 ("ZZTEST BugRetest One", ZZTEST-Bike-01, Rented 2026-09-03..2026-09-05) and Contract row 1304 ("ZZTEST DoubleBookTest", ZZTEST-Bike-01, Rented 2026-09-03..2026-09-05) coexist right now, both fully Rented, for the identical bike and identical date range. Confirmed by code read that neither `addContractFromJson` nor `editContractFromJson` contains ANY bike-availability/date-overlap check at all -- this isn't a race-condition edge case, it's a complete absence of the validation in the first place. In real use this means: two staff (or the same staff member clicking through twice, or a UI page that hasn't refreshed) can both complete a full Create-then-Rent flow for the same physical bike on overlapping dates with zero pushback from the system -- the only thing that would catch it is a human noticing by eye before handing over keys. | Blocker -- this is a real operational/financial risk (a double-booked physical asset, not just a data-sync discrepancy), silent, and trivially reproducible with no special timing required. | **Found, not yet fixed** -- confirmed live against the deployed app on the isolated test account via direct API calls (bypassing no special UI trick -- the normal `addContract`+`editContract` flow contract.html itself uses). Test contracts (rows 1299, 1304) left in place as evidence/repro; not yet raised as a fix with Anton, flagging per his standing instruction to log bugs as found and keep testing. RECOMMENDATION for whoever picks this up: add an availability check (matching bikeModel + overlapping date range across other Rented/Pending Contract rows) to `addContractFromJson`/`editContractFromJson`, mirroring the kind of guard already proven out elsewhere in this codebase (e.g. the idempotency/conflict patterns in the same file) -- at minimum a clear warning, ideally a hard block with an override for legitimate same-day turnarounds. NUANCE found during 5.14 testing: `available-bikes.html` DOES correctly detect and exclude a bike with any active (non-Returned, not-yet-due) booking -- confirmed live, ZZTEST-Bike-01 and ZZTEST-Bike-02 both correctly did NOT appear in its "not rented right now" list while they had open bookings. So the protection that exists today is advisory-only: it only helps if staff happen to browse that separate page before creating a contract. The actual Create/Rent flow itself (`contract.html`'s main form, which is how staff normally book a bike -- especially a returning customer's usual named bike) performs NO check at all, so nothing stops a booking from going through even though the SAME data that would have flagged it on available-bikes.html was sitting right there in the Contract/customer sheets the whole time. | Blocker -- a real double-booked physical bike, not just a bookkeeping discrepancy. | **Fix applied 2026-09-04** (not yet pushed/deployed/retested -- see §0 handoff). Added a shared `findConflictingRentedContractRowB` overlap check, ported into `lib/contractWrites.js` (`markMatchingContractAsRentedFromJson`, `editContractFromJson`), `lib/customersWrites.js`'s own duplicate `markMatchingContractAsRentedFromJson`, and `lib/bikesWrites.js`'s `flipMatchingContractStatus`. `editContractFromJson`'s direct status-edit path now hard-blocks (throws) on a detected overlap; the concurrent customer-intake chains (which already treat the Rented flip as best-effort, wrapped in try/catch, per their own existing race-safety design) turn a detected overlap into a non-blocking warning instead -- the Contract row simply stays Pending rather than silently flipping to a double-booked Rented, with the reason surfaced to staff. Committed (not pushed -- see push commands in the handoff). STILL NEEDS: push + deploy + live retest exactly like BUG-01/02/03 got (re-attempt this same repro and confirm the second booking is now blocked/warned instead of silently succeeding). |
+| **BUG-03** | Accounts — Expenses (`accounts.html`, expense-row rendering) | ACC-06 | 1. Accounts → September → Add Expense → description = `<img src=x onerror="window.zztestXssProbe()">ZZTEST XSS img-onerror test`, any amount/payment method → Save. 2. Reload/re-render the Expenses list (it re-renders automatically after save) and check whether the injected handler executed. | User-entered text (expense description) should be rendered as inert text no matter what it contains -- HTML/script content typed into a form field must never be interpreted as markup by the page that displays it back. | The injected `onerror` handler DID execute (confirmed via a harmless test probe function that set a flag when called) -- proof the expense-row renderer inserts this field via `innerHTML` (or equivalent) instead of `textContent`/`innerText`. A first probe with a literal `<script>alert(9)</script>` tag also confirmed a real (inert, non-executing per the `<script>`-via-innerHTML browser rule) `<script>` element was actually created in the live DOM, not just escaped text. Only the Expense description field was tested this way (time-boxed); the same free-text pattern likely exists on Income description/name and possibly other list-rendered fields on this and other pages -- worth a dedicated audit rather than assuming it's isolated to this one field. Real-world impact: any staff account (this app currently has no login allowlist -- already flagged separately) could plant a payload that runs in ANY other staff member's browser the next time they open Accounts for that month, e.g. to silently hit other API endpoints using that staff member's own session. | High -- genuine stored XSS with confirmed code execution, though it requires an already-authenticated staff account to plant (not exploitable by an outside member of the public), so not rated Blocker. | **FIXED & VERIFIED** (2026-09-03) -- root cause (unescaped `innerHTML` insertion of user-controlled text in `renderExpenses`/`renderIncome`/`openSaveReview`/`showCashDisambiguation` in `accounts.html`) fixed via a shared `escapeHtml()` helper applied to every affected field; deployed in commit `7e81625`. Retested live against the deployed app: the same `<img onerror>` XSS probe now renders as inert literal text (confirmed via DOM inspection -- no `<script>`/handler execution, no console errors), test row deleted afterward, balances confirmed back to baseline. Per Anton's instruction ("let's just fix all the bugs... retest them, and then continue"), fixed and retested in the same pass rather than left open. |
+| **BUG-02** | Contract — Edit (`contract.html`, `editContractFromJson`'s deposit-ledger-sync block + `clearSecurityDepositAtRowFromJson` in `contractWrites.js`) | CTR-EDIT-02 | 1. Create+Rent a contract with Deposit = Scan, ฿3000 (e.g. ZZTEST Customer One / ZZTEST-Bike-01) -- confirm it appears on `deposits.html` under Bank for that customer, and the Contract row's own hidden deposit-ledger-reference column (col 37) holds a real reference string. 2. Search → open that contract → change Deposit from Scan to Cash → Save Changes. The app reports success (no error shown; in the live UI this reports via a suppressed native `alert()`, so I confirmed the actual outcome with a direct `editContract` API call instead, see below). 3. Re-check `deposits.html` and the Contract row's own deposit-ledger reference column. | Changing a Rented contract's Deposit method away from a ledger-tracked one (Scan/Wise/Revolut) to a non-tracked one (Cash) should clear the OLD ledger entry (this is exactly what the `oldDepositLower !== newDepositLower` sync block in `editContractFromJson` is FOR, per its own header comment) -- and only blank the contract's stored reference once that clear is confirmed to have actually happened. | The Contract row's deposit correctly shows "Cash" and its stored reference (col 37) was blanked to `''`, as if the old Bank entry had been successfully cleared -- but `deposits.html` still lists "ZZTEST Customer One -- ฿3,000.00" under Bank, and a direct fetch of the `September` sheet confirms that row is untouched (date/amount/name all still populated). So the clear silently did NOT happen, but the app believed it had and threw away the only breadcrumb (the reference) that would have let staff find and fix the orphaned entry later -- confirmed by then re-submitting the same edit a second time via the raw API: it now says *"could not be matched automatically (no reference stored on this contract)"*, i.e. the reference really is gone. Net effect: a customer's real security deposit can be silently double-counted forever (both stuck as an un-refundable-looking Bank ledger entry AND the contract itself now shows a different, untracked method), with no error or trace pointing anyone at the problem. Root cause not fully isolated (didn't dig into whether `clearSecurityDepositAtRowFromJson`'s `alreadyEmpty` pre-check is misreading the row, or the stored reference's row number was off from the start) -- flagging for a code-level look rather than guessing further. | Blocker -- this is a real, silent, un-traceable deposit-ledger discrepancy (money literally going untracked), on the exact class of financial figure this whole testing effort was commissioned to protect. | **FIXED & VERIFIED** (2026-09-03) -- root cause (`editContractFromJson`'s deposit-method-change block blanked the contract's own ledger reference without confirming the old ledger row was actually cleared) fixed by adding a real reference-based clear (`writeContractRefColumnFromJson` alongside the existing `clearSecurityDepositByRefFromJson` clear path), deployed in commit `7e81625`. Retested live end-to-end on a fresh Rented contract (Contract row 1300): changed Deposit method Scan->Wise -- confirmed via direct `/api/data/September` reads that the OLD Bank-category ledger row (row 7) was correctly blanked (date/amount/name all cleared) and a NEW Wise-category ledger row (row 6) was correctly created with the right name/amount/date, with the contract's own deposit-reference column updated to point at the new entry (`September|2026|wise|6`) -- no orphaned entry, no lost reference. |
+| **BUG-01** | Contract — Edit (`contract.html`, `editContract`/`editContractFromJson` in `contractWrites.js`) | MBIKE-09 / CTR-EDIT-01 | 1. Create+Rent a contract paid by Cash (e.g. ZZTEST MultiBike Test / ZZTEST-Bike-01, ฿500, paid by cash) -- confirm September's Cash balance moves by ฿500. 2. Search → open that contract → change **Total price** only (500 → 700, payment method left as Cash) → Save Changes. 3. Re-check September's Cash balance and the income row on the `September` sheet. | Editing a Rented contract's total price (or paid-by method) should keep the Accounts income ledger in sync with the Contract sheet -- the two are meant to represent the same booking. | Contract sheet row correctly updates to 700 (confirmed via Search: "Paid: ฿700 via cash"), but the September sheet's income row (col G `ZZTEST-Bike-01 rent 2 days` / `ZZTEST MultiBike Test`) is untouched at the OLD amount (500), and the Accounts summary Cash/Income totals don't move at all. Root cause confirmed by code read: `editContractFromJson` (lib/contractWrites.js ~line 811) only re-syncs the **security deposit** ledger when the Deposit method changes (`oldDepositLower !== newDepositLower` block) -- there is no equivalent sync for the **income/cash ledger** anywhere in this function, for either a Total price change or a Paid-by change. The income row is only ever written once, at Rent time (`customerIntake`/`doRent`), and `editContract` never revisits it. Net effect: the Contract sheet and the Accounts sheet can silently disagree on how much a rental actually earned, with no warning to staff, indefinitely -- exactly the class of discrepancy this whole testing effort exists to catch. **CONFIRMED to also cover CTR-DEL-CASCADE-01** (canceling a RENTED contract, not just editing its price): set a separate clean Rented ฿800-cash contract (ZZTEST MultiBike Test / ZZTEST-Bike-02) straight to Status=Canceled via the same `editContract` action -- September's Cash balance did not move at all (stayed at ฿33,291 before and after), confirming a canceled-after-rented booking's income is never reversed either, same root cause (editContract's blanket lack of any income-ledger sync, regardless of which field changed). | High -- silent financial-figure mismatch, no error/warning shown, would require staff to manually notice and hand-fix the Accounts sheet. Not rated Blocker only because it needs a specific edit-after-rent action (not the default create/rent path, which IS correct per CTR-08/MBIKE-07 above) and doesn't lose or duplicate data, only leaves it stale. | **FIXED & VERIFIED** (2026-09-03) -- root cause (`editContractFromJson` had zero income/cash-ledger sync for a Rented contract's Total price, Paid-by, or Status changes) fixed by adding reference-based reconciliation (new income/cash ledger reference columns 40/41 on the Contract sheet, written at Rent time via `buildIncomeRefB`/`buildCashRefB`, patched or cleared on edit via `patchOrClearIncomeRowFromRefFromJson`/`patchOrClearCashRowFromRefFromJson`), deployed in commit `7e81625`. Retested live end-to-end on a fresh Rented cash contract (Contract row 1300, ZZTEST BugRetest Two) through 3 scenarios, each confirmed via direct `/api/data/<sheet>` reads AND cross-checked against the Accounts summary page: (1) **price-only change** (600->900, still Cash) -- income row amount patched 600->900, Accounts Cash balance moved by the exact +300 delta (฿34,314->฿34,614); (2) **paid-by change** (Cash->Wise, price unchanged) -- old Cash ledger row fully cleared, Wise running total incremented by the contract amount (+900, ฿6,200->฿7,100), Accounts Cash balance dropped back by 900 (฿34,614->฿33,714), income row's payment method patched to 'wise' with amount preserved; (3) **status leaving Rented** (Rented->Returned) -- income row fully cleared/blanked and its ledger reference removed, Wise running total correctly reversed by -900 back to its pre-rent baseline (฿7,100->฿6,200). All three scenarios also confirmed the deposit ledger (BUG-02's concern) was left untouched, correctly isolated from this income/cash sync. |
+
+## 7. Progress tracker
+
+| Date | Area tested | Cases run | Pass | Fail | Notes |
+|------|-------------|-----------|------|------|-------|
+| 2026-09-03 | Plan written (this file + `TESTING-METHODOLOGY.md`) | 0 | — | — | Plan only, per Anton's explicit request — no live testing yet. Waiting on a fresh login. |
+| 2026-09-03 | 5.1 Auth & login (`login.html`) | AUTH-01, AUTH-03, AUTH-04, AUTH-05 | 4 | 0 | Tested on `anton.voicemail@gmail.com` (dedicated test account, NOT the live AA Scooters account — Anton's explicit instruction, see below) [corrected 2026-09-03: this account name was wrong -- the actual isolated test account is `anton.weiersmuller@gmail.com`, see §0]. AUTH-01: valid login lands on `index.html` — pass. AUTH-03: session cookie is `Max-Age=180 days` (`lib/session.js`) — long-lived by design, not tested to actual expiry (impractical). AUTH-04: Sign Out (settings.html) redirects cleanly to `login.html` — pass. AUTH-05: direct nav to `bikes.html` while logged out redirects to `login.html?next=%2Fbikes.html` (client-side redirect per `nav.js`'s auth-gate; real security boundary is server-side in every `/api/data`/`/api/write` route per `lib/apiAuth.js` — confirmed by code read, not separately re-tested here). AUTH-02 (wrong password) N/A as originally scoped — this app uses real Google Sign-In (`api/auth/callback.js`), there is no app-level password to get wrong; Google's own consent screen owns that. NOTE (not a bug, a real finding): `api/auth/callback.js` has NO email/domain allowlist — any Google account can sign in and get a full staff session. Flagged to Anton live; he said leave it for now (test-only concern for this pass). |
+| 2026-09-03 | 5.13 Add Bike / Fleet (`add-bikes.html`) — addBike + `bike-name-audit.html` | FLEET-01, AUDIT-01 (partial) | 2 | 0 | FLEET-01: `addBike` on `ZZTEST-Bike-01` (Yamaha Aerox, 155CC Standard Key, ฿35,000/฿2,000/0km) — POST `/api/bikes/write` returned `{success:true}` with a real warning worth keeping: "Bike Tax: the Status and day-count columns (G/H) are formulas in the live sheet with no equivalent here -- left blank for this new row." New bike appeared instantly on add-bikes.html's own list (no reload) AND on bikes.html as "NOT RENTED" (fresh nav, not a hard reload) — pass. Contract-picker / Available-Bikes cross-check still pending. AUDIT-01: ran `bike-name-audit.html` against the real seeded Jan-Aug data (not a synthetic case yet) — tool correctly surfaced 15 real pre-existing inconsistencies (e.g. "Aerox Red" vs "Aerox red 1", "GT black 6" vs "Gt black 6", case-only diffs on "Nmax grey 1"/"Nmax Grey"). Confirms the detector genuinely works. NOT YET DONE: the deliberate-ZZTEST-mismatch case from the written plan (create one on purpose, confirm flagged, remove). FINDING (not yet a filed bug — needs a second look): bikes.html showed a bike as "Cbr" while add-bikes.html's own fleet list (sourced from Bike Tax) shows the same bike as "cbr 150" -- a real 3-way naming split between the "bikes"/Operation sheet and Bike Tax. `bike-name-audit.html` does NOT catch this class of mismatch at all -- it only cross-checks Bike Tax vs Parts & Oil vs Customer, never against the "bikes"/Operation sheet that bikes.html itself renders from. Worth deciding whether that's in-scope for the audit tool. |
+| 2026-09-03 | 5.13 Add Bike / Fleet (`add-bikes.html`) — editBike + sellBike + unsellBike | FLEET-02 | 3 | 0 | All three verified via direct `/api/data/<sheet>` reads after each action (never trusting the UI success message alone, per methodology). **editBike**: changed ZZTEST-Bike-01's Model Year 2024→2025 and Purchase cost 35000→36000 — confirmed persisted on `Bike_Tax` (Model Year col) and `bikes` (cost col) — pass. **sellBike**: sold ZZTEST-Bike-01 for ฿15,000 — confirmed `bikes` sheet `total` column +15,000, `bikes_notes` sidecar recorded `{soldAmount:15000, soldDate, soldByTxnId}`, UI moved the bike into the SOLD section with "Sold for ฿15,000 on 03/09/2026" — pass. NOTE (not a bug, a resilience finding worth keeping): the single "Confirm sell" click fired **3** near-simultaneous `POST /api/bikes/write` requests (all 200) — likely the app's own retry-on-conflict logic reacting to a 409 from concurrent writes to the same Drive file. The `clientTxnId` idempotent-replay guard in `sellBikeFromJson` worked exactly as designed: the total was incremented exactly once (15000, not 45000) and only one sold-note was written. Confirms the idempotency guard is doing real, necessary work, not just decorative. **unsellBike**: reversed the same sale — `bikes` sheet `total` back to 0, `bikes_notes` sidecar replaced with a tombstone (`soldAmount:null, unsoldByTxnId, reversedAmount:15000`), UI moved the bike back out of the SOLD section into the active list — pass. |
+| 2026-09-03 | 5.13 Add Bike / Fleet — FLEET-01 cross-entry-point follow-up | FLEET-01 (cross-check) | 1 | 0 | Confirmed ZZTEST-Bike-01 appears correctly in Contract's bike-model typeahead (`contract.html`, typed "ZZTEST" → suggested) and in `available-bikes.html`'s "Not rented right now" list, both on a fresh page load with no special cache-busting needed — closes out the pending cross-entry-point check from FLEET-01. |
+| 2026-09-03 | 5.2 Contract — Create (`contract.html`, single bike) | CTR-01, CTR-02, CTR-03, CTR-04, CTR-05, CTR-06, CTR-07, CTR-08 | 8 | 0 | **CTR-01**: full contract (every optional field: nationality, passport, number, WhatsApp contact, deliver-to-hotel Yes + link, Deal checkbox, Scan deposit ฿3000, delivery fee ฿100) on ZZTEST-Bike-01 — saved as status "Pending" (NOT auto-Rented — see finding below), all fields confirmed byte-for-byte on the `Contract` sheet via direct API read. Took ~15s end-to-end (create → receipt → checklist) — slow but completed, worth knowing if a staff member is tempted to double-tap out of impatience (see CTR-07). **FINDING (not a bug, a real behavior worth flagging)**: every contract created via `contract.html`'s main form lands as status **Pending**, not Rented — it only becomes Rented (and only THEN hits the cash ledger / deposit ledger) once pulled through "Pending contracts" → Rent. Confirmed by watching September's Cash balance stay flat at a Pending save and jump by the exact total only after clicking "Yes, rent it". This is the correct, intended cascade (matches PEND-04's concern) but worth Anton knowing if he ever expected a Cash-paid walk-in contract to hit the ledger immediately on Create. **CTR-02** (minimal fields — name/bike/dates/price/paid-by only, everything else blank): saved cleanly, no errors from the blank optional fields — pass (reused the CTR-07 double-submit contract below as this case too, since it was minimal by design). **CTR-03** (total price ฿0): accepted without any rejection or warning — comped rentals ARE currently allowed through this form. Flagging for Anton to confirm this is the intended behavior, not filing as a bug since nothing crashed or corrupted data. **CTR-04** (blank required field — submitted with everything empty): correctly blocked client-side via native HTML5 `required` validation (`name` field's `validity.valid === false`, `"Please fill in this field."`) — confirmed via network log that NO request reached the server — pass. **CTR-05** (bike model not on the fleet, `"ZZTEST-Nonexistent-Bike-XYZ"`): correctly blocked with a clear on-page message ("...doesn't match any bike on the fleet list. Please pick a real bike from the suggestions..."), `validateBikeModelOrShowPicker` working as designed — pass. **CTR-06** (adversarial input — `<script>alert(1)</script>ZZTEST 测试テスト ทดสอบ" onmouseover=alert(2) //` as the name, `<img src=x onerror=alert(3)>` in passport, a 500-char nationality string): contract saved successfully with the raw text preserved as-is; checked the two highest-risk render surfaces — the create-success toast AND the Search results list — both display the payload as inert literal text, no script execution, no console errors, no alert dialogs fired. No XSS found — pass. **CTR-07** (double-submit — clicked "Create contract" 3x rapidly): only ONE success toast shown; confirmed via `/api/data/Contract` that exactly 1 row was created, not 3 — the idempotency/submit-lock protection works — pass. **CTR-08** (cascade, paid by Cash): covered as part of CTR-01's Pending→Rent flow above — Cash balance moved by exactly the contract total (฿2,500) only at the Rent step, and the Scan deposit (฿3,000) correctly appeared on `deposits.html` under the Bank table against the customer's name — pass. Wise/Revolut cascade not yet separately tested (still pending). CTR-09 (file upload in contract-create context) deferred to §5.9's dedicated file-upload pass. |
+| 2026-09-03 | 5.3 Contract — Multi-bike manual amounts | MBIKE-01..04, MBIKE-07, MBIKE-09 | 6 | 1 | Added a second test bike (ZZTEST-Bike-02, Honda PCX) to have a real 2-bike case. **MBIKE-01**: "+ Add another bike" correctly shows a per-bike amount box for BOTH the primary AND the new bike, and Total price switches to a read-only, auto-calculated field — pass. **MBIKE-02**: entered 500 / 800 — Total price live-updated to exactly 1300 as typed — pass. **MBIKE-03**: submitted with the 2nd bike's amount blank — blocked with "Please enter an amount for 'ZZTEST-Bike-02'.", focus correctly landed on that exact box, nothing saved — pass. **MBIKE-04**: submitted with both filled (500/800) — confirmed via `/api/data/Contract` that exactly 2 rows were created sharing one `linkedGroupId`, `linkedBikeIndex` 0/1, each with its OWN amount as `totalPrice` (500 and 800, NOT an even 650/650 split) — pass. **MBIKE-07**: rented the linked pair via "Rent all 2" (took ~30s — noticeably slower than a single-bike rent's ~15s, worth knowing but not a failure) — September Cash moved by exactly ฿1,300 (the COMBINED total), not just one bike's share — confirms this app does NOT have the `property-app`-style "one bike's share used where the combined total should be" bug — pass. **MBIKE-09**: edited ONLY the ZZTEST-Bike-01 linked row's Total price (500→700) via Search → Edit → Save — confirmed via Search that only that one row changed to ฿700 and its sibling (ZZTEST-Bike-02, ฿800) was untouched, so the per-row edit isolation itself works correctly — pass on that specific point. **BUG-01 found via MBIKE-09** (see §6): that same edit does NOT update the Accounts income ledger — September's Cash balance and the underlying income row both stayed at the pre-edit ฿500 after the Contract sheet was correctly updated to ฿700. Confirmed via code read that `editContractFromJson` only syncs the security-deposit ledger on a method change, never the income/cash ledger, for either a Total price or Paid-by edit. Filed as **BUG-01**, severity High. NOT YET DONE: MBIKE-05 (remove 2nd bike back to 1), MBIKE-06 (3+ bikes), MBIKE-08 (PDF combined-total display), MBIKE-10 (form reset after multi-bike save — informally observed already reset correctly during MBIKE-04's flow, but not yet a dedicated check). |
+| 2026-09-03 | 5.3 Contract — Multi-bike, remaining cases (MBIKE-05/06/08/10) | MBIKE-05, MBIKE-06, MBIKE-08 (blocked — env), MBIKE-10 | 3 | 0 (1 untestable in this env) | Added ZZTEST-Bike-03 (Yamaha Nmax) for a 3-bike case. **MBIKE-05**: removed the 2nd bike from a 2-bike draft — its amount box disappeared correctly and Total price became editable again, RETAINING the last computed sum (700) rather than clearing — this matches one of the two behaviors the plan explicitly allowed ("or does it need clearing? — confirm intended UX"); flagging for Anton to confirm this retained-value behavior is what he wants, not filing as a bug. **MBIKE-06**: 3-bike contract (ZZTEST-Bike-01/02/03 at 300/400/600, Total auto-summed to 1300) — confirmed via `/api/data/Contract` that all 3 linked rows saved with the correct amount mapped to the correct bike (no off-by-one), same shared `linkedGroupId`, sequential `linkedBikeIndex` 0/1/2 — pass. Also noted in passing: bike-line element IDs are never reused within a session (removing bikeLine_1 then adding two more produced bikeLine_2/bikeLine_3, not a reused _1) — harmless, just an implementation detail. **MBIKE-10**: confirmed directly (not just inferred) — immediately after clicking Create on the 3-bike contract, the form's bike-line inputs, name, and total price were all already cleared, before the background save even finished — no stale carried-over fields — pass. **MBIKE-08 — BLOCKED, environment gap, not an app bug**: "View Contract" → "Update Contract" (the actual rental-agreement PDF, distinct from the Receipt/Checklist PDFs which both work fine) fails with `POST /api/contracts/generate` → 500: *"Could not find the contract template Doc ('AA Scooter Rental Agreement - MASTER TEMPLATE (do not edit fields)') inside the 'AA Scooters Contracts' Drive folder."* This is because the isolated test account's Drive only has the 27 seeded JSON data files (from "Reset data from latest deploy") — the master template Doc itself lives directly in Drive, outside that JSON dataset, and was never copied over. Can't test MBIKE-08's actual PDF content (every bike + combined total) until either that template Doc is copied into the test account's "AA Scooters Contracts" folder, or this is accepted as an out-of-scope gap for this test pass. |
+| 2026-09-03 | 5.4/5.5 Contract — Search/Edit/Cancel + Pending flow | CTR-EDIT-01, CTR-EDIT-02, CTR-CANCEL-01, CTR-DEL-CASCADE-01, PEND-01, PEND-02, PEND-04 | 5 | 2 | **CTR-EDIT-01**: edited a Rented contract's Total price individually (covered under BUG-01 above) — the field itself DOES save and only that row changes (per-row isolation confirmed via MBIKE-09), so the edit mechanism itself works; it's specifically the downstream ledger sync that's missing. **CTR-EDIT-02 → BUG-02** (see §6): changing a Rented contract's Deposit method (Scan→Cash) reported success but silently failed to clear the old Bank ledger entry AND discarded the only reference that could find it again — filed as Blocker. **CTR-CANCEL-01**: canceled a still-PENDING contract (ZZTEST DoubleSubmit Test) via the Pending-contracts picker's own Cancel flow — status correctly flipped to "Canceled", confirmed via API — pass (this path uses the separate, correctly-guarded `cancelContract` action, not `editContract`, and explicitly refuses anything not still Pending). **CTR-DEL-CASCADE-01 → folds into BUG-01** (see §6): setting an already-RENTED cash contract straight to Status=Canceled via edit does NOT reverse its cash-ledger entry either — same root cause as BUG-01 (editContract never touches the income ledger for any field). **PEND-01**: covered under CTR-01 above (create → Pending → Rent, fields carried over correctly). **PEND-02**: same as CTR-CANCEL-01 above — canceling a Pending contract from the picker works correctly. **PEND-04**: confirmed — renting via the Pending picker (`customerIntake`) DOES hit the same real cash-ledger append path as expected; the cash/deposit correctness already verified under CTR-08/MBIKE-07 all went through this exact path (there is no separate "direct Contract creation" path that skips Pending — every contract created via the main form lands as Pending first, per the CTR-01 finding). NOT YET DONE: PEND-03 (multi-bike group Cancel-all — only Rent-all was exercised via MBIKE-07/06; a dedicated Cancel-all check on a linked group is still open), a full field-by-field CTR-EDIT-01 sweep (name/nationality/dates/etc individually, not just price/deposit). |
+| 2026-09-03 | 5.5 Pending contracts — PEND-03 | PEND-03 | 1 | 0 | "Cancel all 3" on the ZZTEST ThreeBike Test linked group — confirmation panel correctly showed all 3 bikes and the Combined total (฿1300) before confirming, and after confirming all 3 linked Contract rows flipped to "Canceled" together, not just the one clicked into — pass. |
+| 2026-09-03 | 5.6 Accounts — Expenses & Income CRUD | ACC-01, ACC-02 (Scan only), ACC-03, ACC-04, ACC-05, ACC-06 | 6 | 1 (BUG-03) | **ACC-01**: added a Bank-paid business expense (฿250) — Bank correctly dropped ฿8,239→฿7,989, Total/Business expenses and Net profit all recalculated correctly — pass. **ACC-02**: added a Scan-paid income (฿150) — Bank correctly rose ฿8,239→฿8,389 (Scan income lands on Bank, same as Scan deposits do), Total income/Net profit recalculated correctly — pass on Scan; Wise/Revolut/Cash not separately re-tested here (Cash already proven via the Contract cash-cascade tests above, and the code path is shared/symmetric with expenses' 4 methods which all resolved to the right account). **ACC-03**: edited that same expense's amount 250→400 — Bank moved by exactly the ฿150 delta (not a duplicate or a flat overwrite), Total expenses and Net profit recalculated correctly — pass. Worth noting for contrast: THIS edit path (Accounts' own expense/income edit) correctly re-syncs the ledger on every change, unlike Contract's `editContract` (BUG-01) — the bug is specific to Contract editing, not a systemic gap in this app. **ACC-04**: deleted the same expense — Bank and every summary figure returned exactly to the pre-ACC-01 baseline — pass. **ACC-05** (฿0.00 amount): added and saved cleanly, no crash, no recurrence of the historical `money()` bug — pass. **ACC-06 → BUG-03** (see §6): a `<script>` tag typed into the expense description was actually inserted into the live DOM (confirmed via `document.querySelectorAll('script')`, not just displayed as text); a follow-up `<img onerror>` payload in the same field ACTUALLY EXECUTED (confirmed with a harmless test probe) — this is a real, working stored XSS, filed as Blocker-adjacent High. Both test rows deleted afterward, balances confirmed back to baseline. NOT YET DONE: ACC-07 (Expense Type dropdown persistence after a genuine full page reload, as opposed to the same-session recalculation checks above). |
+| 2026-09-03 | 5.13 Add Bike / Fleet — FLEET-03 | FLEET-03 | 1 | 0 | Re-ran `bike-name-audit.html` after all the add/edit/sell/unsell activity on ZZTEST-Bike-01 — it does NOT appear in the mismatch output, confirming the audit tool picks up fresh data correctly (no stale cache) and that `addBike`/`editBike` wrote consistent names across `Parts_and_Oil_change`/`Bike_Tax`/`bikes` (no false positive introduced by testing). Closes out §5.13 — FLEET-01, FLEET-02, FLEET-03 and AUDIT-01 (partial, real-data pass) all done. |
+| 2026-09-03 | Bug-fix pass: BUG-01, BUG-02, BUG-03 (per Anton's explicit instruction to fix all 3 then retest) | BUG-01 (3 scenarios), BUG-02, BUG-03 | 5 | 0 | Fixed all 3 previously-filed bugs in `lib/contractWrites.js`, `contract.html`, `accounts.html` (see §6 for full root-cause/fix detail on each), committed as `7e81625`, pushed to `origin/main` and confirmed deployed on Vercel. Retested every fix live against the deployed app using two fresh test contracts (ZZTEST BugRetest One row 1299, ZZTEST BugRetest Two row 1300) plus direct `/api/contract/write`/`/api/data/<sheet>` calls for precise before/after verification (not just UI reads). **BUG-03**: XSS probe re-run, confirmed inert (no execution) — pass. **BUG-02**: Deposit method changed Scan->Wise on a Rented contract — old Bank ledger row correctly cleared, new Wise ledger row correctly created, contract's stored reference correctly repointed — pass. **BUG-01**: three sub-scenarios all pass — price-only change (income row + Accounts Cash balance both moved by the exact delta), paid-by change while staying Rented (old Cash entry cleared, new Wise running total incremented, income row's payment method patched), and status leaving Rented i.e. Rented->Returned (income row fully cleared, Wise running total correctly reversed). All three bugs now marked FIXED & VERIFIED in §6. Also corrected this file's test-account identity (§0 and the AUTH-01 row above) from `anton.voicemail@gmail.com` to `anton.weiersmuller@gmail.com` per Anton's live correction. NOT yet cleaned up: the two new ZZTEST BugRetest contracts and their income/cash/deposit ledger rows created for this retest — left in place per this file's standing note that cleanup hasn't been requested since the account gets wiped for a second full round later. |
+| 2026-09-04 | 5.10 Deposits (`deposits.html`) | DEP-01, DEP-02, DEP-03, DEP-04 | 4 | 0 | Tested via direct `/api/accounts/write` calls against real ZZTEST contracts (rows 1299/1300/1301), verified via direct `/api/data/<sheet>` reads before/after every call — code read first (`lib/depositsWrites.js`) to understand each action's exact write scope before testing it. **DEP-01**: `deductDeposit` tested both branches of its Contract-row mirror — (a) against a Rented contract (row 1299, Scan/Bank ฿3000 deposit): deposit-log balance correctly reduced 3000→2500, a new Income row correctly appended (amount/name/paidBy all correct), Contract row's own depositAmount correctly mirrored 3000→2500, and a Contract_notes reversal-audit line was correctly written — pass; (b) against a non-Rented (Returned) contract (row 1300, Wise ฿3000 deposit): deposit-log balance still correctly reduced 3000→2000 and Income row appended, but the Contract-row mirror was correctly SKIPPED (by design — `findRentedContractRowForDeductionFromJson` only matches status='Rented') with no warning thrown — confirms the mirror's Rented-only gate works exactly as coded, not a bug. **DEP-02**: `deductCashDeposit` against a customer whose deposit method is Scan (not Cash) correctly returned `{success:true, applied:false, message:'No cash deposit on file...'}` with NO write of any kind (verified the Contract row's depositAmount was untouched) — matches documented behavior exactly — pass. **DEP-04**: cross-checked `deductDeposit` (writes deposit-log + Income row + Wise/Revolut running total + bikes-sheet earnings + best-effort Contract mirror, confirmed above) against `deductCashDeposit`'s happy path (created a fresh Rented contract with a real Cash ฿1000 deposit, row 1301; deducted ฿300 — response `{applied:true, newAmount:700}`, Contract depositAmount correctly 1000→700, a Contract_notes line correctly written, and confirmed deductCashDeposit writes ONLY the Contract sheet, no Income row, no cash-ledger row, no bikes-sheet touch — exactly as its own header comment states) — both paths land on the correct balance via genuinely different code paths — pass. **DEP-03**: `editDeposit` (wise entry amount 2000→1800, name/date changed) and `deleteDeposit` (same entry, cleared) both correctly touched ONLY that category's 3 cells (date/amount/name), leaving the adjacent Bank category entry and the Income-side columns in the same physical row completely untouched — pass. No bugs found in this area. Also incidentally confirmed the earlier BUG-02 fix's "Bank" card formula behavior (P15 deposit-log sum feeding directly into the Bank summary figure) is pre-existing, correct, intentional app design, not a side effect of that fix — see code comment at `accounts.html` ~line 2082 (`M6 "bank" = ... + P15 - M11 - M12`). |
+| 2026-09-04 | 5.11 Customers (`customers.html`) | CUST-01, CUST-02, CUST-03 | 3 | 0 | **CUST-01**: `customerIntake` (customers.html's own direct-entry copy, in `lib/customersWrites.js`) tested live via `/api/accounts/write` -- full valid record (name/contact/nationality/passport/bike/dates/price/paidBy/deposit) correctly appended as a new row on the `customer` sheet, row count incremented by exactly 1, every field landed correctly -- pass. Noted in passing (not a bug): the stored `contact` value gets an auto-appended annotation, e.g. `+66123456789 (฿600, 2 days)` -- confirmed intentional, this is `syncDueBackEventForCustomerRow`'s calendar-event-summary text, not data corruption. **CUST-02 resolved (was a documentation mystery, not a real action)**: grepped the entire codebase (`customersWrites.js`, `customers.html`, `Code.gs`) for `'march'` as a dispatch case/action name -- it does NOT exist. `DEPOSITS_MONTH_NAMES` is a plain array of month-sheet-tab names, and (per the code's own comment) the lowercase `'march'`/`'april'`/`'may'` entries are verbatim copies of the real spreadsheet's own idiosyncratically-lowercase tab names for those 3 months only (every other month is capitalized) -- a real, worth-knowing sheet-naming quirk, but not an action needing its own test case. Correcting this file's earlier framing: there is no `march` action to test. **CUST-03**: confirmed BOTH via code read AND live side-by-side test that Contract's own Rent-flow `customerIntake` (`lib/contractWrites.js`) and customers.html's direct `customerIntake` (`lib/customersWrites.js`) produce byte-for-byte equivalent `customer`-sheet records -- same 16-column field mapping in the same order, same auto-annotated contact format, same `source:'Direct'` default. Live test: created one customer through each entry point with matching input data (rows 1323 and 1324) -- output rows are identical apart from the input fields themselves. No bugs found in this area. |
+| 2026-09-04 | 5.12 Bikes Status (`bikes.html`) | BIKE-01, BIKE-02, BIKE-03, BIKE-04, BIKE-05, BIKE-06 | 6 | 0 | All 6 write actions tested live via `/api/bikes/write`, code-read first (`lib/bikesWrites.js`) to understand exact write scope, verified via direct `/api/data/<sheet>` reads. Built matching Rented Contract-row + customer-row pairs for each test (ZZTEST bikes/contracts) since `bikes.html` operates on the `customer` sheet primarily and cross-syncs to `Contract`. **BIKE-01** `markReturned`: customer row's returnDate/situation correctly updated, AND the matching Rented Contract row's status correctly cascaded to Returned via `flipMatchingContractStatus` (name+bike match) -- pass. **BIKE-02** `extendBike`: due-back date correctly pushed forward by the given days on the customer row, total price correctly incremented by the extra amount paid, AND both correctly cascaded to the Contract row (return date + total price sync) and to the Cash ledger (+exact amount) and bikes-sheet monthly earnings -- pass, no stale-Contract-vs-customer-sheet drift found. **BIKE-03** `earlyReturnBike`: confirmed by code read AND live test that this genuinely differs from `markReturned` -- it supports an optional refund (reduces total price on both customer AND Contract rows by the refund amount, and pays it back out through the real Cash/Wise/Revolut ledger as a negative amount) in addition to the same Returned-status flip; live test refunded ฿100 of a ฿600 booking -- customer+Contract totalPrice both correctly dropped to ฿500, Cash correctly dropped by exactly ฿100 -- pass. **BIKE-04** `swapBike`: confirmed the old bike's customer row is correctly closed out (situation→Returned, price set to the given `returnAmount`) while a NEW customer row is correctly created for the new bike (carrying over the due date, priced at `newBikeAmount`) -- no state where both or neither show as rented. The Contract side does NOT create a duplicate row -- it RENAMES the existing Rented Contract row's bikeModel in place (`renameContractBikeOnSwapFromJson`), confirmed live (Contract row correctly flipped from ZZTEST-Bike-03 to ZZTEST-Bike-02, same row, same status) -- pass. **BIKE-05**: read the code for both undocumented-by-name actions before testing, per the plan's own instruction. `closeBikeForExtendFromJson` is the "long extension" half-step -- flips situation→Returned on the OLD row only (no price/refund logic at all), paired with a SEPARATE `customerIntake` call (source:'extend') that creates the continuation row -- bikes.html fires these as two sequential requests, not one atomic action (confirmed by the file's own comment). Has a safe idempotent "already closed" short-circuit. `updateReturnPickup` is a plain field overwrite for a CONFIRMED pickup/return time distinct from the originally scheduled return date -- writes returnTime (col J), a `timeConfirmed` flag, `confirmedReturnDate`, and `deliveryLink`, deliberately NOT the main returnDate column, and moves no money -- confirmed live (all 4 fields landed correctly). Minor observation, not filed as a bug: it accepted an update against an already-Returned row with no rejection -- harmless (pure metadata, no financial impact) but worth Anton knowing if he'd expect it locked. **BIKE-06** `returnDeposit`: confirmed it both clears the deposit-log entry (date/amount/name all blanked, same as `deleteDeposit`) AND optionally logs a kept-fee deduction as Income (same balance-impact mechanics as DEP-01's `deductDeposit`, §5.10) in one action -- live test (bank/Scan deposit, ฿200 damage-fee deduction) correctly cleared the old ฿2,500 entry and logged the ฿200 income; the Bank summary card's resulting -฿2,300 net change was hand-verified against its own formula (-฿2,500 deposit-log removal +฿200 new Scan income, per the `M6` formula documented in `accounts.html`) and confirmed correct, not a bug -- pass. No bugs found anywhere in this area. |
+| 2026-09-04 | 5.15 Concurrency / multi-staff simultaneous use | CONC-01, CONC-02, CONC-03 | 1 | 2 | Tested via genuinely concurrent (`Promise.all`-fired) and back-to-back sequential API calls against the live deployed app, not simulated -- real race conditions against real Drive-backed JSON files. **CONC-01 → FAILS (silent data loss, not yet filed as its own bug -- see note below)**: two `editExpense` calls against the SAME expense row, each changing a DIFFERENT field (amount vs payment method) as if two staff had the same expense open in separate tabs -- both requests returned `{success:true}` with NO conflict/warning, but the final row only reflects the SECOND request's fields; the FIRST request's field change was silently discarded with no trace, reproduced twice in a row (100%). Root cause confirmed by code read: `editExpenseRowFromJson`'s core write (`lib/accountsWrites.js` ~line 2028) does a single unconditional `writeSheetJson` of all 4 columns (date/expense/amount/payment) using whatever the CALLING client submitted for every field -- there is no optimistic-concurrency retry AND no partial/field-level merge, so a client's stale copy of an untouched field silently overwrites a concurrent edit to just that field. This is the SAME class of bug as BUG-01/02 (silent financial-data loss, no error shown) but on the base Expense/Income edit path specifically, not Contract editing. NOT yet filed as its own BUG-0N number -- flagging here for Anton to decide whether this warrants the same treatment as BUG-01/02/03 (recommend it does, given the established severity bar this session). **CONC-02 → PASSES**: two `editExpense` calls racing a TYPE change (`expenseType`) on the same row -- correctly resolved to ONE consistent, clean value (no corruption, no duplicate entries, no silent total loss) via the `applyMonthNotesEditsFromJson` 3-attempt retry-on-conflict + patch-reapply pattern (the historical fix from §8 item 3) -- confirms that fix genuinely works under a real concurrent race, not just in isolation. **CONC-03 → FAILS, filed as BUG-04 (Blocker)**: attempted to book the same physical bike twice for overlapping dates -- succeeded on the FIRST try with plain sequential (non-racing) calls, no concurrency needed at all. See §6 BUG-04 for full detail: `addContractFromJson`/`editContractFromJson` have NO bike-availability/date-overlap check whatsoever. This is more severe than a race condition -- it's a complete absence of the validation. |
+| 2026-09-04 | 5.9 File uploads (passport photos, bike photos, WhatsApp AI fill) | FILE-01, FILE-02, FILE-03, FILE-04 (partial) | 3 | 0 (1 minor finding) | Discovered mid-test that the passport-photo upload code visible earlier in `contract.html` (with the `passportPhotoBase64` field bundled into `addContract`) is `__deadCode_oldAddContractFromJson` -- explicitly dead, unreferenced client-side code kept only for comparison. The LIVE path uploads the photo as a genuinely separate follow-up call to `/api/contracts/upload` AFTER the Contract row save succeeds (confirmed by code comment: "deliberately NOT part of the queued request"). Tested that live endpoint directly, plus its bike-photos counterpart (`/api/photos/upload`+`/delete`, used by `bikephotos.html`, a different feature from `bikes.html`). **FILE-01**: valid PNG upload -- pass, file created in the correct per-customer Drive folder with the expected `Photo of Passport - <name> - <date>` naming convention. **FILE-02**: 0-byte upload correctly rejected (400, "Missing photo data."); a non-image mimeType (`application/pdf`) correctly rejected (400, "Only image files can be uploaded here.") -- both clean rejections, no crash, pass. Minor finding, not filed as a bug (plan asked for "clear rejection, no crash" -- this technically half-holds): garbage/invalid base64 text claiming `mimeType:'image/jpeg'` was NOT rejected -- Node's `Buffer.from(str,'base64')` silently strips invalid characters instead of throwing, so a corrupted or fake-extension file is silently accepted and stored as a `.jpg` that will show as broken/unreadable whenever anyone actually opens it. Low real-world severity (immediately visible to whoever opens it, not a silent financial-data issue like BUG-01/02/04) but worth Anton knowing -- true image-content validation (e.g. checking real magic bytes) is not happening anywhere in this upload path. **FILE-03**: tested via the bike-photos flow (passport photos have no delete capability in this app at all -- confirmed by code read, add-only by design, duplicate-detected rather than replaceable) -- uploaded, listed, deleted, and confirmed GENUINELY gone via a fresh server-side `/api/photos/list` re-fetch (not just hidden client-side) -- pass. **FILE-04 (partial -- code read only, not live-tested)**: confirmed by code read that "Fill from WhatsApp (AI)" is a pure form-autofill helper -- it reads name/phone off a screenshot into the Number/Chat-name fields for staff to review before saving, and explicitly never uploads, saves, or sends anything anywhere (confirmed via the feature's own code comment) -- the "does NOT auto-send" safety property the plan asked about is satisfied by the feature's basic design, not just a policy. The "garbled screenshot degrades gracefully" behavioral question was NOT live-tested (would need a real AI call with a deliberately bad image) -- left open for a future pass if Anton wants it. |
+| 2026-09-04 | 5.14 Read-only / secondary pages (partial: AVAIL-01, INCOME-01) | AVAIL-01, INCOME-01 | 1 | 1 | **AVAIL-01 → PASSES**: `available-bikes.html` correctly excludes ZZTEST-Bike-01 and ZZTEST-Bike-02 from its "not rented right now" list (both have genuinely active, non-Returned bookings on the customer sheet -- confirmed by direct API cross-check) while correctly including ZZTEST-Bike-03 (returned via our earlier swap test). Confirms this page's availability derivation (scan `customer` sheet for situation != Returned AND returnDate in the future, matched by bike name) works correctly -- also directly relevant to BUG-04: this page WOULD have warned a staff member who checked it first, the protection gap is specifically that the Create/Rent flow itself never consults this same data. **INCOME-01 → FAILS, filed as BUG-05 (High)**: see §6 for full detail -- `bike-income.html`'s main Income/Profit/Net Profit table reads a separate `total`/`profit`/`net profit` column on the "bikes" sheet that is NEVER recomputed by any of the actual rental-income write paths (only by Accounts' own "split across bikes" feature) -- confirmed live (ZZTEST bikes show ฿0 Income despite verified real month-column income) and via full code-path trace (grepped every call site of the one function that DOES recompute it). The rest of §5.14 (PRICE-01, CAL-01, OIL-01, REPLY-01, SET-01) was NOT reached this pass -- session time/budget was prioritized toward Deposits/Customers/Bikes-Status/Concurrency per the plan's own emphasis on financial-risk areas, and toward chasing this and the BUG-04 double-booking finding once they surfaced live. Left for a future pass. |
+
+## 8. Regression cases seeded from this app's own real incident history
+
+Real, confirmed bugs found and fixed in THIS app earlier in this same
+session, before this test plan existed — listed here so they're never lost
+track of, per methodology §6.
+
+1. **Cash-ledger entries silently excluded from the running total once the
+   sheet reached its own summary-block boundary** — deterministic, not a
+   race condition: `findFullyEmptyRowIdxJson` had no awareness of
+   `locateCashSummaryBlock`'s boundary, so once the ledger's real data
+   reached the "income" label row, new entries landed PAST it and were
+   silently excluded from the total forever, no error. This is what caused
+   the September Bank/Cash reconciliation to go wrong while August (which
+   never reached the boundary) stayed fine. Fixed via
+   `makeRoomAboveCashSummaryJson`, applied across `accountsWrites.js`,
+   `bikesWrites.js`, `contractWrites.js`, `customersWrites.js`. Historical
+   data recovered via a one-time repair (`repairOrphanedCashRows`),
+   executed and confirmed live. → **`CASH-01`/`CASH-02`, §5.8.**
+2. **Expense type / bike-split notes saved correctly to Drive but never
+   read back for any month past August** — `accounts.html`'s
+   `ACCOUNTS_MONTH_HAS_NOTES = { 6: true, 7: true }` gated whether the app
+   even bothered fetching a month's notes sidecar file at all; the write
+   side had no such gate, so a "To Transfer" tag would save successfully
+   and then vanish on refresh for September onward. Fixed by removing the
+   gate — every month's notes file is now always fetched (already safely
+   falls back to empty on a genuinely missing file). → **`NOTES-01`/`02`/
+   `03`, §5.7.**
+3. **No retry-on-conflict on the notes-sidecar read-modify-write** —
+   `setExpenseTypeNoteFromJson`/`applyMonthNotesEditsFromJson` in
+   `accountsWrites.js` had the same unprotected single read-modify-write
+   pattern the cash-ledger writes did, with failures on some call sites
+   silently swallowed with no warning at all. Fixed with the same 3-attempt
+   retry-on-conflict pattern used elsewhere in this codebase
+   (`logTransactionBInner`'s established template). → **`CONC-01`/`CONC-02`,
+   §5.15.**
+4. **`formatSummaryValue` called an undefined `money()` helper** — crashed
+   the one-time cash-repair probe with `"money is not defined"`; the bug
+   had never surfaced before because its only other caller
+   (`transferToBankFromJson`'s balance readback) silently swallowed the
+   error. Fixed by using the file's own `fmtMoneyB` instead. No dedicated
+   case needed — any case that reads the Accounts summary card exercises
+   this code path.
+
+## 9. Sources consulted
+
+See `TESTING-METHODOLOGY.md` §7 for the full source list this file's
+structure and technique choices were built from.
