@@ -6,20 +6,61 @@ plan and running log built from it, not the methodology itself.
 ## 0. Handoff — read this first if picking up this testing session
 
 ---
-### 🔴 LATEST HANDOFF -- 2026-09-04 (later same day), live duplicate-deposit incident found, fixed, deployed, verified -- test plan resuming
+### 🔴 LATEST HANDOFF -- 2026-09-04 (later same day still), mid-session login switch -- picking up mid-way through §5.14
 
-Anton found a REAL production bug outside the written test plan mid-session
-(a customer's Scan security deposit posted twice on `deposits.html`, ฿2,000
-Bank discrepancy) and asked for it to be fixed, tested repeatedly on the
-isolated test account, and only then should regular testing resume. See
-**BUG-07** in §6 for the full root-cause/fix/verification writeup --
-short version: fixed and confirmed live via 3 separate reproductions
-(deployed commit `11d102b`, confirmed Ready/Production on Vercel). Per the
-prior handoff below, PRICE-01 still needs a genuinely fresh start (a prior
-attempt was interrupted mid-way) -- picking that up now, then CAL-01,
-OIL-01, REPLY-01, SET-01, and the 5.7/5.8 regression re-checks. CONC-01
-(see the entry below) is still unfixed and still needs Anton's call on
-priority.
+**1. Push status:** two commits are local-only, NOT yet pushed (this cloud
+session has no GitHub credentials -- push has to happen from Anton's own
+machine): `11d102b` (the BUG-07 fix itself) and `63179ec` (this file's own
+write-up of BUG-07). `11d102b` IS already confirmed deployed/Ready on
+Vercel (Anton pushed it manually earlier this session) -- only `63179ec`
+(docs-only, does not affect the running app) still needs `git push origin
+main` from Anton's machine when convenient. Run `git log --oneline -3` to
+confirm current HEAD before doing anything else.
+
+**2. BUG-07 (duplicate security deposit) -- FIXED, DEPLOYED, VERIFIED.**
+See **BUG-07** in §6 for the full root-cause/fix writeup. Confirmed live
+via 3 separate reproductions against the deployed app (commit `11d102b`,
+Ready/Production on Vercel) -- all passed, no further action needed on
+this one unless a NEW instance of the same symptom shows up.
+
+**3. Test plan progress this pass (picking up from the "Next steps" list
+in the handoff below this one):**
+   - **PRICE-01 -- DONE, PASSES** (no bug found). Verified `pricing.html`'s
+     `getPrice()` math directly against the LIVE `rates_per_day` sheet
+     (not the stale fallback table) for: a plain short-stay lookup (9
+     days, 150-155CC Keyless -> ฿2,300, matches the live table exactly),
+     a multi-month + leftover-days case (45 days, Nmax -> ฿7,333, matches
+     hand-calculation `Math.round(monthlyRate*1 + 14*(monthlyRate/30))`
+     exactly), the "extra days" add-on calculator, and the Custom Rate
+     category's day-prorate math -- all correct. **Important finding
+     (not a bug):** real historical Contract rows for the same bike/
+     category/day-count do NOT match the calculator's output (e.g. a real
+     9-day "Aerox Cool 1" rental, same category, charged ฿2,700 vs the
+     calculator's ฿2,300 list price) -- confirmed by code read that
+     `contract.html`'s "Total price" field is a plain manual text entry
+     with ZERO link to `pricing.html`/`rates_per_day` at all, so real
+     bookings reflect staff's own negotiated/rounded pricing, not the
+     calculator. The calculator itself is correct; it's just informational/
+     disconnected from the booking flow -- worth Anton knowing, not worth
+     fixing unless he wants the two actually linked.
+   - **CAL-01 -- STILL BLOCKED.** Checked `calendar.html` live: still says
+     "No calendar connected yet." Anton said he'd connect it but hasn't
+     yet as of this handoff -- needs his own Google OAuth consent, skip
+     until he's done that.
+   - **OIL-01 -- IN PROGRESS, interrupted by this login switch.** Was
+     hand-verifying `oilchange.html`'s "km" tab sort order (ascending
+     `next oil change` minus `last oil check`, soonest-due at top) against
+     an independently computed sort of the live `Parts_and_Oil_change`
+     sheet data -- hand-computed top of the list came out as: Gt black 4
+     (518 km left), Gt 3 (782), Gt black 2 (968), Rax 3 (1027), Aerox red 1
+     (1209), Nmax blue (1281), Gt silver 1 (1508), Gt black 5 (1619) --
+     **NOT YET cross-checked against what the live page actually rendered
+     in the DOM** (that was the very next step when interrupted). Also
+     still need to check the OTHER tab (days-since-checked, most overdue
+     at top) the same way. Resume by reading `#listBox .bike-card .bc-name`
+     order from the live page and diffing it against the hand-computed
+     list above.
+   - **REPLY-01, SET-01, 5.7/5.8 regression re-checks -- NOT YET STARTED.**
 
 **Test data note:** this session's BUG-07 reproduction left a handful of
 new `ZZTEST`-prefixed rows in the live customer/Contract/September sheets
