@@ -6,7 +6,7 @@ plan and running log built from it, not the methodology itself.
 ## 0. Handoff — read this first if picking up this testing session
 
 ---
-### 🔴 LATEST HANDOFF -- 2026-09-05 (real fail-fast lock IMPLEMENTED per the plan below -- pushed, awaiting live retest; NOT yet confirmed fixed)
+### ✅ LATEST HANDOFF -- 2026-09-05 (BUG-06 CONFIRMED FIXED -- real fail-fast lock live-retested against production, working both directions; v3/v4 retry-heal complexity NOT yet removed)
 
 **STATUS UPDATE (same day, later session):** the lock plan approved below is
 now written. New file `lib/lock.js` (Upstash Redis REST client, fail-open
@@ -22,7 +22,41 @@ needed. Scope is edit-only (not add/delete/transfer/etc.), matching the
 default called out in the plan below. `node -c` syntax-checked both files;
 no test harness exists in this repo to run beyond that.
 
-**LIVE RETEST RESULT (2026-09-05, same session, after push confirmed live):**
+**FOLLOW-UP RETEST (same day, after Anton connected Upstash Redis to the
+project in Vercel and redeployed):** re-ran the identical race twice more
+against production, once in each direction:
+
+- Trial 3 (row 4, "amount->999" vs "payment->Wise"): request A won the
+  lock and completed normally in 15.3s (`{success:true}`); request B was
+  refused the lock and got the new 409 in just 2.3s
+  (`"Someone else is editing this month's accounts right now -- please
+  try again in a few seconds."`). Final row: amount=999, payment=Cash
+  (exactly A's change, B correctly never wrote anything) -- confirmed via
+  a direct re-read of the row.
+- Trial 4 (row 5, "amount->777" vs "payment->Revolut"), roles reversed:
+  request B won this time and completed in 15.2s; request A was refused
+  in 652ms with the same 409. Final row: amount=400 (unchanged -- A's
+  attempted change correctly never applied), payment=Revolut (B's
+  change). Confirmed via direct re-read.
+
+Both trials: exactly one write landed, the other got an honest fast
+error instead of a slow silent clobber, and the winner was decided
+correctly regardless of which side happened to win the race. **BUG-06 is
+CONFIRMED FIXED.** All 4 test rows (September rows 4 and 5, twice each)
+cleaned up after each trial, no warnings on this round's deletes, nothing
+left over in production.
+
+**NOT yet done (optional follow-up, not urgent):** per item 5 of the
+original plan below, could now remove the v3/v4 retry-and-verify
+complexity (`HEAL_ATTEMPTS_EXP`/`HEAL_ATTEMPTS_INC`, `rowColsMatchB`,
+the verify-then-reapply loop) from `editExpenseRowFromJson`/
+`editIncomeRowFromJson` -- with the lock in place it's provably
+unreachable dead code now (two edits to the same file can never be
+mid-flight together). Left in for now since it's harmless and this
+session moved on to the separate latency investigation (see below) --
+worth a cleanup pass sometime, not blocking anything.
+
+**ORIGINAL LIVE RETEST RESULT (2026-09-05, same session, BEFORE Redis was connected -- kept for the record):**
 Ran the same two-request field race (editExpense amount-change vs
 payment-change on the same row) twice against production. BOTH requests
 took the full ~12-13s each time and BOTH returned `{success:true}` --
