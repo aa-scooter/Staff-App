@@ -797,6 +797,84 @@ Root cause: the retry-on-conflict fix added to `editExpenseRowFromJson`/`editInc
 
 ---
 
+## 0b. Latency investigation — survey of other write flows (2026-09-05)
+
+Anton asked, while the accountsWrites.js cascade fix (see §0 above) was
+deploying, for a read-only survey of whether the same redundant-re-fetch
+pattern exists elsewhere in the codebase, especially in the contract
+rental flow -- no code changed here, notes only, for a future session.
+
+**Finding: this is a much bigger deal than the one spot already fixed.**
+Every write module has its OWN separate copy of a
+`recomputeMonthlySummaryCascadeB`/`recomputeCurrentMonthSummaryCascadeB`
+pair (`lib/accountsWrites.js`, `lib/contractWrites.js`,
+`lib/customersWrites.js`, `lib/bikesWrites.js`, `lib/depositsWrites.js` --
+5 independent copies of essentially the same function). Every single call
+does, unconditionally, with zero caching: read "cash" -> write "cash" ->
+read the current month sheet -> write the current month sheet (4 Drive
+round trips, ~1.5-3s each from here = ~6-12s just for one cascade call).
+None of these 5 copies have the `knownMonthSheet`-style caching the
+accountsWrites.js fix just added -- that fix only covers
+editExpense/editIncome's OWN cascade call, not any of these other 4 files'
+copies, nor contractWrites.js's own independent copy.
+
+**Highest-impact spot found: `customerIntakeFromJson` in
+`lib/contractWrites.js` (the actual "Rent" button flow -- this IS
+"renting out a contract").** Its `chainMoneySheets()` inner function (around
+line 2507) calls, sequentially:
+1. `appendMonthlyIncomeRowFromJson` (line ~1471) -- ALWAYS runs, ends with
+   its own `recomputeCurrentMonthSummaryCascadeB()` call (line 1495).
+2. `appendCashSheetRowFromJson` (line ~1501) -- runs when paidBy is Cash,
+   ALSO ends with its own cascade call (line 1525).
+3. `processDepositForPaymentFromJson` (line ~1588) -- runs instead of #2
+   when paidBy is Wise/Revolut, ALSO ends with its own cascade call
+   (line 1607).
+
+Then, separately, sequential AFTER the chains' own `Promise.all` (not
+concurrent with them, by design -- see that code's own race-fix comment):
+
+4. `logSecurityDepositFromJson` (line ~1632) -- runs when the deposit
+   method is Scan/Wise/Revolut, ALSO ends with its own cascade call
+   (line ~1738).
+
+None of these 4 cascade calls know about each other or share any state --
+each one is a full independent read-cash/write-cash/read-month/write-month
+round trip. **A single ordinary booking -- cash payment with an
+electronic (Scan/Wise/Revolut) security deposit -- triggers 3 of these 4
+in one request** (income always, cash-append for the Cash payment,
+security-deposit log for the deposit) = roughly 3x the ~4 round trips
+already identified as the single biggest cost in the accountsWrites.js
+timing breakdown. This is very likely THE reason contract rentals feel
+like the single slowest action in the app, more than any other flow
+audited so far.
+
+**Also found, not yet drilled into:** `lib/bikesWrites.js` calls
+`recomputeCurrentMonthSummaryCascadeB()` from **12 separate call sites**
+(lines 827, 873, 1501, 1772, 1807, 1839, 1989, 2042, 2087, 2569, 3236,
+3353) -- by far the most of any file. Haven't yet mapped which of
+bikesWrites.js's flows (bike return, deposit deduction, extend, etc.)
+chain multiple of these together in one request the way
+customerIntakeFromJson does -- worth the same kind of trace next, since
+whichever flow does is likely the SECOND-slowest action in the app after
+renting. `lib/customersWrites.js` has its own 4 call sites (932, 966,
+1058, 1160) -- also not yet traced for chaining within one request.
+
+**Fix shape (same idea as the accountsWrites.js fix already shipped, but
+needs to span MULTIPLE call sites instead of just one function's own
+before/after):** thread a shared in-memory `{cashRows, cashModifiedTime,
+monthRows, monthModifiedTime}` cache through chainMoneySheets' own
+sequential steps (and the sequential security-deposit step after it), so
+only the FIRST cascade call in the chain does a real Drive
+read-cash/read-month, every subsequent call in the SAME request reuses
+and updates that in-memory copy, and only the LAST one actually writes
+cash+month back to Drive. This is a bigger, more careful refactor than
+the accountsWrites.js fix (state needs to flow through 3-4 separate
+functions' call chain, not just one function's own local variables), and
+the same monthFileTouchedByOtherLane-style safety reasoning applies --
+worth designing carefully rather than rushing, given this file's history
+of subtle silent-loss bugs (BUG-01 through BUG-11). NOT implemented --
+Anton asked for a survey/note only this pass.
+
 ## 1. Purpose & scope
 
 Whole-app manual test coverage for the AA Scooters staff app
