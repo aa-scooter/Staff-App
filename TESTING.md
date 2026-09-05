@@ -55,13 +55,68 @@ above, given this codebase's history of subtle money-losing bugs
    to be relayed to Anton this same way, every time.
 2. **Re-test the cascade fix that's already live (commit `646a5e7`)** --
    it was pushed and confirmed deployed, but NOT yet re-verified with an
-   actual timing measurement. Re-run the same single-edit `_timings` test
-   this session used (see the pattern in this session's own transcript,
-   or just: create a ZZTEST expense row via `addExpense`, then a single
-   non-concurrent `editExpense` on it via `fetch('/api/accounts/write',
-   ...)` from the browser console on `accounts.html`, read `body._timings`
-   from the response) and confirm the "cascade lane" dropped meaningfully
-   below its previous ~4.6s. Clean up the test row after.
+   actual timing measurement. Re-run the exact same single-edit
+   `_timings` test this session used, then diff against the **exact
+   BEFORE-fix baseline captured this session** below -- same shape of
+   edit (amount changed only, payment/type left unchanged, zero
+   concurrency) so the comparison is apples-to-apples.
+
+   **How to repeat it:** on `accounts.html`, in the browser console (or
+   via `Claude_Browser__javascript_tool` if a future session has that
+   tool):
+   ```js
+   // 1) create a fresh test row
+   const expenseText = 'ZZTEST-LATENCY-' + Date.now();
+   await fetch('/api/accounts/write', { method: 'POST', headers: {'Content-Type':'application/json'},
+     body: JSON.stringify({ action: 'addExpense', monthIndex: <current month index, e.g. 8 for Sept>, date: '<today ISO>', expense: expenseText, amount: 111, payment: 'Cash', expenseType: 'business' })
+   }).then(r=>r.json());
+   // note the returned row number, then:
+   // 2) fire ONE plain edit (amount only) and read back _timings
+   const res = await fetch('/api/accounts/write', { method: 'POST', headers: {'Content-Type':'application/json'},
+     body: JSON.stringify({ action: 'editExpense', monthIndex: <same>, row: <row from step 1>,
+       originalDate: '<today ISO>', originalExpense: expenseText, originalAmount: 111, originalPayment: 'Cash',
+       date: '<today ISO>', expense: expenseText, amount: 222, payment: 'Cash', expenseType: 'business' })
+   }).then(r=>r.json());
+   res._timings // <- compare this array against the baseline below
+   // 3) clean up: { action: 'deleteExpense', monthIndex: <same>, row: <row> }
+   ```
+   (Note: this one specific fetch call typically exceeds ~10s, which has
+   tripped up `Claude_Browser__javascript_tool`'s own return-value timeout
+   before -- fire it without awaiting inline, stash the promise's result
+   on `window.__result`, and poll for it a few seconds later, exactly as
+   done earlier this session, rather than awaiting it directly in one
+   `javascript_exec` call.)
+
+   **EXACT BEFORE-fix baseline (captured this session, commit `7ab505b`
+   deployed, `646a5e7` NOT yet deployed)** -- one plain edit, amount
+   100->222 (well, 111->222 in the actual run), payment/type unchanged,
+   zero concurrency, total client-side round trip 15045ms:
+   ```json
+   [
+     { "label": "editExpense: read month sheet + notes sidecar", "ms": 2983 },
+     { "label": "editExpense: write row", "ms": 2846 },
+     { "label": "editExpense: bikes lane", "ms": 0 },
+     { "label": "editExpense: month-sheet-again lane (type-total+deposit)", "ms": 0 },
+     { "label": "editExpense: notes lane", "ms": 1436 },
+     { "label": "editExpense: cash lane", "ms": 1570 },
+     { "label": "editExpense: parallel lanes (notes+bikes+cash+monthAgain) TOTAL", "ms": 1570 },
+     { "label": "editExpense: log lane", "ms": 1802 },
+     { "label": "editExpense: cascade lane", "ms": 4659 },
+     { "label": "editExpense: parallel lanes (cascade+log) TOTAL", "ms": 4631 },
+     { "label": "editExpenseRowFromJson TOTAL", "ms": 12802 }
+   ]
+   ```
+   **Expected after the fix**: the "cascade lane" entry should drop from
+   ~4659ms to roughly the time of just ONE cash-sheet read+write (since
+   the month-sheet re-read/re-write it used to also do gets skipped for
+   this exact case -- amount-only change, type/payment untouched, so
+   `monthFileTouchedByOtherLane` stays false and the cached snapshot from
+   the row-write's own verify-fetch gets reused). Rough expectation:
+   cascade lane down to ~1.5-2.5s, TOTAL down to somewhere around
+   9-10.5s from 12.8s -- but actual measurement rules, don't just assume
+   this held. If the numbers DON'T show real improvement, something about
+   the fix or its assumptions needs re-checking before trusting it or
+   building the bigger contractWrites.js fix on the same pattern.
 3. **Design + implement the bigger win**: `customerIntakeFromJson`'s
    multi-cascade chain in `lib/contractWrites.js` (full detail in §0b
    below). This is where Anton's "renting a contract feels slow"
