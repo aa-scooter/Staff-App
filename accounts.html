@@ -3886,6 +3886,14 @@ const cashDisambigCancelBtn = document.getElementById('cashDisambigCancelBtn');
 // modalMode is one of: 'addExpense', 'editExpense', 'addIncome', 'editIncome'
 let modalMode = null;
 let modalEditRow = null; // sheet row number, only set when editing
+// modalOriginalEntry (fixes BUG-06, 2026-09-05) -- the full entry object
+// openModal() populated the form FROM, kept around so modalSaveBtn's
+// click handler can send its own baseline (originalDate/originalExpense/
+// originalAmount/originalPayment, or the income equivalents) alongside
+// the edited values -- see editExpenseRowFromJson's own comment in
+// lib/accountsWrites.js for why the server needs this baseline rather
+// than inferring intent from its own current read of the row.
+let modalOriginalEntry = null;
 let pendingPayload = null; // last save/delete payload, kept around in case the
                            // server asks us to disambiguate a "cash" sheet match
 
@@ -3953,6 +3961,7 @@ let paidFromDepositFeatureEnabled = false;
 function openModal(mode, isIncome, entry) {
   modalMode = mode;
   modalEditRow = entry ? entry.row : null;
+  modalOriginalEntry = entry || null;
   setModalError(null);
 
   fExpenseField.style.display = isIncome ? 'none' : 'block';
@@ -4550,6 +4559,25 @@ modalSaveBtn.addEventListener('click', () => {
   // Generated ONCE here at submit time; retryOptItem() reuses this same
   // payload object (and therefore this same id) on every retry.
   else payload.clientTxnId = genClientTxnId();
+
+  // BASELINE (fixes BUG-06, 2026-09-05) -- send what THIS modal saw when
+  // it was opened, alongside whatever's in the form now, so the server
+  // can tell which field(s) were actually edited regardless of what else
+  // may have changed on the sheet since. See
+  // editExpenseRowFromJson/editIncomeRowFromJson's own comments in
+  // lib/accountsWrites.js for the full "why".
+  if (isEdit && modalOriginalEntry) {
+    payload.originalDate = modalOriginalEntry.date ? dmyToIso(modalOriginalEntry.date) : '';
+    payload.originalAmount = (typeof modalOriginalEntry.amount === 'number') ? modalOriginalEntry.amount : '';
+    if (isIncome) {
+      payload.originalIncome = modalOriginalEntry.income || '';
+      payload.originalName = modalOriginalEntry.name || '';
+      payload.originalPaidBy = modalOriginalEntry.paidBy || '';
+    } else {
+      payload.originalExpense = modalOriginalEntry.expense || '';
+      payload.originalPayment = modalOriginalEntry.payment || '';
+    }
+  }
 
   // Required-fields check (added 14/08/2026 -- Anton reported the modal
   // silently saved an expense with "— Select —" left as the payment
