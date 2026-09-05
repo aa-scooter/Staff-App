@@ -6,7 +6,66 @@ plan and running log built from it, not the methodology itself.
 ## 0. Handoff — read this first if picking up this testing session
 
 ---
-### 🔴 LATEST HANDOFF -- 2026-09-05 (BUG-06 root cause actually found -- v3 fix written, NOT yet pushed; also: a self-inflicted file-corruption incident this same session, recovered, see below)
+### 🔴 LATEST HANDOFF -- 2026-09-05 (v3 pushed and LIVE-RETESTED -- still failed; v4 correction written, NOT yet pushed)
+
+**v3 (the post-write verify-and-heal fix) was pushed as commit `643a4c9`'s
+follow-up, deployed, and live-retested with the same two-tab amount+
+payment race used every time before. It STILL lost the amount change**
+(final state: amount=100/payment=Cash, same symptom as v1 and v2) --
+but this time each request took ~21-26 SECONDS to respond, versus the
+usual ~1-3s for a normal edit, which was the tell.
+
+**Root cause of v3's failure: the healing loop didn't verify its OWN
+last attempt.** `HEAL_ATTEMPTS_EXP`/`HEAL_ATTEMPTS_INC` was 4, but the
+post-write verify step only ran `if (attempt < HEAL_ATTEMPTS - 1)` --
+deliberately skipped on the FINAL attempt so the loop was guaranteed to
+terminate. That meant: under sustained contention (two writers
+repeatedly clobbering each other's row across several retry rounds --
+exactly what the ~20s round-trip time shows happened: several full
+write+verify cycles fought out on both sides), whichever request's LAST
+attempt write happened to land first could still be silently overwritten
+by the other's very next write, with no more chances left to notice and
+heal. Same silent-loss bug as v1/v2, just requiring several rounds of
+contention first instead of failing on round one.
+
+**v4 correction (NOT yet pushed): always verify, even on the last
+attempt -- and if it still can't confirm the write stuck after every
+attempt is used up, THROW instead of returning a false "success".** An
+honest 409/conflict error the user can act on ("please reload and check
+whether your change went through") is correct here; silently telling
+the user their edit saved when it didn't is not -- and exhausting every
+attempt can only happen under a level of contention far past two real
+people clicking Save around the same time (this test fires both edits
+with genuinely simultaneous `Promise.all` requests, which is worse than
+any real usage pattern). Also raised the retry budget from 4 to 6
+attempts, since the loop now always pays for a verify read even in the
+common no-conflict case and has more headroom before ever surfacing that
+error to a real user. Changed in `lib/accountsWrites.js`,
+`editExpenseRowFromJson` and `editIncomeRowFromJson` (same two functions
+as v3) -- `node --check` passes, and the function-count/cross-
+contamination checks from the v3 recovery were re-run and are still
+clean (65 top-level functions, no income-only variables inside the
+expense function's line range or vice versa).
+
+**Push status: NOT YET PUSHED.** Same as always -- Anton needs to
+`git push origin main` from his own Terminal, confirm Ready on Vercel,
+wait a couple minutes past that, then this needs ANOTHER live
+concurrent-edit retest. Test data from this round's retest (a fresh row,
+"ZZTEST-BUG06-v3-retest") was already created and cleaned up (deleted)
+within this same session -- nothing left over in production from this
+round.
+
+**Worth flagging separately: ~20-26s for a single accounts edit is slow
+even before any retry/heal rounds are counted** -- each write+verify
+round trip appears to cost multiple full Drive API round trips. Not
+addressed in this pass (correctness first on money data), but worth a
+look at some point if edits start feeling sluggish in normal (non-
+racing) use -- see PROGRESS.md-style perf notes elsewhere in this file
+for the kind of caching this app already leans on for exactly this
+reason (session-cached file/folder ids).
+
+---
+### 🔴 PRIOR HANDOFF -- 2026-09-05 (BUG-06 root cause actually found -- v3 fix written, NOT yet pushed; also: a self-inflicted file-corruption incident this same session, recovered, see below)
 
 **1. Why v2 still failed: found the real root cause.** v2's field-level
 baseline diff (comparing against the client's own baseline instead of
