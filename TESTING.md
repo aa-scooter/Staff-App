@@ -6,7 +6,96 @@ plan and running log built from it, not the methodology itself.
 ## 0. Handoff — read this first if picking up this testing session
 
 ---
-### 🔴 LATEST HANDOFF -- 2026-09-05 (live retest against the deployed app, after Anton pushed commit `741245d`)
+### 🔴 LATEST HANDOFF -- 2026-09-05 (BUG-06 root cause actually found -- v3 fix written, NOT yet pushed; also: a self-inflicted file-corruption incident this same session, recovered, see below)
+
+**1. Why v2 still failed: found the real root cause.** v2's field-level
+baseline diff (comparing against the client's own baseline instead of
+`existing`) was CORRECT and necessary, but not sufficient on its own --
+it fixed a different, real bug (misidentifying which fields the client
+intended to change) without fixing the actual race that causes the
+clobber. Traced `writeSheetJson`/`ConflictError` (lib/googleDrive.js)
+all the way down: the "conflict" check is a plain
+read-current-modifiedTime-then-compare, done as a separate step BEFORE
+the actual `drive.files.update()` write call -- it is NOT an atomic
+compare-and-swap, because Google Drive's API has no such primitive to
+call. Two edits fired close enough together can each run their own
+check while the OTHER's write hasn't landed yet -- both see the same
+not-yet-updated `modifiedTime`, both pass their check, and both then
+unconditionally call `files.update()`. Whichever call physically
+completes second simply replaces the whole file with THAT request's own
+(by then stale) row snapshot, silently discarding whatever the first
+call had just written -- with NO `ConflictError` ever thrown on
+either side. This is exactly what the v2 live retest showed (amount
+change lost, payment change kept, both requests reporting success) --
+the existing retry-on-conflict path never engages in this case, because
+neither request's check ever actually sees a stale `modifiedTime`. This
+is a genuine gap in the underlying optimistic-lock mechanism itself, not
+a mistake in how BUG-06's own diff logic used it.
+
+**2. v3 fix: POST-WRITE VERIFY-AND-HEAL, in `lib/accountsWrites.js`**
+(`editExpenseRowFromJson` and `editIncomeRowFromJson`). Since the
+check-then-write pair can't be made atomic against Drive (there's no
+compare-and-swap to call), the fix checks AFTER writing too: immediately
+after each write attempt succeeds, re-read the row we just wrote and
+confirm our fields actually stuck (new `rowColsMatchB` helper, same
+file, just above `editExpenseRowFromJson`). If a second writer's update
+slipped in between our own check and our own write, this re-read shows
+it -- so we reapply our OWN diffed field(s) on top of THAT fresh state
+and write again, exactly like a caught conflict already does. This is
+symmetric with the existing forward (conflict-caught) case: whichever
+request turns out to be "first" or "second" in the race now both get a
+chance to notice and correct it, instead of only the second one being
+protected. Retry budget raised from 3 attempts to 4
+(`HEAL_ATTEMPTS_EXP`/`HEAL_ATTEMPTS_INC`) to leave room for a heal round
+on top of a conflict-triggered round. Trade-off worth knowing: this adds
+one extra Drive read per edit (the verify re-read) even in the common
+no-conflict case -- a latency cost in exchange for actually closing the
+hole, on money data where a silently-dropped edit is worse than an extra
+~150-300ms. `node --check` passes; not yet exercised against a live
+concurrent-edit test (needs Anton's push first, per the usual flow).
+
+**3. Push status: NOT YET PUSHED.** The v3 fix is only in this cloud
+session's own device-bridge working copy of `lib/accountsWrites.js` --
+Anton needs to `git push origin main` from his own Mac Terminal (same as
+every prior fix this project) before it's live, then it needs one more
+live concurrent-edit retest (repeat the same two-tab amount+payment race
+as before) to confirm it actually holds this time.
+
+**4. Also happened this session: a self-inflicted file-corruption
+near-miss during editing, recovered -- flagging per this file's own
+"verify a write actually stuck" rule.** While mechanically splicing the
+new retry-loop code into `editExpenseRowFromJson` via a Python
+read-modify-write script, a non-unique text anchor (`"let r = null; //
+hoisted out of the loop..."`, which appears once per function --
+i.e. twice in the file) caused a second scripted edit to match the WRONG
+occurrence and delete a large span of real code between the two edit
+functions (all of `editExpenseRowFromJson`'s notes/bikes/cash/deposit
+lanes and closing, plus `editIncomeRowFromJson`'s entire setup/baseline-
+diff section) -- `node --check` still passed (the result was still
+syntactically valid JS) even though it was semantically wrong, which is
+exactly the kind of silent damage this file's own "never trust a
+successful write on its own" rule warns about. Caught it immediately by
+re-reading the file back and checking for the expected function
+boundaries/line counts rather than trusting the script's own "success"
+output, BEFORE anything was pushed or tested live -- not the
+mystery Hostgator/NordVPN-style revert documented elsewhere in this
+file, just an ordinary scripted-edit mistake in this same session, fully
+explained and recovered by manually reconstructing both functions from
+the exact original text read earlier in the same session. Both functions
+were re-verified afterward: `node --check` passes, the function-name/
+line-count inventory matches the pre-edit original exactly (65 top-level
+functions, was 64 plus the one new `rowColsMatchB` helper), and a
+cross-contamination grep (income-only variable names inside the expense
+function's line range and vice versa) came back clean. No file was ever
+in a broken state on Anton's actual disk beyond this same session's own
+still-uncommitted edits, and nothing was pushed while it was wrong.
+Lesson for next time: when scripting a text-anchor-based replacement,
+always confirm the anchor is unique across the WHOLE file first (`grep
+-c`), not just unique enough to find the first match.
+
+---
+### 🔴 PRIOR HANDOFF -- 2026-09-05 (live retest against the deployed app, after Anton pushed commit `741245d`)
+
 
 **Deployed and retested 4 of the 5 fixes -- all 4 PASSED live. The 5th
 (BUG-06) failed its live retest and has been corrected, but the
