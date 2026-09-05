@@ -6,7 +6,206 @@ plan and running log built from it, not the methodology itself.
 ## 0. Handoff — read this first if picking up this testing session
 
 ---
-### 🔴 LATEST HANDOFF -- 2026-09-05 (v3 pushed and LIVE-RETESTED -- still failed; v4 correction written, NOT yet pushed)
+### 🔴 LATEST HANDOFF -- 2026-09-05 (real fail-fast lock IMPLEMENTED per the plan below -- pushed, awaiting live retest; NOT yet confirmed fixed)
+
+**STATUS UPDATE (same day, later session):** the lock plan approved below is
+now written. New file `lib/lock.js` (Upstash Redis REST client, fail-open
+if no Redis env vars are set yet, fail-fast SET-NX-EX lock + token-checked
+EVAL release). Wired into `editExpenseRowFromJson` and
+`editIncomeRowFromJson` in `lib/accountsWrites.js` -- lock acquired on
+`lock:accounts:<month>:<year>` before either function's first Drive read,
+held through the ENTIRE function body (including the slow notes/bikes/
+cash/cascade/log lanes) via try/finally, released unconditionally in the
+finally. On failed acquisition throws the existing `ConflictError`, which
+`api/accounts/write.js` already maps to a 409 -- no client-side change
+needed. Scope is edit-only (not add/delete/transfer/etc.), matching the
+default called out in the plan below. `node -c` syntax-checked both files;
+no test harness exists in this repo to run beyond that.
+
+**STILL NEEDS, in order:**
+1. Confirm whether Anton has added the Upstash Redis / Vercel KV
+   integration to the `staff-app` project in the Vercel dashboard yet. If
+   not yet done, the code is safe to deploy (it fails open -- edits work
+   exactly as before, just without the race actually being closed) but
+   the fix has NO EFFECT until that integration exists. Check Vercel
+   runtime logs for the one-time `[lock] no Redis env vars found` warning
+   to tell which state is live.
+2. Once the integration exists, confirm the exact env var names in Vercel
+   Settings -> Environment Variables (`lib/lock.js` already checks both
+   `KV_REST_API_URL`/`KV_REST_API_TOKEN` and
+   `UPSTASH_REDIS_REST_URL`/`UPSTASH_REDIS_REST_TOKEN`, so either naming
+   should work with no code change -- but this hasn't been verified
+   against a real Redis instance yet, only syntax-checked).
+3. Push this commit, confirm Ready on Vercel.
+4. Live-retest with the SAME two-tab amount+payment race used for v1-v4 --
+   this time BOTH edits should complete correctly with no silent loss
+   (or one of them should get the new fail-fast 409 if they land closely
+   enough that Vercel's own request timing has them genuinely overlap).
+5. Only after that live retest passes: consider removing the v3/v4
+   retry-and-verify complexity per item 5 of the plan below (leave it for
+   now -- not done in this pass).
+
+---
+
+### Original plan (approved same day, now being implemented above)
+
+
+**v4 (commit `ef970b7`, "verify every heal attempt including the last")
+was pushed, confirmed Ready on Vercel for over an hour, and live-
+retested with the same two-tab amount+payment race used every time
+before. It STILL lost the amount change** -- identical symptom to every
+prior attempt (final state: amount=100/payment=Cash instead of
+amount=150/payment=Cash). Test row created and cleaned up within the
+retest; nothing left over in production.
+
+**Why v4 still fails -- the actual, now-fully-understood root cause:**
+timed a single, completely non-concurrent edit through this same
+endpoint and it took **~13 seconds** for one plain edit with ZERO
+contention (`editExpenseRowFromJson`/`editIncomeRowFromJson` each do a
+lot of sequential/parallel Drive work per edit: notes sidecar, bikes
+sheet reconciliation, cash sheet, deposit totals, summary-cascade,
+logging). The two-edit race test took ~20-24s per side -- consistent
+with the row-write-and-verify part succeeding fairly early, followed by
+10+ MORE seconds of that other bookkeeping work before the function
+actually returns. v3/v4's verify-and-heal loop only re-checks the row
+right after writing it -- it never re-checks again before the function
+finally returns. So the actual failure mode is: request A's row-write
+verify genuinely confirms A's change is correct at (say) t=5s, then A
+spends 10+ more seconds doing notes/bikes/cash/cascade/log work, and
+sometime in that window request B (still independently retrying its OWN
+write, because it's just as slow) overwrites the row again -- A has
+already "passed its check" and has no way to know its confirmed state
+got clobbered 10 seconds later. **This is a structural ceiling on any
+"detect and heal after the fact" approach: no matter how many attempts
+or how tight the verify loop, there is always a residual window between
+"I confirmed I'm correct" and "I've actually returned to the caller"
+during which another equally-slow concurrent request can still land.**
+More retry attempts (v1 -> v2 -> v3 -> v4) only ever shrank that window;
+they could never close it, because the window's size is tied to how
+long the WHOLE operation takes (13-20+ seconds here), not just the row
+write itself.
+
+**Decision (discussed with Anton, APPROVED -- this is the plan for next
+session, not yet implemented):** stop trying to detect-and-heal the
+race after the fact. Add a REAL lock so two edits to the same month's
+Accounts file can never run concurrently in the first place --
+eliminates the bug by construction instead of by probability. Anton was
+explicit: **FAIL-FAST, not a queue** -- if a second edit arrives while
+the first is still running, do NOT make it wait/queue; immediately
+return a clear "someone else is editing this right now -- please try
+again in a few seconds" message and let the user's own retry handle it.
+He expects this to be a very rare occurrence in real (non-scripted-test)
+usage.
+
+**Implementation plan for next session:**
+1. **Add a real atomic lock primitive** -- Drive itself has no
+   compare-and-swap, which is the whole reason this bug exists, so the
+   lock needs to live somewhere that DOES support one. Standard,
+   well-supported choice on Vercel: **Upstash Redis** (or Vercel's own
+   KV, which is Upstash under the hood), via `SET key value NX EX <ttl>`
+   (set-if-not-exists with an expiry). Free tier is plenty for a 2-person
+   app. **Anton needs to add this from the Vercel dashboard** (Storage
+   tab -> add Upstash Redis / KV -> connect to the `staff-app` project --
+   this generates env vars like `KV_REST_API_URL`/`KV_REST_API_TOKEN` or
+   `UPSTASH_REDIS_REST_URL`/`...TOKEN` automatically). Confirm exact env
+   var names once he's added it (they differ slightly between the native
+   Vercel KV marketplace item and a direct Upstash integration) -- check
+   Vercel project Settings -> Environment Variables after he adds it,
+   don't assume names.
+2. **Lock scope: per month-sheet file** (e.g. `lock:accounts:September:2026`),
+   not per-row -- Drive writes replace the WHOLE file, so that's the
+   actual unit of conflict, matching how `writeSheetJson`/`ConflictError`
+   already reason about this file. Acquire the lock at the very start of
+   `editExpenseRowFromJson`/`editIncomeRowFromJson` (before the first
+   `fetchSheetWithMeta` call), hold it through the ENTIRE function
+   (including the notes/bikes/cash/deposit/cascade/log lanes -- that's
+   the whole point, those are exactly the slow part that was leaving the
+   window open), release in a `finally` so a thrown error still releases
+   it. Give the lock key a short TTL (e.g. 30s, comfortably above the
+   current ~13-20s worst case) as a safety net in case a function ever
+   crashes or times out mid-edit without reaching the `finally` --
+   without a TTL a crashed request would permanently deadlock that
+   month's sheet.
+3. **On failing to acquire the lock, fail fast with a clear message** --
+   do NOT retry/wait/queue inside the request. Return the same shape the
+   existing `ConflictError`/409 path already uses (api/accounts/write.js
+   already maps `ConflictError`/`isConflict` to a 409 -- reuse this
+   exact mechanism, just with a locking-specific message) so
+   accounts.html's existing conflict-error UI handling picks it up with
+   no client-side changes needed: "Someone else is editing this expense/
+   income entry right now -- please try again in a few seconds."
+4. **Whether to lock ONLY editExpense/editIncome, or every write path
+   that touches the same month file** (addExpense, addIncome,
+   deleteExpense, deleteIncome, bulkSetExpenseType, transferToBank,
+   recomputeSummary, repairOrphanedCashRows all also call
+   `fetchSheetWithMeta`/`writeSheetJson` against the SAME per-month
+   file) is worth a real decision, not an assumption -- BUG-06 was
+   specifically about two EDITS racing, but an edit racing an ADD (or a
+   delete) against the same file has the identical underlying race.
+   Leaning toward locking the whole file for every write action that
+   touches it (not just edit), for the same "close it by construction"
+   reasoning -- but this widens the blast radius of "someone else is
+   editing" messages slightly (e.g. someone adding an expense while
+   someone else edits a DIFFERENT row would now also see it) and is
+   worth confirming with Anton's actual expectation before building it
+   that broadly. Default to editExpense/editIncome only (matches exactly
+   what was asked for) unless he says otherwise.
+5. **Once the lock is in and live-retested working, seriously consider
+   REMOVING the v3/v4 retry-and-verify complexity** (`HEAL_ATTEMPTS_EXP`/
+   `HEAL_ATTEMPTS_INC`, `rowColsMatchB`, the whole verify-then-reapply
+   loop) from `editExpenseRowFromJson`/`editIncomeRowFromJson` -- with a
+   real lock in place it's provably unreachable dead complexity (no two
+   edits to the same file can ever be mid-flight at once anymore), and
+   leaving it in just makes the next person reading this code think
+   there's still a race to worry about. Don't rip it out blind, though --
+   confirm via live retest with the lock in place FIRST, then simplify
+   the write back down to a single plain write (still keep the existing
+   Drive-modifiedTime `ConflictError` check as harmless defense-in-depth,
+   just drop the multi-attempt healing loop around it).
+
+**SEPARATE task, also approved, own priority -- investigate the ~13-20s
+baseline edit latency ("running slow") independent of the locking work.**
+Anton's words: "dig into the... baseline. Anything we could do to speed
+up this app because it's running slow. Really look into that." This is
+NOT blocking the lock (do the lock first per his ordering), but is a
+real, standalone usability problem -- a single edit taking 13+ seconds
+with zero contention is bad regardless of concurrency. This file's
+functions already have `logStep`/`nowMs` timing instrumentation threaded
+through every lane (see `editExpenseRowFromJson`'s `logStep('editExpense:
+read month sheet...', ...)`, `'...write row'`, `'...notes lane'`,
+`'...bikes lane'`, `'...cash lane'`, `'...month-sheet-again lane'`,
+`'...parallel lanes...TOTAL'`, `'...cascade lane'`, `'...log lane'`,
+`'...TOTAL'` -- these already exist, just need to actually be READ).
+**Next step: pull real Vercel function logs for a live edit request and
+read these existing `logStep` timings to see which lane(s) are actually
+eating the 13 seconds**, rather than guessing -- this is a live-app
+diagnostic (Vercel dashboard -> the project -> Logs / Runtime Logs
+filtered to `/api/accounts/write`, or `vercel logs` from Anton's own
+Terminal) that this cloud session's own device-bridge shell doesn't have
+direct access to; may need Anton to pull/paste them, or check whether
+this session's browser can reach the Vercel logs UI (it was already open
+in a tab during this session -- see the deployments screenshot from
+this same handoff). Prime suspects worth checking first, based on the
+code's own PERF comments elsewhere in this file: whether
+`session.driveFileIds`/`session.driveYearFolders` caching (the exact
+mechanism earlier PERF passes added specifically to avoid this) is
+actually surviving between the read and write calls WITHIN one edit
+request, or whether something is causing repeated live Drive searches
+instead of the fast cached-id path.
+
+**Push status: no new commits since `ef970b7` (v4).** The lock work and
+the latency investigation above are both fully unstarted in code --
+this session ran out of budget partway through discussing the plan with
+Anton, right after he approved it, before any implementation began.
+
+**Property-app CoinGecko 429 rate-limit issue: still completely
+untouched**, per Anton's own "don't worry about it" -- no folder access
+was ever granted for `~/property-app` this session (a request was made
+and Anton declined it, saying he'd check it another way himself). Not
+part of this project's scope unless he raises it again.
+
+---
+### 🔴 PRIOR HANDOFF -- 2026-09-05 (v3 pushed and LIVE-RETESTED -- still failed; v4 correction written, NOT yet pushed)
 
 **v3 (the post-write verify-and-heal fix) was pushed as commit `643a4c9`'s
 follow-up, deployed, and live-retested with the same two-tab amount+
