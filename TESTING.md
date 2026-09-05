@@ -75,13 +75,21 @@ cell got a FIXED marker prepended):
    re-running each bug's own original repro steps, plus the two flagged
    real-fleet BUG-10 pairs).
 
-**2. Push status:** committed and pushed to `origin/main` from this
-session directly (this cloud session's device-bridge git checkout does
-have push access, unlike the earlier no-credentials cloud session this
-handoff block replaces) -- see `git log --oneline -3` for the exact
-commit. This is a LIVE PRODUCTION app (`staff-app-six-phi.vercel.app`) --
-confirm the Vercel deployment finishes and shows Ready before treating
-any of the 5 fixes as live.
+**2. Push status: committed, NOT YET PUSHED -- needs Anton's own
+machine.** Commit `4f7cc7e` ("Fix BUG-06, BUG-08, BUG-09, BUG-10,
+BUG-11...") is sitting on top of `e9255d9` in this local checkout.
+`git push origin main` was attempted from this session's device-bridge
+VM and failed: `fatal: could not read Username for 'https://github.com'`
+-- this VM has no stored GitHub credentials (no credential helper, no
+SSH key, no `gh` CLI), same underlying constraint the earlier
+no-credentials CLOUD session hit, just a different machine hitting the
+same wall. **Anton needs to run `git push origin main` himself, from a
+real Terminal on his actual Mac** (not this sandboxed VM) to get this
+live -- this is a LIVE PRODUCTION app (`staff-app-six-phi.vercel.app`),
+so nothing in this commit is live until that push (and the Vercel
+deployment it triggers) actually happens. Confirm the Vercel deployment
+finishes and shows Ready before treating any of the 5 fixes as live, and
+before starting the live retest pass.
 
 ---
 ### 🔴 PRIOR HANDOFF -- 2026-09-04 (unattended autonomous continuation -- Anton stepped away with instructions: log in, test as much as possible, hold off on ALL bug fixes, keep testing until budget runs out, no git push under any circumstances)
