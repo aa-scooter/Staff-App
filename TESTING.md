@@ -22,6 +22,27 @@ needed. Scope is edit-only (not add/delete/transfer/etc.), matching the
 default called out in the plan below. `node -c` syntax-checked both files;
 no test harness exists in this repo to run beyond that.
 
+**LIVE RETEST RESULT (2026-09-05, same session, after push confirmed live):**
+Ran the same two-request field race (editExpense amount-change vs
+payment-change on the same row) twice against production. BOTH requests
+took the full ~12-13s each time and BOTH returned `{success:true}` --
+neither got the new fail-fast 409. Trial 2 reproduced the ORIGINAL bug
+exactly: request A's amount change (200->999) landed, request B's
+payment change (Cash->Wise) was silently discarded (final row stayed
+payment=Cash instead of Wise), with no error shown to either caller.
+**Conclusion: the lock code is deployed but NOT actually engaged in
+production** -- consistent with `lib/lock.js`'s fail-open design when
+KV_REST_API_URL/TOKEN or UPSTASH_REDIS_REST_URL/TOKEN aren't set, i.e.
+the Upstash Redis / Vercel KV integration has not been added to the
+`staff-app` project yet. Test rows (September rows 4 and 5) cleaned up
+after -- one had an unremovable stray "cash" sheet row (cosmetic
+bookkeeping leftover, unrelated to the lock, not chased down further).
+**Next action is on Anton: add the Redis/KV integration in Vercel
+(Storage tab), then re-run this exact same race test** -- expect one
+request to return the 409 "someone else is editing..." almost instantly
+while the other completes normally, with the row ending up fully correct
+either way.
+
 **STILL NEEDS, in order:**
 1. Confirm whether Anton has added the Upstash Redis / Vercel KV
    integration to the `staff-app` project in the Vercel dashboard yet. If
