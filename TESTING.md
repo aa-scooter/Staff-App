@@ -6,6 +6,99 @@ plan and running log built from it, not the methodology itself.
 ## 0. Handoff — read this first if picking up this testing session
 
 ---
+### 🔴 SESSION-END HANDOFF -- 2026-09-05 (read this one first -- supersedes the two dated blocks below, which are kept as history) -- Anton is low on usage and stopping here; next login picks up at "STILL NEEDS" below
+
+**What this session did, in order:** (1) confirmed BUG-06's fail-fast Redis
+lock (see the ✅ block just below) is CONFIRMED FIXED and live -- Anton
+connected Upstash Redis in Vercel, redeployed, and it was live-retested
+twice against production, working correctly both directions (one edit
+wins the lock and completes normally, the other gets a fast 409 instead
+of silently losing data). (2) Moved on to the separate, Anton-requested
+latency investigation ("saves are really slow across the whole app").
+(3) Added a `_timings` diagnostic field to editExpense/editIncome
+responses (commit `7ab505b`, pushed+deployed) since this session has no
+Vercel dashboard access to read the existing `logStep`/console.log
+timings any other way. (4) Live-tested ONE plain edit with zero
+contention: **12.8s total**, breaking down as ~3.0s reading the month
+sheet+notes, ~2.8s writing the row, ~1.6s for the cash/notes lane, and
+**~4.6s for the "cascade" step (recomputeMonthlySummaryCascadeB) alone --
+the single biggest chunk**, caused by it doing a fully redundant fresh
+re-read of the same month file the row-write had just read+written
+moments earlier. (5) Fixed that specific redundancy in
+`editExpenseRowFromJson`/`editIncomeRowFromJson` (commit `646a5e7`,
+**pushed and confirmed deployed** -- see git log) by passing the
+post-write verify-fetch's already-fresh rows into the cascade step
+instead of it re-fetching, guarded by a new `monthFileTouchedByOtherLane`
+flag so it safely falls back to a real fetch on the rarer edits that
+also touch expense-type or wise/revolut deposit totals. Safe specifically
+*because* the BUG-06 lock now holds for the whole request, so no
+concurrent writer can invalidate the cached snapshot. (6) Anton then
+asked for a read-only survey (no code) of whether the same pattern
+exists elsewhere, especially in the contract-rental flow -- see the new
+**§0b Latency investigation** section right after this handoff for the
+full writeup. Headline finding: `customerIntakeFromJson` in
+`lib/contractWrites.js` (the actual "Rent" flow) can trigger the
+SAME kind of full cascade **up to 3 times sequentially in one ordinary
+booking**, each one an independent, uncached read-cash/write-cash/
+read-month/write-month round trip -- almost certainly why renting a
+contract is the single slowest action in the app, and a bigger win than
+the fix already shipped. Documented, NOT implemented -- needs a more
+careful multi-function-call-chain design than the one-function fix
+above, given this codebase's history of subtle money-losing bugs
+(BUG-01 through BUG-11) when changes are rushed.
+
+**STILL NEEDS, in order, for whoever picks this up next:**
+1. **Push commit `46e0d7d`** (docs-only, TESTING.md's §0b survey notes --
+   zero code risk) via the usual `cd ".../vercel-site" && git push` in a
+   REAL Terminal on Anton's Mac -- this sandbox's shell has no GitHub
+   credentials and cannot push itself; every push this whole session had
+   to be relayed to Anton this same way, every time.
+2. **Re-test the cascade fix that's already live (commit `646a5e7`)** --
+   it was pushed and confirmed deployed, but NOT yet re-verified with an
+   actual timing measurement. Re-run the same single-edit `_timings` test
+   this session used (see the pattern in this session's own transcript,
+   or just: create a ZZTEST expense row via `addExpense`, then a single
+   non-concurrent `editExpense` on it via `fetch('/api/accounts/write',
+   ...)` from the browser console on `accounts.html`, read `body._timings`
+   from the response) and confirm the "cascade lane" dropped meaningfully
+   below its previous ~4.6s. Clean up the test row after.
+3. **Design + implement the bigger win**: `customerIntakeFromJson`'s
+   multi-cascade chain in `lib/contractWrites.js` (full detail in §0b
+   below). This is where Anton's "renting a contract feels slow"
+   complaint almost certainly lives. Needs a shared in-memory
+   cash/month-sheet cache threaded through `chainMoneySheets`'s own
+   sequential steps AND the sequential security-deposit step after it --
+   a real design task, not a quick patch, given the file's bug history.
+   Consider also tracing `lib/bikesWrites.js`'s 12 call sites of the same
+   cascade pattern (the most of any file -- likely the second-slowest
+   flow, not yet identified which one) once the contract flow is done.
+4. **Optional cleanup, not urgent**: per the original BUG-06 plan's item
+   5, the v3/v4 retry-and-verify complexity in
+   editExpenseRowFromJson/editIncomeRowFromJson (`HEAL_ATTEMPTS_EXP`/
+   `HEAL_ATTEMPTS_INC`, `rowColsMatchB`, the verify-then-reapply loop) is
+   now provably dead code with the real lock in place -- could be ripped
+   out for clarity, no rush.
+5. **Not touched this session, still genuinely open**: the actual
+   TESTING.md §5 manual test pass itself (§5.1 onward) has STILL not been
+   started/resumed -- this whole session (and the one before it) got
+   consumed by BUG-06 and latency work instead. The 2026-09-03 handoff's
+   open question about whether a brand-new Google login is a truly
+   isolated sandbox was never resolved either, though it's arguably moot
+   in practice: every live test this session (and prior ones) worked
+   directly against the real account with ZZTEST-prefixed rows, cleaned
+   up immediately after each check, per TESTING-METHODOLOGY.md's own
+   prescribed approach -- worth explicitly deciding with Anton whether to
+   keep testing this way going forward or still chase the sandbox-account
+   idea, rather than leaving it as an unstated open question.
+6. Repo hygiene note (not urgent, not touched): the working tree has a
+   few untracked files sitting around --  `BUGFIX_HANDOFF.md`,
+   `HANDOFF_2026-08-26.md`, `TESTING-METHODOLOGY.md`, and a `_to_delete/`
+   folder. Left alone this session (no file changes beyond what was
+   asked) but flagging in case they're stray and worth Anton's own
+   cleanup pass.
+
+
+---
 ### ✅ LATEST HANDOFF -- 2026-09-05 (BUG-06 CONFIRMED FIXED -- real fail-fast lock live-retested against production, working both directions; v3/v4 retry-heal complexity NOT yet removed)
 
 **STATUS UPDATE (same day, later session):** the lock plan approved below is
