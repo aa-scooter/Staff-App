@@ -126,6 +126,36 @@
   }
   .contact-btn:active{ transform:scale(.98); }
 
+  .contacted-check{ display:inline-flex; align-items:center; gap:6px; cursor:pointer; margin-left:2px; }
+  .contacted-check input{ width:16px; height:16px; accent-color:var(--petrol-light); cursor:pointer; margin:0; }
+  .contacted-check span{
+    font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:12px;
+    letter-spacing:.04em; text-transform:uppercase; color:var(--petrol);
+  }
+  .followup-panel{
+    margin-top:9px; padding:10px 11px; background:#FBFAF7; border:1px solid var(--line);
+    border-radius:9px; display:flex; flex-direction:column; gap:8px;
+  }
+  .followup-row{ display:flex; align-items:center; gap:9px; flex-wrap:wrap; }
+  .followup-row label{
+    font-size:11.5px; color:var(--muted); font-family:'Barlow Condensed',sans-serif;
+    font-weight:700; letter-spacing:.03em; text-transform:uppercase;
+  }
+  .followup-row input[type=date]{
+    border:1px solid var(--line); border-radius:7px; padding:5px 7px; font-size:13px;
+    font-family:'Inter',sans-serif; color:var(--ink); background:#fff;
+  }
+  .due-note{ font-size:12px; line-height:1.4; }
+  .due-note.is-due{ color:var(--high); font-weight:600; }
+  .due-note.is-ok{ color:var(--muted); }
+  .complete-btn{
+    border:none; background:var(--ok); color:#fff; font-family:'Barlow Condensed',sans-serif;
+    font-weight:700; font-size:11.5px; letter-spacing:.04em; text-transform:uppercase;
+    padding:6px 10px; border-radius:8px; cursor:pointer;
+  }
+  .bike-card.followup-saving{ opacity:.6; pointer-events:none; }
+  .bike-card.is-highlighted{ box-shadow:0 0 0 3px var(--cone); border-color:var(--cone); }
+
   /* Contact Customer modal */
   .modal-backdrop{
     position:fixed; inset:0; background:rgba(15,36,33,.45);
@@ -597,8 +627,193 @@ async function getBikeRentalStatusFromJson() {
 
   return { success: true, bikeNames: bikeNamesForRental, rented };
 }
-// ================== end JSON-backed data layer (reads only) ==================
-// This page has no write actions at all.
+// ================== end JSON-backed data layer ==================
+// This page now has ONE write action: recording/clearing the "customer
+// contacted" follow-up date for a bike (added 12/09/2026, see
+// setOilChangeContactJson below) -- everything else here still just reads.
+
+// ---- WRITE plumbing -- same pattern as parts.html/bikes.html/deposits.html. ----
+async function fetchSheetWithMeta(sheetName, year) {
+  const url = year
+    ? `/api/data/${encodeURIComponent(sheetName)}?year=${encodeURIComponent(year)}`
+    : `/api/data/${encodeURIComponent(sheetName)}`;
+  const r = await fetch(url);
+  if (r.status === 401) throw new Error('Signed out -- please refresh to sign in again.');
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  const res = await r.json();
+  if (!res.success) throw new Error(res.error || 'Could not load data.');
+  return { rows: res.rows || [], modifiedTime: res.modifiedTime || null };
+}
+async function writeSheetJson(sheetName, rows, expectedModifiedTime, year) {
+  const url = year
+    ? `/api/data/${encodeURIComponent(sheetName)}?year=${encodeURIComponent(year)}`
+    : `/api/data/${encodeURIComponent(sheetName)}`;
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ rows, expectedModifiedTime })
+  });
+  const res = await r.json().catch(() => ({}));
+  if (r.status === 409) {
+    throw new Error(res.error || 'This record was changed by someone else in the meantime -- please reload and try again.');
+  }
+  if (!r.ok || !res.success) throw new Error(res.error || ('HTTP ' + r.status));
+  delete oilchangeJsonCache['Parts_and_Oil_change'];
+  return res;
+}
+
+// The column this page stores "customer contacted" follow-up dates in.
+// Found by NAME every time (never a hardcoded index) and appended as a
+// brand new trailing column the first time this is ever used -- works
+// whether or not the live sheet already has a spare blank column sitting
+// around (never assumed).
+const OIL_CHANGE_CONTACT_HEADER = 'Oil change contacted on';
+const FOLLOWUP_DUE_DAYS = 2;
+const OILCHANGE_FOLLOWUP_CACHE_KEY = 'aaOilchangeFollowUps';
+
+function todayIso() {
+  const d = new Date();
+  return d.getFullYear() + '-' + pad2Json(d.getMonth() + 1) + '-' + pad2Json(d.getDate());
+}
+function ddmmyyyyToIso(s) {
+  const m = (s || '').toString().trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (!m) return '';
+  return m[3] + '-' + pad2Json(parseInt(m[2], 10)) + '-' + pad2Json(parseInt(m[1], 10));
+}
+function isoDateTimeToDdMmYyyy(isoDateTime) {
+  const m = (isoDateTime || '').toString().match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return '';
+  return m[3] + '/' + m[2] + '/' + m[1];
+}
+function daysSinceDdMmYyyy(ddmmyyyy) {
+  const iso = ddmmyyyyToIso(ddmmyyyy);
+  if (!iso) return null;
+  const d = new Date(iso + 'T00:00:00');
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  d.setHours(0, 0, 0, 0);
+  return Math.round((today - d) / 86400000);
+}
+
+// ---- Matches the bike by exact name in column A (same convention as
+// parts.html's updateBikeRowJson), then sets (or clears, with '') the
+// "Oil change contacted on" column -- creating that column, appended at
+// the end, the first time it's ever written. ----
+async function setOilChangeContactJson(bikeName, sheetValueOrEmpty) {
+  const { rows, modifiedTime } = await fetchSheetWithMeta('Parts_and_Oil_change');
+  const headerRow = (rows[0] || []).slice();
+  let colIdx = headerRow.findIndex(h => (h || '').toString().trim().toLowerCase() === OIL_CHANGE_CONTACT_HEADER.toLowerCase());
+  const newRows = rows.map(r => r.slice());
+  if (colIdx === -1) {
+    colIdx = headerRow.length;
+    newRows[0] = headerRow.concat([OIL_CHANGE_CONTACT_HEADER]);
+  }
+  const bikeTarget = (bikeName || '').toString().trim();
+  let targetRowIdx = -1;
+  for (let r = 1; r < newRows.length; r++) {
+    if ((newRows[r][0] || '').toString().trim() === bikeTarget) { targetRowIdx = r; break; }
+  }
+  if (targetRowIdx === -1) throw new Error('Bike "' + bikeName + '" not found in "Parts and Oil change".');
+  newRows[targetRowIdx][colIdx] = sheetValueOrEmpty || '';
+  await writeSheetJson('Parts_and_Oil_change', newRows, modifiedTime);
+  return { success: true };
+}
+
+// Best-effort "saving..." affordance on one card while its write is in
+// flight -- looked up by the data-bike attribute cardHtml() sets below,
+// since render() rebuilds listBox.innerHTML wholesale on every call and
+// there's no other stable handle to one specific card.
+function setCardBusy(bikeName, busy) {
+  const el = document.querySelector('.bike-card[data-bike="' + encodeURIComponent(bikeName) + '"]');
+  if (el) el.classList.toggle('followup-saving', !!busy);
+}
+
+function runOilChangeContactWrite(bikeName, sheetValue) {
+  setCardBusy(bikeName, true);
+  setOilChangeContactJson(bikeName, sheetValue)
+    .then(() => {
+      const bikeHeader = partsData.headers[0];
+      if (partsData.headers.indexOf(OIL_CHANGE_CONTACT_HEADER) === -1) partsData.headers.push(OIL_CHANGE_CONTACT_HEADER);
+      const row = partsData.rows.find(r => (r[bikeHeader] || '').toString().trim() === bikeName);
+      if (row) row[OIL_CHANGE_CONTACT_HEADER] = sheetValue ? isoDateTimeToDdMmYyyy(sheetValue) : '';
+      render();
+    })
+    .catch(err => {
+      setCardBusy(bikeName, false);
+      alert('Could not save "Customer contacted" for ' + bikeName + ': ' + err.message);
+    });
+}
+
+function toggleOilChangeContact(event, encBike, isChecked) {
+  event.stopPropagation();
+  const bikeName = decodeURIComponent(encBike || '');
+  runOilChangeContactWrite(bikeName, isChecked ? (todayIso() + 'T00:00:00') : '');
+}
+function changeOilChangeContactDate(event, encBike, isoDateValue) {
+  event.stopPropagation();
+  if (!isoDateValue) return;
+  const bikeName = decodeURIComponent(encBike || '');
+  runOilChangeContactWrite(bikeName, isoDateValue + 'T00:00:00');
+}
+function markOilChangeCompleted(event, encBike) {
+  event.preventDefault();
+  event.stopPropagation();
+  const bikeName = decodeURIComponent(encBike || '');
+  runOilChangeContactWrite(bikeName, '');
+}
+
+// Small cached summary the shared header (nav.js) reads to show the red
+// "Follow-up" badge on EVERY page, not just this one -- same "read fresh
+// once per page load, doesn't live-update elsewhere" tradeoff
+// accounts.html's own sync-badge already makes (see nav.js's
+// syncBadgeHtml() comment): this is a normal multi-page site, so nav.js
+// can't hold a live reference to this page's own partsData once you've
+// navigated away from it.
+function writeFollowUpCache() {
+  try {
+    if (!partsData) return;
+    const bikeHeader = partsData.headers[0];
+    const items = partsData.rows
+      .filter(r => !r.__struck)
+      .map(r => {
+        const contactedOn = r[OIL_CHANGE_CONTACT_HEADER] || '';
+        if (!contactedOn) return null;
+        const daysSince = daysSinceDdMmYyyy(contactedOn);
+        if (daysSince === null || daysSince < FOLLOWUP_DUE_DAYS) return null;
+        const bikeName = (r[bikeHeader] || '').toString().trim();
+        const renter = rentedBikes[bikeName] || null;
+        return { bike: bikeName, renter: renter ? (renter.name || '') : '', daysSince: daysSince };
+      })
+      .filter(Boolean)
+      .sort((a, b) => b.daysSince - a.daysSince);
+    localStorage.setItem(OILCHANGE_FOLLOWUP_CACHE_KEY, JSON.stringify({ items: items, updatedAt: Date.now() }));
+  } catch (e) { /* best-effort, same as every other localStorage read/write in this app */ }
+}
+
+// Lets nav.js's Follow-up Queue send someone back here at a specific bike
+// (oilchange.html?followup=<name>) -- scrolls to and briefly highlights
+// that card, then cleans the query param off the URL. Called once after
+// the first REAL (network) render of a page load -- see loadParts()'s
+// own .then() below -- not the cached-then-refresh render loadParts() may
+// also do first, and not after every later re-render from a
+// checkbox/date change.
+function handleFollowupDeepLink() {
+  try {
+    const params = new URLSearchParams(location.search);
+    const target = params.get('followup');
+    if (!target) return;
+    const el = document.querySelector('.bike-card[data-bike="' + encodeURIComponent(target) + '"]');
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      el.classList.add('is-highlighted');
+      setTimeout(() => el.classList.remove('is-highlighted'), 2200);
+    }
+    const url = new URL(location.href);
+    url.searchParams.delete('followup');
+    history.replaceState({}, '', url.pathname + url.search + url.hash);
+  } catch (e) { /* best-effort */ }
+}
+
 
 let partsData = null;
 let rentedBikes = {}; // bike name -> { name, contact, number, ... } for currently-rented bikes
@@ -692,6 +907,7 @@ function loadParts() {
       }
       setLoadStatus(null);
       render();
+      handleFollowupDeepLink();
       writeOilchangeCache({ partsData, searchBikeNames, rentedBikes });
     })
     .catch(err => {
@@ -854,6 +1070,7 @@ function daysSinceChecked(row, headers) {
 
 function cardHtml(row, headers, metricLabel, metricValue) {
   const bikeHeader = headers[0];
+  const bikeName = (row[bikeHeader] || '').toString();
   const operationStatus = findOperationStatus(row[bikeHeader]);
   const status = operationStatus !== null ? operationStatus : (row[findHeader(headers, 'status')] || '');
   const rClass = riskClass(status);
@@ -871,8 +1088,45 @@ function cardHtml(row, headers, metricLabel, metricValue) {
     ? `<div class="bc-renter">🧑‍✈️ Rented to: <b>${renter.name || 'Unknown'}</b>${renter.contact ? ' &nbsp;·&nbsp; ' + renter.contact : ''}</div>`
     : '';
 
+  // ---- "Customer contacted" follow-up tracking (added 12/09/2026) ----
+  // See setOilChangeContactJson/writeFollowUpCache above for the storage
+  // and header-badge side of this. contactedOn is a "dd/mm/yyyy" string
+  // (already run through partsCellToString like every other date cell on
+  // this sheet), or '' when this bike has no open follow-up.
+  const contactedOn = row[OIL_CHANGE_CONTACT_HEADER] || '';
+  const followUpDaysSince = contactedOn ? daysSinceDdMmYyyy(contactedOn) : null;
+  const followUpOverdue = followUpDaysSince !== null && followUpDaysSince >= FOLLOWUP_DUE_DAYS;
+  let dueNote = '';
+  if (contactedOn) {
+    if (followUpOverdue) {
+      dueNote = 'Follow-up due now — contacted ' + followUpDaysSince + (followUpDaysSince === 1 ? ' day' : ' days') + ' ago with no update.';
+    } else if (followUpDaysSince === 0) {
+      dueNote = 'Contacted today — you\'ll get a follow-up alert in ' + FOLLOWUP_DUE_DAYS + ' days if nothing changes.';
+    } else {
+      const remain = FOLLOWUP_DUE_DAYS - followUpDaysSince;
+      dueNote = 'Follow-up alert in ' + remain + (remain === 1 ? ' day' : ' days') + '.';
+    }
+  }
+  const contactRowHtml = renter ? `
+      <div class="bc-actions">
+        <button type="button" class="contact-btn" onclick="openContactModal(event, '${escJs(renter.name)}', '${escJs(row[bikeHeader])}', '${escJs(renter.contact)}', '${escJs(nextOil)}', '${escJs(renter.number)}', '${escJs(renter.contactMethod)}', '${escJs(renter.messengerId)}')">📩 Contact Customer</button>
+        <label class="contacted-check">
+          <input type="checkbox" ${contactedOn ? 'checked' : ''} onclick="event.stopPropagation();" onchange="toggleOilChangeContact(event, '${escJs(bikeName)}', this.checked);">
+          <span>Customer contacted</span>
+        </label>
+      </div>` : '';
+  const followUpPanelHtml = contactedOn ? `
+      <div class="followup-panel">
+        <div class="followup-row">
+          <label>Contacted on</label>
+          <input type="date" value="${ddmmyyyyToIso(contactedOn)}" onclick="event.stopPropagation();" onchange="changeOilChangeContactDate(event, '${escJs(bikeName)}', this.value);">
+          <button type="button" class="complete-btn" onclick="markOilChangeCompleted(event, '${escJs(bikeName)}');">Mark completed</button>
+        </div>
+        <div class="${'due-note ' + (followUpOverdue ? 'is-due' : 'is-ok')}">${dueNote}</div>
+      </div>` : '';
+
   return `
-    <a class="bike-card ${rClass}" href="parts.html?bike=${encodeURIComponent(row[bikeHeader])}">
+    <a class="bike-card ${rClass}" data-bike="${escJs(bikeName)}" href="parts.html?bike=${encodeURIComponent(row[bikeHeader])}">
       <div class="bc-top">
         <div class="bc-name">${row[bikeHeader]}</div>
         <div class="bc-metric ${rClass}">${metricValue} ${metricLabel}</div>
@@ -883,10 +1137,8 @@ function cardHtml(row, headers, metricLabel, metricValue) {
         <b>Last kilometers check:</b> ${lastCheck} km &nbsp; <b>Checked:</b> ${checkedDisplay}<br>
         <b>Next oil change:</b> ${nextOil} km
       </div>
-      ${renter ? `
-      <div class="bc-actions">
-        <button type="button" class="contact-btn" onclick="openContactModal(event, '${escJs(renter.name)}', '${escJs(row[bikeHeader])}', '${escJs(renter.contact)}', '${escJs(nextOil)}', '${escJs(renter.number)}', '${escJs(renter.contactMethod)}', '${escJs(renter.messengerId)}')">📩 Contact Customer</button>
-      </div>` : ''}
+      ${contactRowHtml}
+      ${followUpPanelHtml}
     </a>
   `;
 }
@@ -960,6 +1212,7 @@ function render() {
   if (!listBox.innerHTML) {
     listBox.innerHTML = '<div class="empty-hint">No matching bikes.</div>';
   }
+  writeFollowUpCache();
 }
 
 document.getElementById('tabKm').addEventListener('click', () => {

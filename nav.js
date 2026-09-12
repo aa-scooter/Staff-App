@@ -210,6 +210,65 @@
     '    border:none;\n' +
     '  }\n' +
     '  .topbar .bug-link:hover{ background:rgba(255,255,255,.22); }\n' +
+    '  .topbar .followup-badge{\n' +
+    '    all:unset;\n' +
+    '    box-sizing:border-box;\n' +
+    '    display:flex;\n' +
+    '    align-items:center;\n' +
+    '    gap:4px;\n' +
+    '    padding:0 8px;\n' +
+    '    height:26px;\n' +
+    '    border-radius:7px;\n' +
+    '    background:#C53030;\n' +
+    '    color:#fff;\n' +
+    '    font-family:\'Barlow Condensed\',sans-serif;\n' +
+    '    font-weight:700;\n' +
+    '    font-size:12px;\n' +
+    '    letter-spacing:.02em;\n' +
+    '    white-space:nowrap;\n' +
+    '    cursor:pointer;\n' +
+    '  }\n' +
+    '  .topbar .followup-badge:hover{ background:#A82828; }\n' +
+    '  .followup-backdrop{\n' +
+    '    display:none;\n' +
+    '    position:fixed; inset:0;\n' +
+    '    background:rgba(15,36,33,.45);\n' +
+    '    z-index:9999;\n' +
+    '    align-items:flex-end; justify-content:center;\n' +
+    '  }\n' +
+    '  .followup-backdrop.open{ display:flex; }\n' +
+    '  .followup-sheet{\n' +
+    '    background:#fff; width:100%; max-width:440px;\n' +
+    '    border-radius:16px 16px 0 0; padding:20px 18px 22px;\n' +
+    '    max-height:82vh; overflow-y:auto;\n' +
+    '  }\n' +
+    '  @media (min-width:560px){\n' +
+    '    .followup-backdrop{ align-items:center; }\n' +
+    '    .followup-sheet{ border-radius:16px; }\n' +
+    '  }\n' +
+    '  .followup-sheet h3{\n' +
+    '    font-family:\'Barlow Condensed\',sans-serif; font-weight:700; font-size:20px;\n' +
+    '    color:var(--petrol); margin:0 0 4px;\n' +
+    '  }\n' +
+    '  .followup-sub{ font-size:12.5px; color:#5A6663; margin-bottom:14px; line-height:1.4; }\n' +
+    '  .followup-item{\n' +
+    '    display:flex; align-items:center; justify-content:space-between; gap:10px;\n' +
+    '    padding:11px 12px; border:1px solid var(--line); border-radius:10px; margin-bottom:9px;\n' +
+    '    cursor:pointer; background:#fff; transition:background .15s;\n' +
+    '  }\n' +
+    '  .followup-item:hover{ background:#F5EFE6; }\n' +
+    '  .fi-name{ font-family:\'Barlow Condensed\',sans-serif; font-weight:700; font-size:15px; color:var(--petrol); }\n' +
+    '  .fi-renter{ font-size:12px; color:#5A6663; margin-top:2px; }\n' +
+    '  .fi-tag{\n' +
+    '    background:#C53030; color:#fff; font-family:\'Barlow Condensed\',sans-serif;\n' +
+    '    font-weight:700; font-size:11px; letter-spacing:.02em; padding:4px 8px; border-radius:6px; white-space:nowrap;\n' +
+    '  }\n' +
+    '  .followup-empty{ font-size:13px; color:#5A6663; text-align:center; padding:16px 4px; }\n' +
+    '  .followup-close-btn{\n' +
+    '    width:100%; margin-top:6px; padding:12px; border:none; border-radius:10px; background:#EFEAE0;\n' +
+    '    color:var(--petrol); font-family:\'Barlow Condensed\',sans-serif; font-weight:700; font-size:13px;\n' +
+    '    letter-spacing:.03em; text-transform:uppercase; cursor:pointer;\n' +
+    '  }\n' +
     '  .bugs-backdrop{\n' +
     '    display:none;\n' +
     '    position:fixed; inset:0;\n' +
@@ -789,6 +848,7 @@
     var calActive = currentPage() === 'calendar.html' ? ' active' : '';
     var calLinkHtml = '<a class="cal-link' + calActive + '" href="calendar.html" title="Bike returns calendar">📅</a>';
     var bugLinkHtml = '<button type="button" class="bug-link" id="bugsIconBtn" title="Bugs &amp; Features">🐛</button>';
+    var followUpHtml = followUpBadgeHtml();
 
     // Settings gear -- links to the dedicated settings.html page (AI
     // provider toggle, transaction history/reverse, data reset, sign out).
@@ -808,6 +868,7 @@
       '    </a>\n' +
       '    ' + syncHtml + '\n' +
       '    ' + calLinkHtml + '\n' +
+      '    ' + followUpHtml + '\n' +
       '    ' + bugLinkHtml + '\n' +
       '  </div>\n' +
       '  <nav>\n' +
@@ -824,6 +885,7 @@
 
     initBugsWidget();
     initNavDropdowns();
+    initFollowUpQueueModal();
 
     refreshSaveStrip();
     // Attempt orphan recovery right away too (not just on the first poll
@@ -880,6 +942,111 @@
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'backupEnsureDaily' })
     }).catch(function () { /* best-effort, see comment above */ });
+  }
+
+  // =====================================================================
+  // Oil Change follow-up queue (added 12/09/2026) -- the red header badge
+  // and its queue list for bikes whose "customer contacted" checkbox
+  // (oilchange.html) has had no update for 2+ days. This file never talks
+  // to /api/data itself -- it just reads the small summary oilchange.html
+  // caches to localStorage every time IT loads or changes that data (see
+  // that file's writeFollowUpCache()), same "read fresh once per page
+  // load, doesn't live-update elsewhere" tradeoff syncBadgeHtml() above
+  // already accepts, for the same reason (normal multi-page site).
+  // Clicking a queue item sends you to oilchange.html?followup=<bike
+  // name>, which scrolls to and highlights that card (see
+  // handleFollowupDeepLink() there) -- this file doesn't render bike
+  // cards itself, so navigating is simpler than trying to share state.
+  // =====================================================================
+  function followUpBadgeHtml() {
+    try {
+      var raw = localStorage.getItem('aaOilchangeFollowUps');
+      if (!raw) return '';
+      var parsed = JSON.parse(raw);
+      var items = (parsed && parsed.items) || [];
+      if (!items.length) return '';
+      return '<button type="button" class="followup-badge" id="followUpBadgeBtn" title="' + items.length + ' bike' + (items.length === 1 ? '' : 's') +
+        ' waiting on a customer follow-up">&#9888; Follow-up &middot; ' + items.length + '</button>';
+    } catch (e) { return ''; } // corrupt/inaccessible storage -- fail quiet, same as everything else here
+  }
+
+  var followUpModalBuilt = false;
+  var followUpBackdrop;
+  var followUpMouseDownOnBackdrop = false;
+
+  function buildFollowUpModal() {
+    if (followUpModalBuilt) return;
+    followUpModalBuilt = true;
+
+    var wrap = document.createElement('div');
+    wrap.innerHTML =
+      '<div class="followup-backdrop" id="followUpBackdrop">\n' +
+      '  <div class="followup-sheet" id="followUpSheet">\n' +
+      '    <h3>Follow-up Queue</h3>\n' +
+      '    <div class="followup-sub">Customers contacted 2+ days ago with no update since -- check in, then mark completed or reschedule on their bike\'s card.</div>\n' +
+      '    <div id="followUpBody"></div>\n' +
+      '    <button type="button" class="followup-close-btn" id="followUpCloseBtn">Close</button>\n' +
+      '  </div>\n' +
+      '</div>';
+    document.body.appendChild(wrap.firstChild);
+
+    followUpBackdrop = document.getElementById('followUpBackdrop');
+
+    // Click-outside-to-close, guarded against mid-drag mouseup landing on
+    // the backdrop (see CLAUDE.md "Modal / lightbox click outside to
+    // close" convention) -- only close if BOTH the mousedown and the
+    // click landed on the backdrop itself, not inside the sheet. Same
+    // guard as the Bugs modal below.
+    followUpBackdrop.addEventListener('mousedown', function (e) {
+      followUpMouseDownOnBackdrop = (e.target === followUpBackdrop);
+    });
+    followUpBackdrop.addEventListener('click', function (e) {
+      if (e.target === followUpBackdrop && followUpMouseDownOnBackdrop) closeFollowUpModal();
+      followUpMouseDownOnBackdrop = false;
+    });
+    document.getElementById('followUpCloseBtn').addEventListener('click', closeFollowUpModal);
+  }
+
+  function renderFollowUpList() {
+    var body = document.getElementById('followUpBody');
+    if (!body) return;
+    var raw;
+    try { raw = JSON.parse(localStorage.getItem('aaOilchangeFollowUps') || 'null'); } catch (e) { raw = null; }
+    var items = (raw && raw.items) || [];
+    if (!items.length) {
+      body.innerHTML = '<div class="followup-empty">Nothing pending -- you\'re all caught up.</div>';
+      return;
+    }
+    body.innerHTML = items.map(function (it) {
+      var renterLine = it.renter ? ('<div class="fi-renter">' + escapeHtml(it.renter) + '</div>') : '';
+      var agoLabel = it.daysSince + (it.daysSince === 1 ? ' day' : ' days') + ' ago';
+      return (
+        '<div class="followup-item" data-bike="' + escapeHtml(it.bike) + '">' +
+        '<div><div class="fi-name">' + escapeHtml(it.bike) + '</div>' + renterLine + '</div>' +
+        '<div class="fi-tag">' + agoLabel + '</div>' +
+        '</div>'
+      );
+    }).join('');
+    Array.prototype.forEach.call(body.querySelectorAll('.followup-item'), function (el) {
+      el.addEventListener('click', function () {
+        var bike = el.getAttribute('data-bike');
+        window.location.href = 'oilchange.html?followup=' + encodeURIComponent(bike);
+      });
+    });
+  }
+
+  function openFollowUpModal() {
+    buildFollowUpModal();
+    renderFollowUpList();
+    followUpBackdrop.classList.add('open');
+  }
+  function closeFollowUpModal() {
+    if (followUpBackdrop) followUpBackdrop.classList.remove('open');
+  }
+
+  function initFollowUpQueueModal() {
+    var btn = document.getElementById('followUpBadgeBtn');
+    if (btn) btn.addEventListener('click', openFollowUpModal);
   }
 
   // =====================================================================
