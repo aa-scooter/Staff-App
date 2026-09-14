@@ -970,6 +970,57 @@
     } catch (e) { return ''; } // corrupt/inaccessible storage -- fail quiet, same as everything else here
   }
 
+  // FIX 2026-09-14 (Anton: the header badge never appeared even once a
+  // bike's follow-up genuinely went overdue): followUpBadgeHtml() above is
+  // only ever evaluated ONCE per page, at renderTopbar()'s own
+  // DOMContentLoaded time -- see that comment. On oilchange.html itself,
+  // that happens BEFORE loadParts() has fetched anything, so the topbar
+  // gets built from whatever localStorage held from the *previous* visit,
+  // not the fresh totals this load just computed in writeFollowUpCache().
+  // The badge was never actually broken -- it just always lagged one full
+  // page load behind reality, which is why it could look like it "never"
+  // shows up if the overdue count only just became nonzero (or just went
+  // back to zero) on the load you're looking at.
+  //
+  // This closes that gap: oilchange.html now dispatches
+  // 'aa:oilchangeFollowUpsUpdated' on window right after it (re)writes the
+  // cache (see writeFollowUpCache() there), and this re-runs the exact
+  // same followUpBadgeHtml() markup against the just-updated cache,
+  // inserting/updating/removing the button in place -- no reload needed.
+  // Harmless on every other page too (nothing ever dispatches this event
+  // there), and harmless if oilchange.html's script happens to fire this
+  // before renderTopbar() has run yet (mount lookup below just no-ops).
+  function refreshFollowUpBadge() {
+    var topbar = document.querySelector('.topbar .brand-group');
+    if (!topbar) return; // topbar hasn't been rendered yet on this page
+    var existing = document.getElementById('followUpBadgeBtn');
+    var html = followUpBadgeHtml();
+    if (!html) {
+      if (existing) existing.remove();
+      return;
+    }
+    if (existing) {
+      // Count (and therefore the title/text) can change without the
+      // button needing to be recreated -- update it in place so it isn't
+      // re-inserted (and doesn't lose focus/hover state) on every tick.
+      var wrap = document.createElement('div');
+      wrap.innerHTML = html;
+      var fresh = wrap.firstChild;
+      existing.title = fresh.title;
+      existing.textContent = fresh.textContent;
+      return;
+    }
+    // Wasn't showing before -- insert it in the same brand-group slot
+    // renderTopbar() itself uses (right before the bug-tracker icon).
+    var wrap = document.createElement('div');
+    wrap.innerHTML = html;
+    var btn = wrap.firstChild;
+    var bugLink = document.getElementById('bugsIconBtn');
+    if (bugLink) topbar.insertBefore(btn, bugLink); else topbar.appendChild(btn);
+    initFollowUpQueueModal();
+  }
+  window.addEventListener('aa:oilchangeFollowUpsUpdated', refreshFollowUpBadge);
+
   var followUpModalBuilt = false;
   var followUpBackdrop;
   var followUpMouseDownOnBackdrop = false;

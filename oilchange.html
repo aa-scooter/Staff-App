@@ -804,6 +804,15 @@ function writeFollowUpCache() {
       .filter(Boolean)
       .sort((a, b) => b.daysSince - a.daysSince);
     localStorage.setItem(OILCHANGE_FOLLOWUP_CACHE_KEY, JSON.stringify({ items: items, updatedAt: Date.now() }));
+    // FIX 2026-09-14: tells nav.js's already-rendered topbar (built at
+    // DOMContentLoaded, before this page had fetched anything -- see
+    // refreshFollowUpBadge()'s own comment in nav.js) to re-check this
+    // cache RIGHT NOW instead of leaving the badge stuck on whatever it
+    // showed one page load ago. Without this, a bike crossing (or
+    // clearing) the overdue threshold on THIS load never updated the
+    // badge until the next navigation/reload -- easy to read as "the
+    // badge just doesn't work" when it's actually one load behind.
+    window.dispatchEvent(new CustomEvent('aa:oilchangeFollowUpsUpdated'));
   } catch (e) { /* best-effort, same as every other localStorage read/write in this app */ }
 }
 
