@@ -732,9 +732,26 @@ function runOilChangeContactWrite(bikeName, sheetValue) {
   setCardBusy(bikeName, true);
   setOilChangeContactJson(bikeName, sheetValue)
     .then(() => {
+      // FIX 2026-09-14 (checkbox silently reverted to unticked -- Anton
+      // reported "does nothing, sits for a while then returns unticked",
+      // no error shown): the write to Drive was succeeding every time --
+      // setOilChangeContactJson's own row match already trims the bike
+      // name (bikeTarget = bikeName.trim()) -- but THIS local-echo lookup
+      // compared the sheet's TRIMMED bike-name cell against `bikeName`
+      // RAW/untrimmed (cardHtml's own `bikeName` is never trimmed, see its
+      // own comment). Any bike whose "Bike" column cell has stray leading/
+      // trailing whitespace (confirmed to happen on this sheet already --
+      // see the 2026-08-19 double-internal-space fix elsewhere on this
+      // page) failed this === on the untrimmed side, so `row` came back
+      // undefined, the in-memory partsData never got the new "contacted"
+      // date, and the very next render() below redrew the checkbox from
+      // its old (unset) state -- with no error, since nothing threw and
+      // the actual save had already succeeded. Trimming both sides here
+      // makes this match the same rule setOilChangeContactJson already
+      // uses server-side.
       const bikeHeader = partsData.headers[0];
       if (partsData.headers.indexOf(OIL_CHANGE_CONTACT_HEADER) === -1) partsData.headers.push(OIL_CHANGE_CONTACT_HEADER);
-      const row = partsData.rows.find(r => (r[bikeHeader] || '').toString().trim() === bikeName);
+      const row = partsData.rows.find(r => (r[bikeHeader] || '').toString().trim() === bikeName.toString().trim());
       if (row) row[OIL_CHANGE_CONTACT_HEADER] = sheetValue ? isoDateTimeToDdMmYyyy(sheetValue) : '';
       render();
     })
