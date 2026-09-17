@@ -908,6 +908,13 @@
     // See checkDailyBackup()'s own comment below for what this does and why.
     checkDailyBackup();
     setInterval(checkDailyBackup, BACKUP_CHECK_INTERVAL_MS);
+
+    // See refreshFollowUpDataFromServer()'s own comment below for what
+    // this does and why (keeps the header follow-up badge accurate on
+    // THIS device without depending on oilchange.html ever having been
+    // opened here -- see its FIX 2026-09-17 comment for the full story).
+    refreshFollowUpDataFromServer();
+    setInterval(refreshFollowUpDataFromServer, FOLLOWUP_POLL_MS);
   }
 
   // =====================================================================
@@ -1020,6 +1027,133 @@
     initFollowUpQueueModal();
   }
   window.addEventListener('aa:oilchangeFollowUpsUpdated', refreshFollowUpBadge);
+
+  // =====================================================================
+  // FIX 2026-09-17 (Anton: follow-up alert inconsistent across devices --
+  // "showing different alerts to others", not refreshing properly):
+  // everything above (followUpBadgeHtml/refreshFollowUpBadge) only ever
+  // READS the 'aaOilchangeFollowUps' localStorage cache -- nothing in
+  // this file ever WROTE it. The only thing that ever wrote it was
+  // oilchange.html's own writeFollowUpCache(), which only runs on a
+  // device when THAT device loads oilchange.html itself. localStorage is
+  // per browser/device, never shared -- so a phone that hasn't opened
+  // Oil Change in a few days keeps showing whatever was true days ago
+  // (or nothing, if it's never opened that page at all), while a tablet
+  // that opened it this morning shows today's real count. Every device's
+  // badge was only ever as fresh as THAT device's own oilchange.html
+  // visit history -- exactly the "different alerts on different devices"
+  // symptom, not a rendering bug. (The "same tradeoff syncBadgeHtml()
+  // above already accepts" comment above this one was actually comparing
+  // two different things: syncBadgeHtml's failed-save pill really is
+  // per-device data -- MY OWN failed local writes -- but which customers
+  // need following up is shared team state, not per-device.)
+  //
+  // This gives every page its own independent source of truth instead of
+  // depending on oilchange.html ever having been opened on this device:
+  // fetches the same 'Parts_and_Oil_change' + 'bikes_notes' sheets
+  // oilchange.html's own getPartsDataFromJson() reads, ports that same
+  // "contacted N+ days ago, not a sold bike" filter
+  // (writeFollowUpCache()/__struck there) against the raw cell value
+  // directly (no need for the dd/mm/yyyy round-trip oilchange.html's own
+  // display layer uses), and writes the result to the SAME cache
+  // key/shape so followUpBadgeHtml() above needs no changes at all.
+  // Renter name is intentionally left blank here (it needs a further
+  // Customer+Contract cross-reference oilchange.html does client-side --
+  // out of scope for a header-badge poll running on every page); a
+  // device that later visits oilchange.html fills it back in as before,
+  // same as it always has. Same fire-and-forget/fail-quiet pattern as
+  // checkDailyBackup() above -- never something a staff member should
+  // notice, wait for, or be blocked by if it fails.
+  // =====================================================================
+  var FOLLOWUP_POLL_MS = 5 * 60 * 1000; // 5 min -- overdue is a 2-DAY threshold, this just needs to catch up occasionally on a long-open tab (see checkDailyBackup()'s own reasoning above), not live-tick
+  var FOLLOWUP_CONTACT_HEADER = 'Oil change contacted on';
+  var FOLLOWUP_DUE_DAYS = 2;
+  var FOLLOWUP_DISTINGUISHING_SUFFIXES = {
+    one: 1, two: 1, three: 1, four: 1, five: 1, six: 1, seven: 1, eight: 1, nine: 1, ten: 1,
+    i: 1, ii: 1, iii: 1, iv: 1, v: 1, vi: 1, vii: 1, viii: 1, ix: 1, x: 1,
+    '1': 1, '2': 1, '3': 1, '4': 1, '5': 1, '6': 1, '7': 1, '8': 1, '9': 1, '10': 1
+  };
+  function followUpNormalizeBikeName_(s) {
+    return (s || '').toString().toLowerCase().replace(/\([^)]*\)/g, ' ').replace(/[^a-z0-9]+/g, ' ').trim().replace(/\s+/g, ' ');
+  }
+  function followUpBikeNamesMatch_(a, b) {
+    var na = followUpNormalizeBikeName_(a), nb = followUpNormalizeBikeName_(b);
+    if (!na || !nb) return false;
+    if (na === nb) return true;
+    var ta = na.split(' '), tb = nb.split(' ');
+    var shorter = ta.length <= tb.length ? ta : tb;
+    var longer = ta.length <= tb.length ? tb : ta;
+    var isPrefix = true;
+    for (var i = 0; i < shorter.length; i++) { if (shorter[i] !== longer[i]) { isPrefix = false; break; } }
+    if (isPrefix) {
+      var extra = longer.slice(shorter.length);
+      for (var j = 0; j < extra.length; j++) { if (FOLLOWUP_DISTINGUISHING_SUFFIXES[extra[j]]) return false; }
+      return true;
+    }
+    return na.indexOf(nb) !== -1 || nb.indexOf(na) !== -1;
+  }
+  // Same two raw-cell shapes decodeSheetDate() (oilchange.html) parses --
+  // 'YYYY-MM-DD' or 'YYYY-MM-DDTHH:MM:SS...' -- but diffed against today
+  // directly instead of round-tripping through a dd/mm/yyyy string.
+  function followUpDaysSince_(rawVal) {
+    if (typeof rawVal !== 'string') return null;
+    var m = rawVal.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (!m) return null;
+    var d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+    var today = new Date();
+    today.setHours(0, 0, 0, 0);
+    d.setHours(0, 0, 0, 0);
+    return Math.round((today - d) / 86400000);
+  }
+  function refreshFollowUpDataFromServer() {
+    Promise.all([
+      fetch('/api/data/Parts_and_Oil_change').then(function (r) { return r.ok ? r.json() : null; }).catch(function () { return null; }),
+      fetch('/api/data/bikes_notes').then(function (r) { return r.ok ? r.json() : null; }).catch(function () { return null; })
+    ]).then(function (results) {
+      var partsRes = results[0], notesRes = results[1];
+      if (!partsRes || !partsRes.success || !partsRes.rows || !partsRes.rows.length) return; // fail quiet -- keep whatever the cache already had
+      var partsRows = partsRes.rows;
+      var header = partsRows[0] || [];
+      var contactColIdx = -1;
+      for (var h = 0; h < header.length; h++) {
+        if ((header[h] || '').toString().trim().toLowerCase() === FOLLOWUP_CONTACT_HEADER.toLowerCase()) { contactColIdx = h; break; }
+      }
+      if (contactColIdx === -1) return; // column never created yet -- nothing to report
+      var soldBikeNames = [];
+      if (notesRes && notesRes.success && notesRes.rows) {
+        notesRes.rows.forEach(function (n) {
+          try {
+            var p = JSON.parse(n[1]);
+            if (p && (p.soldAmount || p.reason)) soldBikeNames.push(n[0]);
+          } catch (e) { /* not a sell/write-off note -- ignore, same as oilchange.html's own parse */ }
+        });
+      }
+      // Preserve any renter name the cache already has from a real
+      // oilchange.html visit on this device -- this poll has no
+      // Customer/Contract data to derive one fresh.
+      var previousRenters = {};
+      try {
+        var prevRaw = JSON.parse(localStorage.getItem('aaOilchangeFollowUps') || 'null');
+        ((prevRaw && prevRaw.items) || []).forEach(function (it) { if (it && it.bike) previousRenters[it.bike] = it.renter || ''; });
+      } catch (e) { /* ignore */ }
+      var items = [];
+      for (var r = 1; r < partsRows.length; r++) {
+        var bikeName = (partsRows[r][0] || '').toString().trim();
+        if (!bikeName) continue;
+        if (soldBikeNames.some(function (n) { return followUpBikeNamesMatch_(n, bikeName); })) continue;
+        var contactedOn = partsRows[r][contactColIdx];
+        if (!contactedOn) continue;
+        var daysSince = followUpDaysSince_(contactedOn);
+        if (daysSince === null || daysSince < FOLLOWUP_DUE_DAYS) continue;
+        items.push({ bike: bikeName, renter: previousRenters[bikeName] || '', daysSince: daysSince });
+      }
+      items.sort(function (a, b) { return b.daysSince - a.daysSince; });
+      try {
+        localStorage.setItem('aaOilchangeFollowUps', JSON.stringify({ items: items, updatedAt: Date.now() }));
+        window.dispatchEvent(new CustomEvent('aa:oilchangeFollowUpsUpdated'));
+      } catch (e) { /* best-effort, same as everywhere else here */ }
+    }).catch(function () { /* best-effort -- next poll (or an oilchange.html visit) tries again */ });
+  }
 
   var followUpModalBuilt = false;
   var followUpBackdrop;
