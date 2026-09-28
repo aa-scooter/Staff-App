@@ -863,7 +863,7 @@
       '<div class="topbar">\n' +
       '  <div class="brand-group">\n' +
       '    <a class="brand" href="index.html">\n' +
-      '      <img src="https://scooterrentalchiangmai.com/wp-content/uploads/2025/02/cropped-logo-3333-101x105.png" alt="AA Scooters logo">\n' +
+      '      <img src="/img/logo-128.png" alt="AA Scooters logo">\n' +
       '      <span>AA Scooter Rental</span>\n' +
       '    </a>\n' +
       '    ' + syncHtml + '\n' +
