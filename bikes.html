@@ -805,9 +805,9 @@ async function getPartsDataFromJson() {
 // that we own the JSON filenames directly (see lib/monthSheets.js on the
 // backend) there's nothing that can drift, so exact names are enough. ----
 const DEPOSIT_CATEGORIES_B = [
-  { key: 'bank', label: 'Bank', header: 'deposit scan', dateCol: 15, amountCol: 16, nameCol: 17 },
-  { key: 'wise', label: 'Wise', header: 'deposit wise', dateCol: 18, amountCol: 19, nameCol: 20 },
-  { key: 'revolut', label: 'Revolut', header: 'deposit revolut', dateCol: 22, amountCol: 23, nameCol: 24 }
+  { key: 'bank', label: 'Bank', header: 'deposit scan', dateCol: 15, amountCol: 16, nameCol: 17, contractRowCol: 26 },
+  { key: 'wise', label: 'Wise', header: 'deposit wise', dateCol: 18, amountCol: 19, nameCol: 20, contractRowCol: 27 },
+  { key: 'revolut', label: 'Revolut', header: 'deposit revolut', dateCol: 22, amountCol: 23, nameCol: 24, contractRowCol: 28 }
 ];
 const DEPOSITS_MONTH_NAMES = ['January', 'February', 'march', 'april', 'may', 'June',
   'July', 'August', 'September', 'October', 'November', 'December'];
@@ -853,7 +853,11 @@ async function getDepositsDataFromJson() {
           row, category: cat.key, categoryLabel: cat.label,
           date: depositsCellToString(dateRaw),
           amount: (amtEmpty || isNaN(Number(amtRaw))) ? '' : Number(amtRaw),
-          name: (nameRaw || '').toString().trim()
+          name: (nameRaw || '').toString().trim(),
+          // Contract row this deposit belongs to, when stamped (see
+          // lib/bikesWrites.js logSecurityDepositFromJson). Used by the
+          // Return popup to tell apart two deposits under the same name.
+          contractRow: (function () { const v = Number(cell(row, cat.contractRowCol)); return v >= 2 ? v : null; })()
         });
       }
     });
@@ -4808,6 +4812,7 @@ document.getElementById('listBox').addEventListener('click', (e) => {
   if (cancelBtn) {
     delete returnDepositMatches[openReturnRowNumber];
     delete returnDepositTypeDisplay[openReturnRowNumber];
+    delete returnDepositNeedsPick[openReturnRowNumber];
     delete returnEarlyToggleOpen[openReturnRowNumber];
     delete returnCashToggleOpen[openReturnRowNumber];
     openReturnRowNumber = null;
@@ -4834,6 +4839,10 @@ document.getElementById('listBox').addEventListener('click', (e) => {
 
     if (isNaN(deductionAmount) || deductionAmount < 0) {
       alert('Enter a valid deduction amount.');
+      return;
+    }
+    if (!depositMatch && returnDepositNeedsPick[rowNumber]) {
+      alert('This customer has more than one deposit on file — pick which one belongs to this bike in the Return popup first.');
       return;
     }
     if (deductionAmount > 0 && !depositMatch) {
@@ -5271,6 +5280,105 @@ let returnDepositMatches = {};
 // immediately and this map is never touched for it.
 let returnDepositTypeDisplay = {};
 
+// ---- Return popup: telling apart several deposits under one name
+// (added 09/10/2026). A customer renting two bikes at once (e.g. Tomalin:
+// Rax 3 + GT2, two Scan deposits) used to make the lookup give up. ----
+let returnDepositNeedsPick = {};
+
+async function findContractRowForRenterB(renter) {
+  try {
+    const rows = await fetchSheetJson('Contract');
+    if (!rows) return null;
+    const nameT = normalizeNameForContractMatch(renter && renter.name);
+    if (!nameT) return { rowNumber: null, rows };
+    let fallback = null;
+    for (let i = rows.length - 1; i >= HEADER_ROWS_B; i--) {
+      const r = rows[i];
+      if (!r || normalizeNameForContractMatch(r[3]) !== nameT) continue;
+      const rb = (r[6] || '').toString().trim();
+      if (renter.bikeModel && rb && !bikeNamesMatchForTaxLookup(rb, renter.bikeModel)) continue;
+      const st = (r[16] || '').toString().trim().toLowerCase();
+      if (st === 'rented') return { rowNumber: i + 1, rows };
+      if (!fallback && st !== 'canceled' && st !== 'cancelled') fallback = i + 1;
+    }
+    return { rowNumber: fallback, rows };
+  } catch (e) {
+    return null;
+  }
+}
+
+// Exactly one candidate linked to THIS booking's Contract row -> that one.
+// Otherwise drop candidates linked to a DIFFERENT booking that's still
+// Rented (they belong to the customer's other bike). Never guesses beyond
+// that -- anything still ambiguous goes to the picker.
+function narrowReturnDepositCandidatesB(candidates, contractInfo) {
+  if (!contractInfo || !candidates || candidates.length < 2) return candidates;
+  const own = contractInfo.rowNumber;
+  if (own) {
+    const linked = candidates.filter(d => d.contractRow && Number(d.contractRow) === own);
+    if (linked.length === 1) return linked;
+  }
+  const rows = contractInfo.rows || [];
+  const notOtherActive = candidates.filter(d => {
+    if (!d.contractRow || Number(d.contractRow) === own) return true;
+    const cr = rows[Number(d.contractRow) - 1];
+    const st = cr ? (cr[16] || '').toString().trim().toLowerCase() : '';
+    return st !== 'rented';
+  });
+  return notOtherActive.length ? notOtherActive : candidates;
+}
+
+function applyReturnDepositPickB(rowNumber, d, renter, noteText) {
+  const amountInput = document.getElementById('returnDepositAmountInput-' + rowNumber);
+  const note = document.getElementById('returnDepositNote-' + rowNumber);
+  const typeLabel = document.getElementById('returnDepositTypeLabel-' + rowNumber);
+  const label = DEPOSIT_CATEGORY_LABELS[d.category] || d.category;
+  if (amountInput) amountInput.value = d.amount;
+  if (note && noteText) note.textContent = noteText;
+  returnDepositTypeDisplay[rowNumber] = label;
+  if (typeLabel) typeLabel.textContent = label;
+  returnDepositMatches[rowNumber] = { category: d.category, row: d.row, amount: Number(d.amount) || 0 };
+  delete returnDepositNeedsPick[rowNumber];
+  refreshReturnCashToggleUI(rowNumber);
+}
+
+function showReturnDepositPickerB(rowNumber, candidates, renter) {
+  const amountInput = document.getElementById('returnDepositAmountInput-' + rowNumber);
+  const note = document.getElementById('returnDepositNote-' + rowNumber);
+  if (!note) return;
+  delete returnDepositMatches[rowNumber];
+  returnDepositNeedsPick[rowNumber] = true;
+  if (amountInput) amountInput.value = '';
+  note.textContent = (renter && renter.name ? renter.name : 'This customer') + ' has ' + candidates.length + ' deposits on file — pick the one for this bike:';
+  const sel = document.createElement('select');
+  sel.className = 'picker-input';
+  sel.id = 'returnDepositPick-' + rowNumber;
+  sel.style.marginTop = '6px';
+  const blank = document.createElement('option');
+  blank.value = '';
+  blank.textContent = 'Select deposit…';
+  sel.appendChild(blank);
+  candidates.forEach((d, i) => {
+    const o = document.createElement('option');
+    o.value = String(i);
+    o.textContent = (DEPOSIT_CATEGORY_LABELS[d.category] || d.category) + ' — ' + money(d.amount) +
+      (d.date ? ' — ' + d.date : '') + (d.contractRow ? ' (Contract row ' + d.contractRow + ')' : '');
+    sel.appendChild(o);
+  });
+  sel.addEventListener('change', () => {
+    if (sel.value === '') {
+      delete returnDepositMatches[rowNumber];
+      returnDepositNeedsPick[rowNumber] = true;
+      if (amountInput) amountInput.value = '';
+      refreshReturnCashToggleUI(rowNumber);
+      return;
+    }
+    applyReturnDepositPickB(rowNumber, candidates[Number(sel.value)], renter, null);
+  });
+  note.appendChild(document.createElement('br'));
+  note.appendChild(sel);
+}
+
 async function initReturnDepositLookup(rowNumber) {
   const renter = (customerRows || []).find(r => r.rowNumber === rowNumber);
   const amountInput = document.getElementById('returnDepositAmountInput-' + rowNumber);
@@ -5288,6 +5396,7 @@ async function initReturnDepositLookup(rowNumber) {
   note.style.color = '';
   note.style.fontWeight = '';
   delete returnDepositMatches[rowNumber];
+  delete returnDepositNeedsPick[rowNumber];
   // Cleared unconditionally on every fresh lookup, not just when blank --
   // otherwise a stale label from a previous open of this same row (e.g.
   // corrected to "Wise" last time) could linger and mask a freshly-loaded,
@@ -5359,7 +5468,18 @@ async function initReturnDepositLookup(rowNumber) {
       return;
     }
     if (inCategory.length > 1) {
-      note.textContent = 'Multiple matching ' + depositType + ' deposits found for ' + renter.name + ' — enter manually.';
+      // FIX 09/10/2026 (Anton: GT2 / Mr Frederick Tomalin -- he also has
+      // Rax 3 out on a separate Scan deposit, so this used to bail with
+      // "enter manually", register NO match, and the Return then went
+      // through without clearing either deposit). Narrow by the deposit's
+      // Contract-row link first; if still ambiguous, make staff pick.
+      const narrowed = narrowReturnDepositCandidatesB(inCategory, await findContractRowForRenterB(renter));
+      if (openReturnRowNumber !== rowNumber || !document.getElementById('returnDepositAmountInput-' + rowNumber)) return;
+      if (narrowed.length === 1) {
+        applyReturnDepositPickB(rowNumber, narrowed[0], renter, 'Matched ' + depositType + ' deposit for ' + renter.name + ' (linked to this booking) — ' + money(narrowed[0].amount) + ' remaining.');
+        return;
+      }
+      showReturnDepositPickerB(rowNumber, narrowed, renter);
       return;
     }
     // inCategory.length === 0 -- fall through to the cross-category search
@@ -5381,7 +5501,14 @@ async function initReturnDepositLookup(rowNumber) {
   }
 
   if (anyMatch.length > 1) {
-    note.textContent = 'Multiple matching deposits found for ' + renter.name + ' across categories — enter manually.';
+    // FIX 09/10/2026 -- see the in-category branch above.
+    const narrowedAny = narrowReturnDepositCandidatesB(anyMatch, await findContractRowForRenterB(renter));
+    if (openReturnRowNumber !== rowNumber || !document.getElementById('returnDepositAmountInput-' + rowNumber)) return;
+    if (narrowedAny.length === 1) {
+      applyReturnDepositPickB(rowNumber, narrowedAny[0], renter, 'Found a ' + (DEPOSIT_CATEGORY_LABELS[narrowedAny[0].category] || narrowedAny[0].category) + ' deposit linked to this booking for ' + renter.name + ' — ' + money(narrowedAny[0].amount) + ' remaining.');
+      return;
+    }
+    showReturnDepositPickerB(rowNumber, narrowedAny, renter);
     if (depositTypeWasBlank) {
       returnDepositTypeDisplay[rowNumber] = 'Multiple possible matches';
       if (typeLabel) typeLabel.textContent = 'Multiple possible matches';
@@ -5663,6 +5790,7 @@ function confirmReturn(rowNumber, isoDate, depositMatch, deductionAmount, reason
   delete returnDepositMatches[rowNumber];
   delete returnDepositTypeDisplay[rowNumber];
   delete returnEarlyToggleOpen[rowNumber];
+  delete returnDepositNeedsPick[rowNumber];
   delete returnCashToggleOpen[rowNumber];
 
   bkEnqueue({
