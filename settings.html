@@ -1039,7 +1039,16 @@
             var targetRow = newRows[rowIdx].slice();
             (w.cols || []).forEach(function (col1, ci) {
               while (targetRow.length < col1) targetRow.push('');
-              targetRow[col1 - 1] = (w.before || [])[ci];
+              if (w.delta) {
+                // Running total (bikes-sheet monthly income etc., added
+                // 12/10/2026): take back only what this action added,
+                // so income recorded on the same bike since is kept.
+                var curN = Number(targetRow[col1 - 1]); if (isNaN(curN)) curN = 0;
+                var addedN = (Number((w.after || [])[ci]) || 0) - (Number((w.before || [])[ci]) || 0);
+                targetRow[col1 - 1] = curN - addedN;
+              } else {
+                targetRow[col1 - 1] = (w.before || [])[ci];
+              }
             });
             newRows[rowIdx] = targetRow;
             await writeSheetJson(w.sheet, newRows, modifiedTime, w.year || undefined);
