@@ -501,6 +501,20 @@
     return res;
   }
 
+  // ---- Added 25/10/2026: after a Reverse restores customer-sheet cells,
+  // ask the server to re-sync those rows' 🛵 due-back calendar events (see
+  // lib/bikesWrites.js's resyncDueBackRowsFromJson for the "why"). ----
+  async function resyncDueBackRows(rowNumbers) {
+    const r = await fetch('/api/bikes/write', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'resyncDueBackRows', rowNumbers })
+    });
+    const res = await r.json().catch(() => ({}));
+    if (!r.ok || !res.success) throw new Error(res.error || ('HTTP ' + r.status));
+    return res;
+  }
+
   function escapeHtmlS(s) {
     return (s || '').toString().replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
@@ -1097,6 +1111,22 @@
         var monthEntry = monthsToRecompute[monthKeys[mk]];
         try { await recomputeSummaryForMonth(monthEntry.monthName, monthEntry.year); }
         catch (e) { writeErrors.push('Summary totals (' + monthEntry.monthName + ' ' + monthEntry.year + '): ' + e.message); }
+      }
+
+      // ---- Calendar re-sync for every customer row this reversal touched
+      // (added 25/10/2026) -- restoring cells above never updates Google
+      // Calendar itself. Never blocks the reversal. ----
+      var custRowsTouched = [];
+      for (var cg = 0; cg < toReverse.length; cg++) {
+        (toReverse[cg].writes || []).forEach(function (w) {
+          if (w.sheet === 'customer' && w.row && custRowsTouched.indexOf(w.row) === -1) custRowsTouched.push(w.row);
+        });
+      }
+      if (custRowsTouched.length) {
+        try {
+          var calRes = await resyncDueBackRows(custRowsTouched);
+          if (calRes && calRes.warning) writeErrors.push(calRes.warning);
+        } catch (e) { writeErrors.push('Calendar re-sync: ' + e.message + ' -- the nightly sweep will retry.'); }
       }
 
       // Mark every entry in the group reversed in the log regardless of
