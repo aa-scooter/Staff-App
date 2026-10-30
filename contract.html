@@ -3818,7 +3818,11 @@ function openSaveReview() {
   `).join('') || '<div class="empty-hint">Nothing pending.</div>';
   listEl.querySelectorAll('button[data-act]').forEach(btn => {
     btn.addEventListener('click', () => {
-      const id = Number(btn.dataset.id);
+      // 30/10/2026: ids of saves re-sent in the background by nav.js are TEXT
+      // ('nav_<time>_<n>'), so Number() made them NaN and Retry/Discard did
+      // nothing -- an error banner nobody could clear. Match the real key.
+      const id = Array.from(ctFailedItems.keys()).find(k => String(k) === btn.dataset.id);
+      if (id === undefined) return;
       if (btn.dataset.act === 'retry') ctRetryFailed(id); else ctDiscardFailed(id);
     });
   });

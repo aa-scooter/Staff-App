@@ -2188,9 +2188,9 @@ document.getElementById('optPanelCloseBtn').addEventListener('click', closeSaveR
 document.getElementById('optOverlay').addEventListener('click', (e) => {
   if (e.target.id === 'optOverlay') closeSaveReview();
   const retryBtn = e.target.closest('[data-retry]');
-  if (retryBtn) cuRetryFailed(Number(retryBtn.dataset.retry));
+  if (retryBtn) cuRetryFailed(Array.from(cuFailedItems.keys()).find(k => String(k) === retryBtn.dataset.retry));
   const discardBtn = e.target.closest('[data-discard]');
-  if (discardBtn) cuDiscardFailed(Number(discardBtn.dataset.discard));
+  if (discardBtn) cuDiscardFailed(Array.from(cuFailedItems.keys()).find(k => String(k) === discardBtn.dataset.discard));
 });
 // ================== end save-pipeline engine ==================
 
