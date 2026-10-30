@@ -5241,8 +5241,19 @@ function depositCategoryForPaidBy(paidByVal) {
 // Code.gs) back to the label staff actually use for that payment method.
 const DEPOSIT_CATEGORY_LABELS = { bank: 'Scan', wise: 'Wise', revolut: 'Revolut' };
 
+// Loosened 30/10/2026 (Anton: Fabio Buechel's Revolut deposit was sitting
+// in the Revolut table but the Return popup never found it). Strips
+// titles (Mr/Mrs/Ms/Miss/Dr/Mx), dots/commas/any punctuation, case and
+// extra spaces, so "Mr. Fabio Buechel", "Mr Fabio Buechel" and
+// "fabio  buechel" all compare equal. Only used for deposit-name matching
+// on the Return popup -- the linked-Contract-row check (see
+// findLinkedDepositForRenterB) runs BEFORE any name matching anyway.
 function normalizePersonName(s) {
-  return (s || '').toString().trim().toLowerCase().replace(/\s+/g, ' ');
+  return (s || '').toString().toLowerCase()
+    .replace(/[^a-z0-9\u00c0-\u024f]+/g, ' ')
+    .replace(/^\s*(mr|mrs|ms|miss|mx|dr|mstr)\s+/, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 // ---- Auto-fills the deposit-return amount on the Return popup ----
@@ -5328,6 +5339,56 @@ function narrowReturnDepositCandidatesB(candidates, contractInfo) {
   return notOtherActive.length ? notOtherActive : candidates;
 }
 
+// ---- The unique link between a booking and its deposit (30/10/2026) ----
+// Every deposit logged through Rent/intake or a Contract edit already
+// carries a direct pointer to its Contract row (the deposit table's
+// contractRow column -- Z/AA/AB on the month sheet, see
+// DEPOSIT_CATEGORIES_B), and the Contract row itself stores a pointer back
+// to its ledger entry ("month|year|category|row" in its 37th column, see
+// buildDepositRefB in lib/contractWrites.js). Before this, the Return
+// popup only ever used those links to break a tie between two SAME-NAME
+// deposits -- if the deposit's name was spelled even slightly differently
+// from the booking's ("Mr. Fabio Buechel" vs "Mr Fabio Buechel"), it never
+// got that far, showed the red "no tracked deposit" warning, and the
+// return went through without clearing the deposit. Now the link is
+// checked FIRST, before any name matching. Returns the one deposit linked
+// to this booking's Contract row, or null if there isn't exactly one.
+function findLinkedDepositForRenterB(deposits, contractInfo, sheetName) {
+  if (!contractInfo || !contractInfo.rowNumber) return null;
+  const own = Number(contractInfo.rowNumber);
+  // (a) deposit row stamped with this booking's Contract row
+  const stamped = (deposits || []).filter(d => d.contractRow && Number(d.contractRow) === own);
+  if (stamped.length === 1) return stamped[0];
+  if (stamped.length > 1) return null; // genuinely ambiguous -- let the picker handle it
+  // (b) the Contract row's own pointer to its ledger entry (col 37)
+  const crow = (contractInfo.rows || [])[own - 1];
+  const ref = crow ? (crow[36] || '').toString().trim() : '';
+  if (!ref) return null;
+  const parts = ref.split('|');
+  if (parts.length !== 4) return null;
+  if ((parts[0] || '').toLowerCase() !== (sheetName || '').toString().toLowerCase()) return null; // points at another month's sheet
+  if (Number(parts[1]) !== new Date().getFullYear()) return null;
+  const hit = (deposits || []).filter(d => d.category === parts[2] && Number(d.row) === Number(parts[3]));
+  return hit.length === 1 ? hit[0] : null;
+}
+
+// Deposits that could plausibly belong to this booking when nothing linked
+// or name-matched: drops any deposit linked to a DIFFERENT booking that's
+// still Rented (it belongs to someone who still has a bike out), and lists
+// the rental's own payment-method category first.
+function openDepositCandidatesForRenterB(deposits, contractInfo, preferredCategory) {
+  const rows = (contractInfo && contractInfo.rows) || [];
+  const own = contractInfo && contractInfo.rowNumber ? Number(contractInfo.rowNumber) : null;
+  const list = (deposits || []).filter(d => {
+    if (d.amount === '' || Number(d.amount) <= 0) return false;
+    if (!d.contractRow || Number(d.contractRow) === own) return true;
+    const cr = rows[Number(d.contractRow) - 1];
+    const st = cr ? (cr[16] || '').toString().trim().toLowerCase() : '';
+    return st !== 'rented';
+  });
+  return list.sort((a, b) => (b.category === preferredCategory) - (a.category === preferredCategory));
+}
+
 function applyReturnDepositPickB(rowNumber, d, renter, noteText) {
   const amountInput = document.getElementById('returnDepositAmountInput-' + rowNumber);
   const note = document.getElementById('returnDepositNote-' + rowNumber);
@@ -5342,33 +5403,38 @@ function applyReturnDepositPickB(rowNumber, d, renter, noteText) {
   refreshReturnCashToggleUI(rowNumber);
 }
 
-function showReturnDepositPickerB(rowNumber, candidates, renter) {
+// opts (added 30/10/2026): { intro, optional }. optional:true is used when
+// NOTHING was linked or name-matched -- staff can pick the right deposit
+// from the open ones, or leave it on "No deposit" and return the bike
+// normally, so the popup never dead-ends.
+function showReturnDepositPickerB(rowNumber, candidates, renter, opts) {
+  opts = opts || {};
   const amountInput = document.getElementById('returnDepositAmountInput-' + rowNumber);
   const note = document.getElementById('returnDepositNote-' + rowNumber);
   if (!note) return;
   delete returnDepositMatches[rowNumber];
-  returnDepositNeedsPick[rowNumber] = true;
+  if (opts.optional) delete returnDepositNeedsPick[rowNumber]; else returnDepositNeedsPick[rowNumber] = true;
   if (amountInput) amountInput.value = '';
-  note.textContent = (renter && renter.name ? renter.name : 'This customer') + ' has ' + candidates.length + ' deposits on file — pick the one for this bike:';
+  note.textContent = opts.intro || ((renter && renter.name ? renter.name : 'This customer') + ' has ' + candidates.length + ' deposits on file — pick the one for this bike:');
   const sel = document.createElement('select');
   sel.className = 'picker-input';
   sel.id = 'returnDepositPick-' + rowNumber;
   sel.style.marginTop = '6px';
   const blank = document.createElement('option');
   blank.value = '';
-  blank.textContent = 'Select deposit…';
+  blank.textContent = opts.optional ? 'No deposit for this bike' : 'Select deposit…';
   sel.appendChild(blank);
   candidates.forEach((d, i) => {
     const o = document.createElement('option');
     o.value = String(i);
-    o.textContent = (DEPOSIT_CATEGORY_LABELS[d.category] || d.category) + ' — ' + money(d.amount) +
+    o.textContent = (opts.optional && d.name ? d.name + ' — ' : '') + (DEPOSIT_CATEGORY_LABELS[d.category] || d.category) + ' — ' + money(d.amount) +
       (d.date ? ' — ' + d.date : '') + (d.contractRow ? ' (Contract row ' + d.contractRow + ')' : '');
     sel.appendChild(o);
   });
   sel.addEventListener('change', () => {
     if (sel.value === '') {
       delete returnDepositMatches[rowNumber];
-      returnDepositNeedsPick[rowNumber] = true;
+      if (opts.optional) delete returnDepositNeedsPick[rowNumber]; else returnDepositNeedsPick[rowNumber] = true;
       if (amountInput) amountInput.value = '';
       refreshReturnCashToggleUI(rowNumber);
       return;
@@ -5458,6 +5524,19 @@ async function initReturnDepositLookup(rowNumber) {
   const deposits = res.deposits || [];
   const target = normalizePersonName(renter.name);
 
+  // Linked deposit first -- see findLinkedDepositForRenterB. Name spelling
+  // no longer matters when the deposit is linked to this booking.
+  const contractInfoB = await findContractRowForRenterB(renter);
+  if (openReturnRowNumber !== rowNumber || !document.getElementById('returnDepositAmountInput-' + rowNumber)) return;
+  const linkedDeposit = findLinkedDepositForRenterB(deposits, contractInfoB, res.sheetName);
+  if (linkedDeposit) {
+    const linkedLabel = DEPOSIT_CATEGORY_LABELS[linkedDeposit.category] || linkedDeposit.category;
+    applyReturnDepositPickB(rowNumber, linkedDeposit, renter, 'Matched ' + linkedLabel + ' deposit linked to this booking' +
+      (linkedDeposit.name && normalizePersonName(linkedDeposit.name) !== target ? ' (logged as "' + linkedDeposit.name + '")' : '') +
+      ' — ' + money(linkedDeposit.amount) + ' remaining.');
+    return;
+  }
+
   if (primaryCategory) {
     const inCategory = deposits.filter(d => d.category === primaryCategory && normalizePersonName(d.name) === target);
     if (inCategory.length === 1) {
@@ -5523,6 +5602,20 @@ async function initReturnDepositLookup(rowNumber) {
     // "Scan") -- trust it and just report nothing turned up. Guessing from
     // the rental's own payment method below would second-guess a value
     // staff deliberately entered.
+    // 30/10/2026: a Scan/Wise/Revolut method on the booking means a deposit
+    // SHOULD be in that table -- if the name just didn't match, let staff
+    // pick it rather than returning the bike with the deposit left open.
+    if (primaryCategory) {
+      const candidatesTyped = openDepositCandidatesForRenterB(deposits, contractInfoB, primaryCategory);
+      if (candidatesTyped.length) {
+        showReturnDepositPickerB(rowNumber, candidatesTyped, renter, {
+          optional: true,
+          intro: 'Booking says ' + depositType + ' deposit, but none is linked to ' + renter.name +
+            ' or matches the name — pick it below so it gets cleared, or leave "No deposit":'
+        });
+        return;
+      }
+    }
     amountInput.disabled = true;
     note.textContent = 'No deposit on file.';
     return;
@@ -5571,13 +5664,21 @@ async function initReturnDepositLookup(rowNumber) {
     // disabled and no match is registered, so Confirm's own "no deposit
     // on file to deduct from" guard blocks any deduction here until a
     // human has actually checked.
+    // 30/10/2026: used to be a red, dead-end warning that let the bike be
+    // returned WITHOUT clearing the deposit. Now staff pick the right
+    // deposit from the open ones (this rental's payment method listed
+    // first), or leave it on "No deposit" if there really isn't one.
+    const candidatesB = openDepositCandidatesForRenterB(deposits, contractInfoB, fallbackCategory);
+    if (candidatesB.length) {
+      showReturnDepositPickerB(rowNumber, candidatesB, renter, {
+        optional: true,
+        intro: 'No deposit linked to ' + renter.name + ' and no name match. This rental was paid by ' + label +
+          ' — pick their deposit below so it gets cleared, or leave "No deposit" if none was taken:'
+      });
+      return;
+    }
     amountInput.disabled = true;
-    note.style.color = '#C0392B';
-    note.style.fontWeight = '600';
-    note.textContent = '⚠️ No tracked ' + label + ' deposit found for ' + renter.name + ' in this month\'s records, ' +
-      'under any category. This rental was paid by ' + label + ', so a real deposit here should be traceable — ' +
-      'please check the Wise/Revolut/Scan deposit tables by hand before returning this bike, and correct it on ' +
-      'the Contract page if it turns out to be missing or logged wrong.';
+    note.textContent = 'No open deposits on file this month — nothing to clear.';
     return;
   }
 
