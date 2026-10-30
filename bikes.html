@@ -5420,27 +5420,64 @@ function showReturnDepositPickerB(rowNumber, candidates, renter, opts) {
   sel.className = 'picker-input';
   sel.id = 'returnDepositPick-' + rowNumber;
   sel.style.marginTop = '6px';
-  const blank = document.createElement('option');
-  blank.value = '';
-  blank.textContent = opts.optional ? 'No deposit for this bike' : 'Select deposit…';
-  sel.appendChild(blank);
-  candidates.forEach((d, i) => {
-    const o = document.createElement('option');
-    o.value = String(i);
-    o.textContent = (opts.optional && d.name ? d.name + ' — ' : '') + (DEPOSIT_CATEGORY_LABELS[d.category] || d.category) + ' — ' + money(d.amount) +
-      (d.date ? ' — ' + d.date : '') + (d.contractRow ? ' (Contract row ' + d.contractRow + ')' : '');
-    sel.appendChild(o);
-  });
+
+  // Type switcher (30/10/2026, Anton: "if it's paid with Revolut, there
+  // should be a Revolut deposit -- you should be able to choose one from
+  // the list"). Only in optional/no-link mode: the list opens on the
+  // rental's own payment method (opts.category) and shows ONLY that
+  // type's open deposits; the switcher covers a deposit that was logged
+  // under a different method.
+  let typeSel = null;
+  let shown = candidates;
+  if (opts.optional && opts.category) {
+    typeSel = document.createElement('select');
+    typeSel.className = 'picker-input';
+    typeSel.id = 'returnDepositTypePick-' + rowNumber;
+    typeSel.style.marginTop = '6px';
+    ['revolut', 'wise', 'bank'].forEach(k => {
+      const n = candidates.filter(d => d.category === k).length;
+      const o = document.createElement('option');
+      o.value = k;
+      o.textContent = (DEPOSIT_CATEGORY_LABELS[k] || k) + ' deposits (' + n + ')';
+      typeSel.appendChild(o);
+    });
+    typeSel.value = opts.category;
+  }
+
+  function fillDepositOptions() {
+    sel.innerHTML = '';
+    shown = typeSel ? candidates.filter(d => d.category === typeSel.value) : candidates;
+    const blank = document.createElement('option');
+    blank.value = '';
+    blank.textContent = opts.optional
+      ? (shown.length ? 'Pick ' + (typeSel ? (DEPOSIT_CATEGORY_LABELS[typeSel.value] || typeSel.value) + ' ' : '') + 'deposit… (or leave for no deposit)' : 'No open ' + (DEPOSIT_CATEGORY_LABELS[typeSel && typeSel.value] || '') + ' deposits — no deposit for this bike')
+      : 'Select deposit…';
+    sel.appendChild(blank);
+    shown.forEach((d, i) => {
+      const o = document.createElement('option');
+      o.value = String(i);
+      o.textContent = (opts.optional && d.name ? d.name + ' — ' : '') + (DEPOSIT_CATEGORY_LABELS[d.category] || d.category) + ' — ' + money(d.amount) +
+        (d.date ? ' — ' + d.date : '') + (d.contractRow ? ' (Contract row ' + d.contractRow + ')' : '');
+      sel.appendChild(o);
+    });
+  }
+  function clearPick() {
+    delete returnDepositMatches[rowNumber];
+    if (opts.optional) delete returnDepositNeedsPick[rowNumber]; else returnDepositNeedsPick[rowNumber] = true;
+    if (amountInput) amountInput.value = '';
+    refreshReturnCashToggleUI(rowNumber);
+  }
+  fillDepositOptions();
+
+  if (typeSel) typeSel.addEventListener('change', () => { fillDepositOptions(); clearPick(); });
   sel.addEventListener('change', () => {
-    if (sel.value === '') {
-      delete returnDepositMatches[rowNumber];
-      if (opts.optional) delete returnDepositNeedsPick[rowNumber]; else returnDepositNeedsPick[rowNumber] = true;
-      if (amountInput) amountInput.value = '';
-      refreshReturnCashToggleUI(rowNumber);
-      return;
-    }
-    applyReturnDepositPickB(rowNumber, candidates[Number(sel.value)], renter, null);
+    if (sel.value === '') { clearPick(); return; }
+    applyReturnDepositPickB(rowNumber, shown[Number(sel.value)], renter, null);
   });
+  if (typeSel) {
+    note.appendChild(document.createElement('br'));
+    note.appendChild(typeSel);
+  }
   note.appendChild(document.createElement('br'));
   note.appendChild(sel);
 }
@@ -5610,8 +5647,9 @@ async function initReturnDepositLookup(rowNumber) {
       if (candidatesTyped.length) {
         showReturnDepositPickerB(rowNumber, candidatesTyped, renter, {
           optional: true,
+          category: primaryCategory,
           intro: 'Booking says ' + depositType + ' deposit, but none is linked to ' + renter.name +
-            ' or matches the name — pick it below so it gets cleared, or leave "No deposit":'
+            ' or matches the name — pick it from the list below so it gets cleared:'
         });
         return;
       }
@@ -5672,8 +5710,9 @@ async function initReturnDepositLookup(rowNumber) {
     if (candidatesB.length) {
       showReturnDepositPickerB(rowNumber, candidatesB, renter, {
         optional: true,
+        category: fallbackCategory,
         intro: 'No deposit linked to ' + renter.name + ' and no name match. This rental was paid by ' + label +
-          ' — pick their deposit below so it gets cleared, or leave "No deposit" if none was taken:'
+          ' — pick their ' + label + ' deposit from the list below so it gets cleared:'
       });
       return;
     }
