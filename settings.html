@@ -387,6 +387,13 @@
   </div>
 
   <div class="settings-section">
+    <h2>Unsaved changes on this device</h2>
+    <div class="desc">Clears the red "change didn't save -- tap to review" list. That list lives only on the device you're using (not on Google Drive), so this only affects this phone/computer and doesn't change any real data. Anything in it was never saved -- redo it by hand if it still needs doing.</div>
+    <button type="button" class="settings-action-btn" id="purgeFailedSavesBtn">Clear unsaved-changes list</button>
+    <div class="settings-status" id="purgeFailedSavesStatus"></div>
+  </div>
+
+  <div class="settings-section">
     <h2>Account</h2>
     <button type="button" class="settings-signout-btn" id="signOutBtn">Sign out</button>
   </div>
@@ -710,6 +717,49 @@
         })
         .catch(function (err) { setStatus('Reset failed: ' + err.message, true); })
         .finally(function () { btn.disabled = false; });
+    });
+  }
+
+  // =====================================================================
+  // Clear unsaved-changes list (Anton, 31/10/2026). The "N changes didn't
+  // save" banner on bikes/contract/deposits/customers/add-bikes/accounts
+  // is driven purely by each page's *FailedSaves localStorage key -- it's
+  // per-device, never on Drive. A stuck entry on the phone had no way out,
+  // so this wipes every page's failed-saves list on THIS device. Pending
+  // (still-in-progress) saves are left alone on purpose.
+  // =====================================================================
+  var FAILED_SAVE_KEYS = ['aaBikesFailedSaves', 'aaContractFailedSaves', 'aaDepositsFailedSaves',
+    'aaAddBikesFailedSaves', 'aaCustomersFailedSaves', 'aaAccountsFailedSaves'];
+  function countFailedSaves() {
+    var n = 0;
+    FAILED_SAVE_KEYS.forEach(function (k) {
+      try { var a = JSON.parse(localStorage.getItem(k) || '[]'); if (Array.isArray(a)) n += a.length; } catch (e) { n += 1; }
+    });
+    return n;
+  }
+  function initPurgeFailedSaves() {
+    var btn = document.getElementById('purgeFailedSavesBtn');
+    var status = document.getElementById('purgeFailedSavesStatus');
+    if (!btn) return;
+    var armed = false, armTimer = null;
+    function showCount() {
+      var n = countFailedSaves();
+      status.textContent = n ? (n + (n === 1 ? ' unsaved change' : ' unsaved changes') + ' on this device.') : 'Nothing to clear on this device.';
+    }
+    showCount();
+    btn.addEventListener('click', function () {
+      if (!armed) {
+        armed = true;
+        btn.textContent = 'Tap again to clear';
+        armTimer = setTimeout(function () { armed = false; btn.textContent = 'Clear unsaved-changes list'; }, 4000);
+        return;
+      }
+      clearTimeout(armTimer);
+      armed = false;
+      var n = countFailedSaves();
+      FAILED_SAVE_KEYS.forEach(function (k) { try { localStorage.removeItem(k); } catch (e) {} });
+      btn.textContent = 'Clear unsaved-changes list';
+      status.textContent = 'Cleared ' + n + (n === 1 ? ' item' : ' items') + '. The red banner will be gone next time you open that page.';
     });
   }
 
@@ -1449,6 +1499,7 @@
     initRestoreModal();
     initBackupDeleteModal();
     initSignOutWidget();
+    initPurgeFailedSaves();
     initTxnSearch();
     initReverseModal();
     loadTransactionLog(false);
