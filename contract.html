@@ -4569,7 +4569,7 @@ editPassportPhotoUploadBtn.addEventListener('click', async () => {
   editPassportPhotoStatusBox.className = 'status';
   editPassportPhotoStatusBox.textContent = '';
   try {
-    const base64 = await readFileAsBase64(file);
+    const prepared = await preparePassportPhotoForUpload(file);
     const dateStr = isoDateToDashDmy(toIsoDateForInput(currentEditRecord.rentingDateFrom));
     const res = await fetch('/api/contracts/upload', {
       method: 'POST',
@@ -4578,11 +4578,11 @@ editPassportPhotoUploadBtn.addEventListener('click', async () => {
         name: currentEditRecord.name,
         phone: currentEditRecord.number,
         dateStr,
-        mimeType: file.type || 'image/jpeg',
-        base64
+        mimeType: prepared.mimeType,
+        base64: prepared.base64
       })
     });
-    const data = await res.json();
+    const data = await readAiJsonResponse(res);
     if (!data.success && data.alreadyExists) {
       editPassportPhotoStatusBox.textContent = data.error || 'A photo of passport is already on file for this contract.';
       editPassportPhotoStatusBox.className = 'status warn';
@@ -5596,6 +5596,71 @@ async function readAiJsonResponse(res) {
   return data;
 }
 
+// ---- FIX 2026-11-01 (Anton): passport photos not saving. The upload to
+// POST /api/contracts/upload sent the ORIGINAL file, and Vercel rejects any
+// request body over 4.5MB before our function runs -- a phone-camera photo
+// (3-8MB, plus ~33% for base64) routinely blew past that, so those photos
+// silently never reached Drive (17 contracts since 11 Jul had no photo).
+// Same fix "Fill from Passport (AI)" already uses (resizeImageForAiRead),
+// but kept larger/sharper here since this copy is the one we KEEP: longest
+// side 2000px, JPEG ~0.85, stepped down until it's safely under the limit.
+// Used by both the new-contract form and the Edit modal's "Upload photo". ----
+const PASSPORT_UPLOAD_MAX_DIMENSION = 2000;
+const PASSPORT_UPLOAD_MAX_BYTES = 2.5 * 1024 * 1024; // base64 adds ~33% -> ~3.3MB request, well under 4.5MB
+
+function resizeImageToJpegBlob(file, maxDim, quality) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const objectUrl = URL.createObjectURL(file);
+    img.onload = () => {
+      URL.revokeObjectURL(objectUrl);
+      let width = img.naturalWidth || img.width;
+      let height = img.naturalHeight || img.height;
+      if (!width || !height) { reject(new Error('Could not read this image\'s dimensions.')); return; }
+      if (width > maxDim || height > maxDim) {
+        if (width >= height) { height = Math.round(height * (maxDim / width)); width = maxDim; }
+        else { width = Math.round(width * (maxDim / height)); height = maxDim; }
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+      canvas.toBlob((blob) => {
+        if (!blob) { reject(new Error('Could not process this image.')); return; }
+        resolve(blob);
+      }, 'image/jpeg', quality);
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      reject(new Error('Could not read this image file -- it may not be a valid photo.'));
+    };
+    img.src = objectUrl;
+  });
+}
+
+// Returns { base64, mimeType } ready for /api/contracts/upload.
+async function preparePassportPhotoForUpload(file) {
+  let blob = null;
+  try {
+    let maxDim = PASSPORT_UPLOAD_MAX_DIMENSION, quality = 0.85;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      blob = await resizeImageToJpegBlob(file, maxDim, quality);
+      if (blob.size <= PASSPORT_UPLOAD_MAX_BYTES) break;
+      maxDim = Math.round(maxDim * 0.8);
+      quality = Math.max(0.6, quality - 0.07);
+    }
+  } catch (e) {
+    blob = null; // couldn't decode in this browser -- fall back to the original if it's small enough
+  }
+  if (blob && blob.size <= PASSPORT_UPLOAD_MAX_BYTES) {
+    return { base64: await readFileAsBase64(blob), mimeType: 'image/jpeg' };
+  }
+  if (file.size <= PASSPORT_UPLOAD_MAX_BYTES) {
+    return { base64: await readFileAsBase64(file), mimeType: file.type || 'image/jpeg' };
+  }
+  throw new Error('This photo is too large to upload and could not be shrunk -- try taking a screenshot of it and uploading that instead.');
+}
+
 const passportPhotoInput = document.getElementById('passportPhoto');
 
 // "Fill from Passport (AI)" -- reads whatever photo is currently chosen in
@@ -5983,16 +6048,16 @@ ctEnqueue({
       // per booking, regardless of how many bikes are on it.
       if (passportPhotoFile) {
         try {
-          const base64 = await readFileAsBase64(passportPhotoFile);
+          const prepared = await preparePassportPhotoForUpload(passportPhotoFile);
           const upRes = await fetch('/api/contracts/upload', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               name: uploadName, phone: uploadPhone, dateStr: uploadDateStr,
-              mimeType: passportPhotoFile.type || 'image/jpeg', base64
+              mimeType: prepared.mimeType, base64: prepared.base64
             })
           });
-          const upData = await upRes.json();
+          const upData = await readAiJsonResponse(upRes);
           if (upData.success) msg += ' Photo uploaded.';
           else if (upData.alreadyExists) msg += ' (' + (upData.error || 'A photo of passport is already on file for this contract.') + ')';
           else msg += ' Photo upload failed: ' + (upData.error || 'unknown error') + '.';
