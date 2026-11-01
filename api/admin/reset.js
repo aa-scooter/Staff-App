@@ -78,6 +78,14 @@ const { isMonthSheetName } = require('../../lib/monthSheets');
 const { createBackup, listBackups, ensureDailyBackup, deleteBackups, restoreBackup } = require('../../lib/backups');
 const { createNextMonthSheetFromJson, checkForMonthEndRolloverJson, createCurrentMonthSheetFromJson } = require('../../lib/monthRollover');
 const { createAccountsWrites } = require('../../lib/accountsWrites');
+
+// DISABLED 2026-11-01 (Anton): the home-page "Create Next Month Sheet" button
+// created November 2026 on 10 Oct, three weeks early, so November carried
+// forward October's 10-Oct balances and deposits instead of month-end ones.
+// The button is hidden in index.html and this refuses the action outright.
+// Set to true (and un-hide the button) only if it's genuinely needed again.
+// The nightly cron (handleMonthRolloverCron) is separate and unaffected.
+const CREATE_NEXT_MONTH_SHEET_ENABLED = false;
 const { writeRolloverStatus, readRolloverStatus } = require('../../lib/rolloverStatus');
 
 const DATA_DIR = path.join(__dirname, '..', '..', 'data');
@@ -485,6 +493,10 @@ const postHandler = withDrive(async function handler(req, res, ctx) {
       return;
     }
     if (action === 'createNextMonthSheet') {
+      if (!CREATE_NEXT_MONTH_SHEET_ENABLED) {
+        sendJson(res, 403, { success: false, error: 'Create Next Month Sheet is disabled.' });
+        return;
+      }
       await handleMonthRolloverAction(req, res, ctx, body);
       return;
     }

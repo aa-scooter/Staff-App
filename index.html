@@ -157,7 +157,11 @@
      the manual fallback/backstop for that, same as before, not a duplicate
      of a "test" feature. Safe to click any time: refuses (rather than
      overwriting) if next month's sheet already exists. -->
-<div style="max-width:520px; margin:0 auto 18px; padding:0 16px;">
+<!-- DISABLED 2026-11-01 (Anton): this button was pressed on 10 Oct 2026 and created November three weeks
+     early, so November started from October's 10-Oct figures. Hidden here AND refused server-side
+     (CREATE_NEXT_MONTH_SHEET_ENABLED in api/admin/reset.js). To bring it back, remove display:none
+     below and set that flag to true. -->
+<div id="createMonthSheetWrap" style="display:none; max-width:520px; margin:0 auto 18px; padding:0 16px;">
   <button type="button" id="createMonthSheetBtn" style="width:100%; padding:12px; border:1px solid var(--cone); border-radius:10px; background:#FFF3EC; color:var(--cone); font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:14px; letter-spacing:.04em; text-transform:uppercase; cursor:pointer;">
     Create Next Month Sheet
   </button>
