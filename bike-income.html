@@ -97,6 +97,10 @@
     letter-spacing:.03em; text-transform:uppercase; white-space:nowrap;
   }
   thead th:first-child{ text-align:left; }
+  thead th[data-sort]{ cursor:pointer; user-select:none; }
+  thead th[data-sort]:hover{ background:#1C5254; }
+  thead th.sorted{ background:#17494B; }
+  .sort-arrow{ font-size:9px; margin-left:3px; display:inline-block; }
   tbody td{
     padding:8px 8px; border-bottom:1px solid #F0EBE0; text-align:right; white-space:nowrap;
   }
@@ -295,24 +299,24 @@
     <table id="bikesTable">
       <thead>
         <tr>
-          <th>Bike</th>
-          <th>Cost</th>
-          <th class="month-col">Jan</th>
-          <th class="month-col">Feb</th>
-          <th class="month-col">Mar</th>
-          <th class="month-col">Apr</th>
-          <th class="month-col">May</th>
-          <th class="month-col">Jun</th>
-          <th class="month-col">Jul</th>
-          <th class="month-col">Aug</th>
-          <th class="month-col">Sep</th>
-          <th class="month-col">Oct</th>
-          <th class="month-col">Nov</th>
-          <th class="month-col">Dec</th>
-          <th>Income</th>
-          <th>Expenses</th>
-          <th>Profit</th>
-          <th>Net profit</th>
+          <th data-sort="name">Bike</th>
+          <th data-sort="cost">Cost</th>
+          <th class="month-col" data-sort="m0">Jan</th>
+          <th class="month-col" data-sort="m1">Feb</th>
+          <th class="month-col" data-sort="m2">Mar</th>
+          <th class="month-col" data-sort="m3">Apr</th>
+          <th class="month-col" data-sort="m4">May</th>
+          <th class="month-col" data-sort="m5">Jun</th>
+          <th class="month-col" data-sort="m6">Jul</th>
+          <th class="month-col" data-sort="m7">Aug</th>
+          <th class="month-col" data-sort="m8">Sep</th>
+          <th class="month-col" data-sort="m9">Oct</th>
+          <th class="month-col" data-sort="m10">Nov</th>
+          <th class="month-col" data-sort="m11">Dec</th>
+          <th data-sort="income">Income</th>
+          <th data-sort="expenses">Expenses</th>
+          <th data-sort="profit">Profit</th>
+          <th data-sort="netProfit">Net profit</th>
         </tr>
       </thead>
       <tbody id="tbody"></tbody>
@@ -1056,9 +1060,74 @@ function fmt(num) {
   return sign + '฿' + Math.round(Math.abs(n)).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
 }
 
+// ================== Column sorting ==================
+// Click any column header to sort by it. Numbers sort highest -> lowest on
+// the first click, the Bike column sorts A -> Z; clicking the same header
+// again flips the direction. sortKey === null means the default order from
+// loadBikes() (sold A-Z, unsold A-Z). "Extras" / "Deposit" sentinel rows
+// always stay pinned at the bottom -- they aren't real bikes.
+let sortKey = null;   // null | 'name' | 'cost' | 'm0'..'m11' | 'income' | 'expenses' | 'profit' | 'netProfit'
+let sortDir = 'desc'; // 'asc' | 'desc'
+
+function sortValue(b, key) {
+  if (key === 'name') return b.name || '';
+  if (/^m\d+$/.test(key)) {
+    const mi = Number(key.slice(1));
+    return (b.months && b.months[mi]) ? (Number(b.months[mi].amount) || 0) : 0;
+  }
+  return Number(b[key]) || 0;
+}
+
+function applySort(list) {
+  if (!sortKey) return list;
+  const dir = sortDir === 'desc' ? -1 : 1;
+  const real = list.filter(b => !b.isSentinel);
+  const sentinels = list.filter(b => b.isSentinel); // keep their existing order
+  real.sort((a, b) => {
+    let cmp;
+    if (sortKey === 'name') {
+      cmp = sortValue(a, 'name').localeCompare(sortValue(b, 'name'), undefined, { sensitivity: 'base', numeric: true });
+    } else {
+      cmp = sortValue(a, sortKey) - sortValue(b, sortKey);
+    }
+    if (cmp === 0) return a.name.localeCompare(b.name, undefined, { sensitivity: 'base', numeric: true });
+    return dir * cmp;
+  });
+  return real.concat(sentinels);
+}
+
+function updateSortHeaders() {
+  document.querySelectorAll('#bikesTable thead th[data-sort]').forEach(th => {
+    const old = th.querySelector('.sort-arrow');
+    if (old) old.remove();
+    const active = th.dataset.sort === sortKey;
+    th.classList.toggle('sorted', active);
+    if (active) {
+      const span = document.createElement('span');
+      span.className = 'sort-arrow';
+      span.textContent = sortDir === 'desc' ? '▼' : '▲';
+      th.appendChild(span);
+    }
+  });
+}
+
+document.querySelector('#bikesTable thead').addEventListener('click', (e) => {
+  const th = e.target.closest('th[data-sort]');
+  if (!th) return;
+  const key = th.dataset.sort;
+  if (sortKey === key) {
+    sortDir = sortDir === 'desc' ? 'asc' : 'desc';
+  } else {
+    sortKey = key;
+    sortDir = key === 'name' ? 'asc' : 'desc'; // A-Z first for names, highest first for numbers
+  }
+  render();
+});
+
 function render() {
   const q = document.getElementById('searchInput').value.trim().toLowerCase();
-  const filtered = q ? allBikes.filter(b => b.name.toLowerCase().includes(q)) : allBikes;
+  const filtered = applySort(q ? allBikes.filter(b => b.name.toLowerCase().includes(q)) : allBikes);
+  updateSortHeaders();
 
   const tbody = document.getElementById('tbody');
   const tfoot = document.getElementById('tfoot');
