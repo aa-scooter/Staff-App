@@ -697,6 +697,7 @@
         <option value="Passport">Passport</option>
       </select>
       <input id="e_depositAmount" type="number" min="0" step="1" placeholder="Deposit amount (฿)" class="hidden" style="margin-top:8px;">
+      <div id="e_depositLinkedHint" class="hidden" style="margin-top:6px; font-size:13px; opacity:.8;">Linked booking: this is the deposit for this bike only. Each bike on the booking keeps its own deposit.</div>
 
       <label id="e_depositCurrencyToggleLabel" style="display:flex; align-items:center; gap:8px; margin-top:8px; cursor:pointer;" class="hidden">
         <input type="checkbox" id="e_depositCurrencyToggle" style="width:auto; margin:0;">
@@ -1019,6 +1020,7 @@
         <option value="Passport">Passport</option>
       </select>
       <input id="depositAmount" type="number" min="0" step="1" placeholder="Deposit amount (฿)" class="hidden" style="margin-top:8px;">
+      <div id="depositPerBikeBox" class="hidden" style="margin-top:8px;"></div>
 
       <label id="depositCurrencyToggleLabel" style="display:flex; align-items:center; gap:8px; margin-top:8px; cursor:pointer;" class="hidden">
         <input type="checkbox" id="depositCurrencyToggle" style="width:auto; margin:0;">
@@ -2826,8 +2828,88 @@ function refreshDepositAmountVisibility() {
     depositAmount.value = '';
   }
   refreshDepositCurrencyVisibility();
+  refreshDepositPerBike();
 }
 depositSelect.addEventListener('change', refreshDepositAmountVisibility);
+
+// ---- Per-bike deposits (added 10/11/2026, Anton: "once you've selected
+// the bikes, the deposit section should adjust to have which bike, which
+// deposit, and you manually enter it" -- e.g. a Forza carries a bigger
+// deposit than a moped). Before this, a multi-bike booking copied the ONE
+// deposit amount onto EVERY bike's Contract row, so a ฿3,000 deposit for
+// two bikes showed as ฿3,000 on each (฿6,000 total) -- and a Wise/Revolut/
+// Scan deposit got logged into the deposit tables once PER BIKE when the
+// booking was rented. Now, once a 2nd bike is added (and the deposit
+// method needs an amount), the single amount box is replaced by one box
+// per bike; each bike's Contract row stores ONLY its own amount. The
+// deposit METHOD stays shared (one select for the whole booking). Keyed
+// by 'p' for the primary bike and the line uid for every extra bike, so
+// typed values survive bikes being added/removed. ----
+let depositPerBikeValues = {};
+function depositPerBikeKeys() {
+  return ['p', ...extraBikeLines.map((l) => String(l.uid))];
+}
+function depositPerBikeLabel(key, index) {
+  const name = key === 'p'
+    ? document.getElementById('bikeModel').value.trim()
+    : getBikeLineValue(Number(key)).trim();
+  return name || ('Bike ' + (index + 1));
+}
+function isMultiBikeDeposit() {
+  return extraBikeLines.length >= 1 && depositNeedsAmount();
+}
+function refreshDepositPerBike() {
+  const box = document.getElementById('depositPerBikeBox');
+  if (!box) return;
+  box.querySelectorAll('input[data-dep-key]').forEach((el) => { depositPerBikeValues[el.dataset.depKey] = el.value; });
+  if (!isMultiBikeDeposit()) {
+    box.classList.add('hidden');
+    box.innerHTML = '';
+    if (depositNeedsAmount()) { depositAmount.classList.remove('hidden'); depositAmount.required = true; }
+    return;
+  }
+  depositAmount.classList.add('hidden');
+  depositAmount.required = false;
+  const keys = depositPerBikeKeys();
+  box.classList.remove('hidden');
+  box.innerHTML = '<div style="font-size:13px; opacity:.8; margin-bottom:6px;">Deposit for each bike (฿):</div>' + keys.map((key, i) => {
+    const v = depositPerBikeValues[key];
+    return '<div style="display:flex; align-items:center; gap:8px; margin-bottom:6px;">' +
+      '<span class="dep-bike-label" data-dep-label="' + key + '" style="flex:1; min-width:0;">' + escapeHtmlDep(depositPerBikeLabel(key, i)) + '</span>' +
+      '<input data-dep-key="' + key + '" type="number" min="0" step="1" placeholder="Deposit (฿)" style="flex:1; margin:0;" value="' + (v === undefined || v === null ? '' : String(v).replace(/"/g, '&quot;')) + '">' +
+      '</div>';
+  }).join('') + '<div id="depositPerBikeTotal" style="font-size:13px; opacity:.8;"></div>';
+  box.querySelectorAll('input[data-dep-key]').forEach((el) => {
+    el.addEventListener('input', () => { depositPerBikeValues[el.dataset.depKey] = el.value; refreshDepositPerBikeTotal(); });
+  });
+  refreshDepositPerBikeTotal();
+}
+function refreshDepositPerBikeLabels() {
+  const box = document.getElementById('depositPerBikeBox');
+  if (!box) return;
+  depositPerBikeKeys().forEach((key, i) => {
+    const el = box.querySelector('[data-dep-label="' + key + '"]');
+    if (el) el.textContent = depositPerBikeLabel(key, i);
+  });
+}
+function refreshDepositPerBikeTotal() {
+  const el = document.getElementById('depositPerBikeTotal');
+  if (!el) return;
+  const total = depositPerBikeKeys().reduce((sum, k) => sum + (Number(depositPerBikeValues[k]) || 0), 0);
+  el.textContent = 'Total deposit: ฿' + total.toLocaleString('en-US');
+}
+function getDepositPerBikeAmounts() {
+  const box = document.getElementById('depositPerBikeBox');
+  if (box) box.querySelectorAll('input[data-dep-key]').forEach((el) => { depositPerBikeValues[el.dataset.depKey] = el.value; });
+  return depositPerBikeKeys().map((k) => depositPerBikeValues[k]);
+}
+function escapeHtmlDep(t) {
+  return (t || '').toString().replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+// Keep the per-bike labels in step with the bike names (autocomplete
+// picks don't fire 'input', so 'change'/'blur' are listened for too).
+document.addEventListener('input', (e) => { if (e.target && (e.target.id === 'bikeModel' || /^bikeLine_\d+$/.test(e.target.id || ''))) refreshDepositPerBikeLabels(); });
+document.addEventListener('focusout', (e) => { if (e.target && (e.target.id === 'bikeModel' || /^bikeLine_\d+$/.test(e.target.id || ''))) setTimeout(refreshDepositPerBikeLabels, 0); });
 
 // ---- Delivery fee -- a plain tick box; ticking it reveals an amount
 // field, same show/hide pattern as the deposit amount above. ----
@@ -3063,8 +3145,10 @@ function renderBikeLines() {
     btn.addEventListener('click', () => {
       const uid = Number(btn.dataset.uid);
       extraBikeLines = extraBikeLines.filter((l) => l.uid !== uid);
+      delete depositPerBikeValues[String(uid)];
       renderBikeLines();
       refreshMultiBikeAmountUi();
+      refreshDepositPerBike();
     });
   });
 }
@@ -3072,6 +3156,7 @@ addBikeBtn.addEventListener('click', () => {
   extraBikeLines.push({ uid: ++bikeLineSeq, value: '', amount: '' });
   renderBikeLines();
   refreshMultiBikeAmountUi();
+  refreshDepositPerBike();
 });
 
 const bikeAmountField = document.getElementById('bikeAmountField');
@@ -3232,7 +3317,7 @@ function renderPendingGroupCard(g) {
     <div class="result-card pending-item pending-group-card" data-group-id="${gid}">
       <div class="rc-title">${first.name || '—'} — ${bikeNamesLine}</div>
       <div class="rc-row"><b>Rented:</b> ${formatDateDisplay(first.rentingDateFrom)} &nbsp; <b>Return:</b> ${formatDateDisplay(first.returnDate)}</div>
-      <div class="rc-row"><b>Total:</b> ฿${combinedTotal} &nbsp; <b>Deposit:</b> ${first.deposit || '—'}${String(first.isDeal).toUpperCase() === 'TRUE' ? ' &nbsp; <b style="color:var(--cone);">Deal</b>' : ''}</div>
+      <div class="rc-row"><b>Total:</b> ฿${combinedTotal} &nbsp; <b>Deposit:</b> ${first.deposit || '—'}${g.some((r) => Number(r.depositAmount)) ? ' (฿' + g.reduce((sum, r) => sum + (Number(r.depositAmount) || 0), 0) + ')' : ''}${String(first.isDeal).toUpperCase() === 'TRUE' ? ' &nbsp; <b style="color:var(--cone);">Deal</b>' : ''}</div>
       <div class="bike-sub-lines">${bikesHtml}</div>
       <div class="group-bulk-actions">
         <button type="button" class="group-rent-all-btn" data-group-id="${gid}">Rent all ${g.length}</button>
@@ -3385,7 +3470,11 @@ function openConfirmModalForGroup(rows, startStep) {
     number: first.number, contact: first.contact, chatName: first.chatName,
     rentingDateFrom: first.rentingDateFrom, returnDate: first.returnDate,
     returnTime: first.returnTime, deliverToHotel: first.deliverToHotel,
-    paidBy: first.paidBy, deposit: first.deposit, depositAmount: first.depositAmount,
+    paidBy: first.paidBy, deposit: first.deposit,
+    // Per-bike deposits (10/11/2026): show the booking's combined deposit
+    // here; each row is still rented with its OWN amount (see the Rent-all
+    // request builder, which reads r.depositAmount per row).
+    depositAmount: rows.some((x) => Number(x.depositAmount)) ? String(rows.reduce((sum, x) => sum + (Number(x.depositAmount) || 0), 0)) : first.depositAmount,
     depositCurrency: first.depositCurrency, isDeal: first.isDeal,
     deliveryFee: first.deliveryFee,
     totalPrice: rows.reduce((sum, r) => sum + (Number(r.totalPrice) || 0), 0),
@@ -4315,7 +4404,9 @@ function buildRegenerateContractPayload() {
     totalPrice: isMultiBike ? String(combinedTotal) : r.totalPrice,
     paidBy: r.paidBy,
     deposit: r.deposit,
-    depositAmount: r.depositAmount,
+    // Per-bike deposits (10/11/2026): the printed contract shows the
+    // booking's COMBINED deposit, same as it already does for the price.
+    depositAmount: isMultiBike ? String(siblings.reduce((sum, row) => sum + (Number(row.depositAmount) || 0), 0)) : r.depositAmount,
     depositCurrency: r.depositCurrency,
     deliveryFeeApplies: !!(r.deliveryFee && r.deliveryFee.toString().toLowerCase() !== 'no'),
     deliveryFee: r.deliveryFee,
@@ -5285,6 +5376,7 @@ function openEditModal(r) {
   refreshEditDepositAmountVisibility(); // also resets the currency toggle off/blank
   if (e_depositNeedsAmount()) {
     e_depositAmount.value = r.depositAmount || '';
+    { const hint = document.getElementById('e_depositLinkedHint'); if (hint) hint.classList.toggle('hidden', !(r.linkedGroupId || '').toString().trim()); }
     if (r.depositCurrency) {
       document.getElementById('e_depositCurrencyToggle').checked = true;
       refreshEditDepositCurrencyVisibility();
@@ -5830,7 +5922,22 @@ form.addEventListener('submit', (e) => {
     return;
   }
 
-  if (depositNeedsAmount() && (depositAmount.value === '' || isNaN(Number(depositAmount.value)))) {
+  if (isMultiBikeDeposit()) {
+    // Per-bike deposits (10/11/2026) -- every bike needs its own amount
+    // (0 is allowed, blank is not), same rule as per-bike prices.
+    const depAmts = getDepositPerBikeAmounts();
+    const depKeys = depositPerBikeKeys();
+    for (let i = 0; i < depKeys.length; i++) {
+      const v = depAmts[i];
+      if (v === '' || v === null || v === undefined || isNaN(Number(v)) || Number(v) < 0) {
+        statusBox.textContent = 'Please enter the deposit for "' + depositPerBikeLabel(depKeys[i], i) + '" (0 if this bike has no deposit), or switch the deposit to Passport.';
+        statusBox.className = 'status err';
+        const el = document.querySelector('#depositPerBikeBox input[data-dep-key="' + depKeys[i] + '"]');
+        if (el) el.focus();
+        return;
+      }
+    }
+  } else if (depositNeedsAmount() && (depositAmount.value === '' || isNaN(Number(depositAmount.value)))) {
     statusBox.textContent = 'Please enter a deposit amount, or switch the deposit to Passport.';
     statusBox.className = 'status err';
     depositAmount.focus();
@@ -5959,10 +6066,13 @@ form.addEventListener('submit', (e) => {
       const amtEl = document.getElementById('bikeLineAmount_' + l.uid);
       return amtEl ? (Number(amtEl.value) || 0) : 0;
     })];
+    // Per-bike deposits (10/11/2026): each row stores only its own share.
+    const perBikeDeposits = depositNeedsAmount() ? getDepositPerBikeAmounts().map((v) => String(Number(v) || 0)) : null;
     bikeRequests = allBikeNames.map((bikeName, i) => {
       const linePayload = Object.assign({}, payload, {
         bikeModel: bikeName,
         totalPrice: String(perBikeAmounts[i]),
+        depositAmount: perBikeDeposits ? perBikeDeposits[i] : payload.depositAmount,
         linkedGroupId,
         linkedBikeIndex: i,
         clientTxnId: genClientTxnId()
@@ -6005,8 +6115,10 @@ form.addEventListener('submit', (e) => {
   rerenderHelmetLines();
   extraBikeLines = [];
   bikeAmountInput.value = '';
+  depositPerBikeValues = {};
   renderBikeLines();
   refreshMultiBikeAmountUi();
+  refreshDepositPerBike();
   setDefaultsToNow();
   // Show a "Saving…"/"Queued…" indicator immediately (mirrors the
   // opt-row-badge convention used everywhere else in this file) instead of
