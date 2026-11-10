@@ -5905,8 +5905,8 @@ function confirmReturn(rowNumber, isoDate, depositMatch, deductionAmount, reason
   const row = (customerRows || []).find(r => r.rowNumber === rowNumber);
 
   const requests = [isEarlyReturn
-    ? { action: 'earlyReturnBike', payload: { rowNumber: rowNumber, returnDate: isoDate, refundAmount: refundAmount, refundPaidBy: refundPaidBy, clientTxnId: genClientTxnId() } }
-    : { action: 'markReturned', payload: { rowNumber: rowNumber, returnDate: isoDate, clientTxnId: genClientTxnId() } }];
+    ? { action: 'earlyReturnBike', payload: { rowNumber: rowNumber, returnDate: isoDate, refundAmount: refundAmount, refundPaidBy: refundPaidBy, clientTxnId: genClientTxnId(), expectedName: row ? row.name : '', expectedBike: row ? row.bikeModel : '' } }
+    : { action: 'markReturned', payload: { rowNumber: rowNumber, returnDate: isoDate, clientTxnId: genClientTxnId(), expectedName: row ? row.name : '', expectedBike: row ? row.bikeModel : '' } }];
 
   // Fires after the return itself has already succeeded -- clears the
   // matched security deposit entirely and, if a deduction was entered,
