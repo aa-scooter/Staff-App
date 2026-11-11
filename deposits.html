@@ -189,6 +189,8 @@
     border-radius:7px; padding:7px 10px; margin-bottom:12px; display:none;
   }
   .cash-deduct-result.show{ display:block; }
+  .cash-deduct-balance{ font-size:12.5px; color:var(--muted); margin-top:6px; min-height:16px; }
+  .cash-deduct-balance b{ color:var(--petrol); }
   .cash-deduct-result.info{ color:#2A5A8C; background:#EAF2FB; border-color:#BBD6F0; }
   .btn-cash-deduct{
     display:block; width:100%; background:var(--cone); color:#fff; border:none;
@@ -291,11 +293,12 @@
 
   <div class="cash-deduct-card">
     <h2>Cash Deposit Deduction</h2>
-    <div class="sub">Cash deposits aren't logged above — they only live on the customer's Contract entry. Find the customer by name and this deducts straight from whatever deposit amount is on their contract. If nothing's recorded there, nothing is deducted (no error).</div>
+    <div class="sub">Cash deposits aren't logged above — they only live on the customer's Contract entry. Pick the customer below and this lowers the deposit amount on their contract, so the new balance shows on the bike schedule, customers page and everywhere else that reads the contract.</div>
 
     <div class="field">
-      <label for="cashDeductName">Customer name</label>
-      <input type="text" id="cashDeductName" placeholder="Customer name">
+      <label for="cashDeductContract">Customer (currently renting, cash deposit)</label>
+      <select id="cashDeductContract"><option value="">Loading customers…</option></select>
+      <div class="cash-deduct-balance" id="cashDeductBalance"></div>
     </div>
     <div class="field">
       <label for="cashDeductAmount">Deduction amount (฿)</label>
@@ -752,6 +755,7 @@ function dpResolveItem(item, success, err) {
     dpFailedItems.set(item.id, { item, message: err.message });
     persistFailedSaves();
     updateFailBanner();
+    if (item.onFailure) { try { item.onFailure(err); } catch (e) { console.error(e); } }
   }
   const next = dpQueue.find(it => it.status === 'queued');
   if (next) dpRun(next);
@@ -1528,7 +1532,8 @@ modalDeleteBtn.addEventListener('click', () => {
 // type the customer's name; the server finds their current "Rented"
 // Contract row and deducts from whatever's recorded as its deposit
 // amount. No deposit-picking step, unlike Wise/Revolut/Scan.
-const cashDeductName = document.getElementById('cashDeductName');
+const cashDeductContract = document.getElementById('cashDeductContract');
+const cashDeductBalance = document.getElementById('cashDeductBalance');
 const cashDeductAmount = document.getElementById('cashDeductAmount');
 const cashDeductReason = document.getElementById('cashDeductReason');
 const cashDeductError = document.getElementById('cashDeductError');
@@ -1559,28 +1564,94 @@ function setCashDeductResult(msg, isInfo) {
 // required -- deductCashDeposit has a HIGH-PRIORITY idempotency guard
 // server-side (see lib/depositsWrites.js's header comment) since a naive
 // retry would deduct twice from the same Contract row.
+// ADDED 11/11/2026 (Anton: "it's not actually reducing the deposit... I want
+// to reduce the deposit on the contract, and it shows everywhere, like the
+// bike schedule"). The old free-text name box had to match the Contract
+// name exactly, title included ("Mr Samuel Harold Edwards") -- typing just
+// "Samuel Edwards" matched nothing and the server quietly answered "no cash
+// deposit on file". Now staff pick from the actual "Rented" Contract rows
+// that hold a cash deposit, see the live balance, and the exact Contract
+// row number goes to the server (which re-checks it -- see
+// deductCashDepositFromJson in lib/depositsWrites.js).
+let cashDepositContracts = [];
+function renderCashDepositOptions(keepRow) {
+  const prev = keepRow != null ? String(keepRow) : cashDeductContract.value;
+  if (!cashDepositContracts.length) {
+    cashDeductContract.innerHTML = '<option value="">No current renters with a cash deposit</option>';
+  } else {
+    cashDeductContract.innerHTML = '<option value="">Choose customer…</option>' +
+      cashDepositContracts.map(c =>
+        '<option value="' + c.row + '">' + escapeCashOpt(c.name) + (c.bike ? ' — ' + escapeCashOpt(c.bike) : '') + ' — ' + money(c.amount) + '</option>'
+      ).join('');
+    if (prev && cashDepositContracts.some(c => String(c.row) === prev)) cashDeductContract.value = prev;
+  }
+  updateCashDeductBalance();
+}
+function escapeCashOpt(t) {
+  return (t || '').toString().replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+function selectedCashDepositContract() {
+  const v = cashDeductContract.value;
+  return cashDepositContracts.find(c => String(c.row) === v) || null;
+}
+function updateCashDeductBalance() {
+  const c = selectedCashDepositContract();
+  cashDeductBalance.innerHTML = c ? 'Cash deposit on contract: <b>' + money(c.amount) + '</b>' : '';
+}
+async function loadCashDepositContracts() {
+  delete depositsJsonCache['Contract']; // always read fresh balances
+  try {
+    const rows = await fetchSheetJson('Contract');
+    const list = [];
+    for (let i = 1; i < rows.length; i++) {
+      const r = rows[i];
+      if (!r) continue;
+      if ((r[16] || '').toString().trim().toLowerCase() !== 'rented') continue;
+      if ((r[13] || '').toString().trim().toLowerCase() !== 'cash') continue;
+      const amt = Number(r[14]);
+      if (r[14] === '' || r[14] === null || isNaN(amt) || amt <= 0) continue;
+      list.push({ row: i + 1, name: (r[3] || '').toString().trim(), bike: (r[6] || '').toString().trim(), amount: amt });
+    }
+    const sortKey = n => n.toLowerCase().replace(/^(mr|mrs|ms|miss|mx|dr)\.?\s+/, '');
+    list.sort((a, b) => sortKey(a.name).localeCompare(sortKey(b.name)));
+    cashDepositContracts = list;
+    renderCashDepositOptions();
+  } catch (err) {
+    cashDeductContract.innerHTML = '<option value="">Could not load customers — refresh the page</option>';
+    setCashDeductError('Could not load contracts: ' + err.message);
+  }
+}
+cashDeductContract.addEventListener('change', () => { setCashDeductError(null); updateCashDeductBalance(); });
+
 cashDeductBtn.addEventListener('click', () => {
   setCashDeductError(null);
   setCashDeductResult(null);
 
-  const customerName = cashDeductName.value.trim();
+  const picked = selectedCashDepositContract();
   const amountRaw = cashDeductAmount.value.trim();
   const amount = amountRaw === '' ? NaN : Number(amountRaw);
   const reason = cashDeductReason.value.trim();
 
-  if (!customerName) { setCashDeductError('Enter a customer name.'); return; }
+  if (!picked) { setCashDeductError('Choose a customer.'); return; }
+  const customerName = picked.name;
   if (amountRaw === '' || isNaN(amount) || amount <= 0) { setCashDeductError('Enter a valid deduction amount.'); return; }
+  if (amount > picked.amount + 0.001) { setCashDeductError('That is more than the ' + money(picked.amount) + ' cash deposit left on this contract.'); return; }
   if (!reason) { setCashDeductError('Enter a reason for the deduction.'); return; }
   if (dpQueueFull()) { setCashDeductError('Too many saves in progress -- wait for one to finish before starting another.'); return; }
 
   const payload = {
     customerName: customerName,
+    contractRow: picked.row,
+    bikeModel: picked.bike,
     deductionAmount: amount,
     reason: reason,
     clientTxnId: genClientTxnId()
   };
 
-  cashDeductName.value = '';
+  // Show the new balance in the dropdown straight away; corrected from the
+  // server's real answer (or a fresh reload) once the save settles.
+  picked.amount = picked.amount - amount;
+  renderCashDepositOptions(picked.row);
   cashDeductAmount.value = '';
   cashDeductReason.value = '';
   // Percentage progress (upgraded 22/08/2026, Anton: "a lot of them are
@@ -1605,6 +1676,12 @@ cashDeductBtn.addEventListener('click', () => {
     label: 'Cash deposit deduction — ' + customerName,
     rows: [],
     requests: [{ action: 'deductCashDeposit', payload }],
+    onFailure: (err) => {
+      clearInterval(cashDeductProgTimer);
+      setCashDeductResult(null);
+      setCashDeductError('Not deducted: ' + err.message);
+      loadCashDepositContracts();
+    },
     onAllSuccess: (results) => {
       clearInterval(cashDeductProgTimer);
       const res = results[0];
@@ -1612,13 +1689,15 @@ cashDeductBtn.addEventListener('click', () => {
         // Per Anton: no cash deposit on file for this customer is not an
         // error -- staff click "deduct" and nothing happens.
         setCashDeductResult(res.message || 'No cash deposit on file for this customer — nothing was deducted.', true);
+        loadCashDepositContracts();
         return;
       }
       setCashDeductResult(
-        'Deducted ' + money(amount) + ' — new contract deposit balance: ' + money(res.newAmount) + '.',
+        'Deducted ' + money(amount) + ' from ' + (res.customerName || customerName) + ' — new contract deposit balance: ' + money(res.newAmount) + '.',
         false
       );
       if (res.warning) alert('Deducted, but: ' + res.warning);
+      loadCashDepositContracts();
     }
   });
 });
@@ -1633,6 +1712,7 @@ cashDeductBtn.addEventListener('click', () => {
 // (searchView 'Cannot access before initialization').
 restoreUnresolvedSaves();
 loadDeposits();
+loadCashDepositContracts();
 </script>
 
 </body>
