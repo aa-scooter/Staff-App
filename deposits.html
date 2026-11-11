@@ -293,7 +293,7 @@
 
   <div class="cash-deduct-card">
     <h2>Cash Deposit Deduction</h2>
-    <div class="sub">Cash deposits aren't logged above — they only live on the customer's Contract entry. Pick the customer below and this lowers the deposit amount on their contract, so the new balance shows on the bike schedule, customers page and everywhere else that reads the contract.</div>
+    <div class="sub">Keep part of a customer's cash deposit (damage, fuel, extra days…). The amount is taken off the deposit on their contract — the new balance shows on the bike schedule and everywhere else — and added to this month's income as Cash, against their bike.</div>
 
     <div class="field">
       <label for="cashDeductContract">Customer (currently renting, cash deposit)</label>
@@ -313,7 +313,7 @@
     <div class="modal-progress" id="cashDeductProgress"><span class="modal-progress-spinner"></span><span id="cashDeductProgressText">Connecting…</span></div>
     <div class="cash-deduct-result" id="cashDeductResult"></div>
 
-    <button class="btn-cash-deduct" id="cashDeductBtn" type="button">Deduct from cash deposit</button>
+    <button class="btn-cash-deduct" id="cashDeductBtn" type="button">Take from deposit &amp; add to income</button>
   </div>
 </main>
 
@@ -1693,7 +1693,7 @@ cashDeductBtn.addEventListener('click', () => {
         return;
       }
       setCashDeductResult(
-        'Deducted ' + money(amount) + ' from ' + (res.customerName || customerName) + ' — new contract deposit balance: ' + money(res.newAmount) + '.',
+        money(amount) + ' taken from ' + (res.customerName || customerName) + "'s cash deposit and added to income (Cash). Deposit left: " + money(res.newAmount) + '.',
         false
       );
       if (res.warning) alert('Deducted, but: ' + res.warning);
